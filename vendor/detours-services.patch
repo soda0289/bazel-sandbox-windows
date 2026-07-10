@@ -1,0 +1,82 @@
+diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
+index 9993def..b55f639 100644
+--- a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
++++ b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
+@@ -1,4 +1,4 @@
+-﻿// Copyright (c) Microsoft. All rights reserved.
++// Copyright (c) Microsoft. All rights reserved.
+ // Licensed under the MIT license. See LICENSE file in the project root for full license information.
+ 
+ #include "stdafx.h"
+@@ -13,6 +13,9 @@
+ #include "SubstituteProcessExecution.h"
+ #include "UnicodeConverter.h"
+ 
++// BazelSandbox: -n network hardening at the syscall layer (deny \Device\Afd).
++#include "network_detours.h"
++
+ #include <Pathcch.h>
+ 
+ using std::map;
+@@ -6735,6 +6738,14 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+         win32Options,
+         path.GetPathString());
+ 
++    // BazelSandbox: under -n (all network blocked) deny socket creation via the
++    // AFD device (see the matching check in Detoured_NtCreateFile).
++    if (bazelsandbox::IsAllNetworkBlocked() && bazelsandbox::IsAfdDeviceName(path.GetPathString()))
++    {
++        SetLastError(ERROR_ACCESS_DENIED);
++        return DETOURS_STATUS_ACCESS_DENIED;
++    }
++
+     PolicyResult policyResult;
+     if (!policyResult.Initialize(path.GetPathString()))
+     {
+@@ -7038,6 +7049,17 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+ 
+     DWORD error = ERROR_SUCCESS;
+ 
++    // BazelSandbox: under -n (all network blocked) deny socket creation at the
++    // syscall layer. Winsock opens the AFD device to create a socket, so
++    // blocking \Device\Afd here stops even code that bypasses ws2_32 and talks
++    // to AFD directly. Under -N sockets must still be creatable (loopback), so
++    // this hard block is limited to the all-blocked policy.
++    if (bazelsandbox::IsAllNetworkBlocked() && bazelsandbox::IsAfdDeviceName(path.GetPathString()))
++    {
++        SetLastError(ERROR_ACCESS_DENIED);
++        return DETOURS_STATUS_ACCESS_DENIED;
++    }
++
+     DWORD win32Disposition = MapNtCreateDispositionToWin32Disposition(CreateDisposition);
+     DWORD win32Options = MapNtCreateOptionsToWin32FileFlags(CreateOptions);
+ 
+diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp b/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
+index 059fbf1..1aed9ec 100644
+--- a/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
++++ b/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
+@@ -34,6 +34,10 @@
+ #include "locale.h"
+ #include <TraceLoggingProvider.h>
+ 
++// BazelSandbox network sandboxing (-N / -n). Winsock-free interface; the actual
++// Winsock detours live in a separate stdafx-free translation unit.
++#include "network_detours.h"
++
+ #define BUILDXL_DETOURS_CREATE_PROCESS_RETRY_COUNT 5
+ #define BUILDXL_DETOURS_MS_TO_SLEEP 10
+ #define BUILDXL_PRELOADED_DLLS_MAX_PATH 65536
+@@ -1354,6 +1358,13 @@ static bool DllProcessAttach()
+ 
+     g_isAttached = true;
+ 
++    // BazelSandbox: apply the network policy (-N / -n) carried in the
++    // BAZEL_SANDBOX_NETWORK environment variable (inherited by every child).
++    // This reads the policy and, if the process is network-restricted, attaches
++    // the Winsock detours in their own transaction. Must run before the child's
++    // entry point, which it does (all of DllProcessAttach completes first).
++    bazelsandbox::InitializeAndAttachNetworkDetours();
++
+     if (!IgnorePreloadedDlls())
+     {
+         HMODULE hMods[1024];

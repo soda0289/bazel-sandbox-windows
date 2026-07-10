@@ -1,0 +1,11 @@
+# Build output
+/build/
+/out/
+
+# Upstream sources fetched/cloned for reference or building
+/_upstream/
+
+# Visual Studio / CMake noise
+/.vs/
+CMakeUserPresets.json
+*.user

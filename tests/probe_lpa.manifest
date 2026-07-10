@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <!--
+    probe_lpa is a long-path-aware build of the same probe.cpp source. It exists
+    only so the test suite can prove that when the SANDBOXED CHILD is long-path
+    aware (as a modern build tool should be), a raw > MAX_PATH path with no \\?\
+    prefix reaches the injected engine intact and is enforced correctly - i.e.
+    the > MAX_PATH over-deny characterized against the plain (non-aware) probe is
+    a child-side limitation, not an engine one.
+
+    Requires the system policy
+    HKLM\SYSTEM\CurrentControlSet\Control\FileSystem!LongPathsEnabled=1; the test
+    that uses this binary skips itself when the policy is off.
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <ws2:longPathAware>true</ws2:longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

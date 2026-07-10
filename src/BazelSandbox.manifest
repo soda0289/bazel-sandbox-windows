@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <!--
+    longPathAware lets the LAUNCHER'S OWN file operations (resolving the tool
+    and injected-DLL paths, opening -l/-L redirect files) handle paths longer
+    than MAX_PATH when Bazel hands us a deep execroot. It requires the system
+    policy HKLM\SYSTEM\CurrentControlSet\Control\FileSystem!LongPathsEnabled=1.
+
+    NOTE: this manifest only affects BazelSandbox.exe. It does NOT change how a
+    sandboxed CHILD tool resolves long paths - that is governed by the child's
+    own manifest. A non-long-path-aware child that passes a raw >MAX_PATH path
+    (no \\?\ prefix) still has it truncated by its own Win32 layer before the
+    injected engine sees it (see tests/enforce/limitations.ps1, long-path cases).
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <ws2:longPathAware>true</ws2:longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>
