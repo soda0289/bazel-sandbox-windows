@@ -1,7 +1,7 @@
 // Lightweight, framework-free unit tests for the native FileAccessManifest
 // serializer (src/manifest_builder.cpp). Returns 0 if all checks pass, non-zero
-// (and prints the first failure) otherwise. Registered with CTest as
-// "manifest_unit".
+// (and prints the first failure) otherwise. Built and run as the
+// "manifest_unit" cc_test.
 
 #include "manifest_builder.h"
 

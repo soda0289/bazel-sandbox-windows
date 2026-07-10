@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)][string]$Sandbox,
     [Parameter(Mandatory)][string]$Probe,
     [string]$StdioLauncher,
-    [Parameter(Mandatory)][string]$TempDir
+    [string]$TempDir
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\harness.ps1')

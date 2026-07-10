@@ -16,10 +16,11 @@ files can be stripped. See the repository `README.md` for why we keep it vendore
 | `detours-services/`        | `Public/Src/Sandbox/Windows/DetoursServices/`  |
 | `sandbox-common/`          | `Public/Src/Sandbox/Common/` (selected headers)|
 
-Only these three headers are taken from `Common/`: `ConcurrentQueue.h`,
-`FileAccessManifest.h`, `ReportType.h`. We do **not** vendor
-`Common/FileAccessManifest.cpp`; the manifest blob is built by our own
-`src/manifest_builder.cpp` instead.
+Only one header is taken from `Common/`: `ReportType.h`. We do **not** vendor
+`Common/FileAccessManifest.{h,cpp}`; the manifest blob is built by our own
+`src/manifest_builder.cpp` instead. (`ConcurrentQueue.h` and
+`FileAccessManifest.h` were previously vendored but are unused and were
+removed.)
 
 ## Divergence from upstream
 
@@ -67,8 +68,8 @@ upstream files are intentionally absent:
 Other feature areas we do not use at runtime (reporting, timestamp faking,
 substitute-process shim, full reparse-point resolution, DeviceMap) are left in
 place because their translation units are still compiled and linked; removing
-them would require CMake and link-time surgery for little benefit. See the
-build's source list in `CMakeLists.txt` for the authoritative set of compiled
+them would require build and link-time surgery for little benefit. See the
+build's source list in `BUILD.bazel` for the authoritative set of compiled
 translation units, and the repository `README.md` "Intentionally dropped"
 section for the feature-level rationale.
 
@@ -79,4 +80,4 @@ section for the feature-level rationale.
 3. Reapply `detours-services.patch` (or re-add the network-sandbox wiring by hand
    if upstream has drifted), then regenerate the patch and update the pinned
    commit above.
-4. Rebuild and run the full test suite (`ctest -C Release`).
+4. Rebuild and run the full test suite (`bazel test //...`).

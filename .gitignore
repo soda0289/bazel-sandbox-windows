@@ -1,11 +1,13 @@
 # Build output
-/build/
 /out/
+
+# Bazel
+/bazel-*
+/user.bazelrc
 
 # Upstream sources fetched/cloned for reference or building
 /_upstream/
 
-# Visual Studio / CMake noise
+# Visual Studio noise
 /.vs/
-CMakeUserPresets.json
 *.user

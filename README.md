@@ -79,25 +79,37 @@ Two binaries are produced:
   [Known limitations](#known-limitations); it is inherited from BuildXL, not a
   result of dropping utf8proc.)
 
+For a detailed map of how the vendored engine is wired together — the
+bootstrap↔hooks contract, the policy/report facade, and exactly which
+manifest flags and policy bits `BazelSandbox` actually uses — see
+[`docs/vendor-architecture.md`](docs/vendor-architecture.md).
+
 ## Building
 
-Requirements: Windows x64, Visual Studio 2022+ (MSVC) and CMake 3.24+.
+Requirements: Windows x64, Visual Studio 2022+ (MSVC), and
+[Bazelisk](https://github.com/bazelbuild/bazelisk) (a `.bazelversion` pins the
+Bazel release). MSYS2 — which Bazel already requires on Windows — must be
+installed and its `usr\bin` on `PATH` (see the note below).
 
 ```powershell
-# Fetches upstream Detours from GitHub automatically.
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
+# Fetches upstream Detours from GitHub automatically (pinned commit + sha256).
+bazel build //...
 ```
 
-To build against a local Detours checkout instead of fetching it:
+This produces `BazelSandbox.exe` and its injected `DetoursServices.dll` in
+`bazel-bin/` (co-located; the launcher loads the DLL from its own directory at
+runtime). Bump the Detours version by editing the `http_archive` commit +
+`sha256` in `MODULE.bazel`.
 
-```powershell
-cmake -S . -B build -A x64 -DDETOURS_SOURCE_DIR=C:\path\to\Detours
-cmake --build build --config Release
-```
+Two environment notes are baked into `.bazelrc`:
 
-All binaries are written to `build/bin/`. `BazelSandbox.exe` locates
-`DetoursServices.dll` next to itself at runtime.
+* **Corporate TLS proxies** — a `startup --host_jvm_args` flag makes Bazel's JVM
+  trust the Windows certificate store, so fetching the registry / archives does
+  not fail with a PKIX TLS error behind a TLS-inspecting proxy.
+* **MSYS2 on `PATH`** — the `rules_powershell` toolchain runs `chmod +x pwsh.exe`
+  through bash while fetching PowerShell; `.bazelrc` inherits the client `PATH`
+  for repository rules so MSYS2's `chmod` (`C:\msys64\usr\bin`) resolves. Put
+  MSYS2's `usr\bin` on your `PATH`, or override it in a `user.bazelrc`.
 
 > **Note:** the build is pinned to the *static release* CRT (`/MT`). This is
 > required twice over: DetoursServices refuses to link a DLL CRT (it would get
@@ -185,15 +197,20 @@ disallowed access was denied) or when the timeout fires.
 
 ## Testing
 
-The suite is driven by CTest and enabled by default (disable with
-`-DBAZEL_SANDBOX_BUILD_TESTS=OFF`). After building:
-
 ```powershell
-ctest --test-dir build -C Release --output-on-failure
+bazel test //...
 ```
 
 The suite is one unit test plus seven end-to-end categories, each a separate
-CTest test so a failure names the exact area:
+Bazel test target (`//tests:manifest_unit` and `//tests:enforce_<category>`) so
+a failure names the exact area. The enforcement tests are `rules_powershell`
+`pwsh_test` targets that carry the launcher/probe binaries as runfiles; the
+shared harness resolves their runfiles rlocationpaths (`tests/lib/harness.ps1`).
+Tests run serially (`--local_test_jobs=1` in `.bazelrc`): each spawns many real
+sandboxed child processes, and running the categories in parallel thrashes
+process creation enough to blow the timeouts.
+
+The categories:
 
 * **`manifest_unit`** — framework-free unit tests for the manifest serializer
   (`tests/manifest_builder_test.cpp`). Pins the FNV-1 path hash against golden
@@ -336,7 +353,13 @@ bypassed by a normal long path — they are edge cases:
 ## Layout
 
 ```
-CMakeLists.txt            build for both binaries + upstream Detours
+MODULE.bazel              Bazel (bzlmod) deps + pinned Detours http_archive
+BUILD.bazel               root Bazel targets: DetoursServices.dll, BazelSandbox, libs
+defs.bzl                  shared build constants (Windows target defines)
+.bazelrc / .bazelversion  Bazel config (JVM certs, PATH, serial tests) + version
+third_party/detours/      BUILD file applied to the fetched upstream Detours
+docs/
+  vendor-architecture.md  vendored-engine coupling map + policy/manifest subset
 src/
   main.cpp                launcher (options, manifest, Detours injection, waiting)
   manifest_builder.{h,cpp} native FileAccessManifest blob + path hash-tree
@@ -344,13 +367,15 @@ src/
   detours_compat.h        no-op DetourInit() shim for upstream Detours
   dll_export_anchor.cpp   ensures DetoursServices.dll has an export for injection
 tests/
+  BUILD.bazel             test targets: manifest_unit, probe(_lpa), pwsh_test's
   manifest_builder_test.cpp unit tests for the manifest serializer + path hash
   probe.cpp               file-op / connect / native / stdio helper for the tests
   probe_lpa.manifest      longPathAware manifest for the long-path-aware probe build
   stdio_launcher.cpp      reproduces Bazel's std-handle setup (regression harness)
   lib/harness.ps1         shared PowerShell harness (setup/teardown, assertions)
-  enforce/*.ps1           per-category allow/deny scenarios (one CTest test each)
+  enforce/*.ps1           per-category allow/deny scenarios (one test each)
 vendor/
+  BUILD.bazel             //vendor:detours_services cc_library (the vendored engine)
   detours-services/       vendored BuildXL DetoursServices engine (+ small hooks
                           for network init and \Device\Afd hardening)
   sandbox-common/         vendored BuildXL shared headers (ReportType.h, ...)
@@ -364,5 +389,6 @@ The vendored sources under `vendor/` (Microsoft BuildXL's DetoursServices
 engine and shared headers) and the fetched Detours sources retain their original
 MIT licenses from Microsoft.
 
-The code original to this repository (`src/`, `tests/`, `CMakeLists.txt`) is not
-covered by that MIT license and carries no license grant.
+The code original to this repository (`src/`, `tests/`, and the build files —
+`MODULE.bazel`, `BUILD.bazel`, and `third_party/`) is not covered by that MIT
+license and carries no license grant.

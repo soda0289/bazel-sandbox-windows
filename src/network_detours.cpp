@@ -242,8 +242,8 @@ void InitializeAndAttachNetworkDetours() {
 
     // Attach the Winsock detours in their own transaction, independent of the
     // file-access detours. ws2_32.dll is guaranteed present because this DLL
-    // imports it (see CMakeLists target_link_libraries), so the Real_* pointers
-    // resolved above are valid at attach time.
+    // imports it (the network_detours target links ws2_32), so the Real_*
+    // pointers resolved above are valid at attach time.
     if (DetourTransactionBegin() != NO_ERROR) {
         return;
     }

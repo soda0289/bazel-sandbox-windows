@@ -1,0 +1,38 @@
+# BUILD file for upstream microsoft/Detours, injected via the http_archive in
+# //MODULE.bazel. Mirrors the CMake `detours` static library: only five
+# translation units are compiled directly; disasm.cpp #includes the per-arch
+# disassemblers and creatwth.cpp #includes uimports.cpp, so those live in
+# textual_hdrs (available for inclusion, never compiled on their own).
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "detours",
+    srcs = [
+        "src/creatwth.cpp",
+        "src/detours.cpp",
+        "src/disasm.cpp",
+        "src/image.cpp",
+        "src/modules.cpp",
+    ],
+    hdrs = [
+        "src/detours.h",
+        "src/detver.h",
+    ],
+    # Silence the mountain of warnings from Detours' own sources.
+    copts = [
+        "/W0",
+        "/wd4100",
+    ],
+    # `includes` makes <detours.h> resolvable for dependents.
+    includes = ["src"],
+    textual_hdrs = [
+        "src/disolarm.cpp",
+        "src/disolarm64.cpp",
+        "src/disolia64.cpp",
+        "src/disolx64.cpp",
+        "src/disolx86.cpp",
+        "src/uimports.cpp",
+    ],
+    visibility = ["//visibility:public"],
+)

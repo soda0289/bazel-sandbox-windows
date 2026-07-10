@@ -24,17 +24,48 @@ $script:Passed = 0
 $script:Failed = 0
 $script:Skipped = 0
 
+# Resolves a binary path argument. Under Bazel it is given a runfiles
+# rlocationpath (e.g. "_main/tests/probe.exe") that must be resolved against the
+# runfiles tree the launcher stub exported (RUNFILES_DIR / RUNFILES_MANIFEST_FILE).
+# An absolute path that already exists is returned as-is.
+function Resolve-PathArg {
+    param([string]$Path)
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    # Absolute path that already exists.
+    if (Test-Path -LiteralPath $Path) { return (Resolve-Path -LiteralPath $Path).Path }
+    # Bazel runfiles directory layout.
+    if ($env:RUNFILES_DIR) {
+        $cand = Join-Path $env:RUNFILES_DIR $Path
+        if (Test-Path -LiteralPath $cand) { return (Resolve-Path -LiteralPath $cand).Path }
+    }
+    # Bazel runfiles manifest (used when no symlink tree is materialized).
+    if ($env:RUNFILES_MANIFEST_FILE -and (Test-Path $env:RUNFILES_MANIFEST_FILE)) {
+        foreach ($line in Get-Content $env:RUNFILES_MANIFEST_FILE) {
+            $idx = $line.IndexOf(' ')
+            if ($idx -gt 0 -and $line.Substring(0, $idx) -eq $Path) {
+                return $line.Substring($idx + 1)
+            }
+        }
+    }
+    return $Path
+}
+
 function Initialize-Harness {
     param(
         [Parameter(Mandatory)][string]$Sandbox,
         [Parameter(Mandatory)][string]$Probe,
         [string]$StdioLauncher,
-        [Parameter(Mandatory)][string]$TempDir,
+        [string]$TempDir,
         [Parameter(Mandatory)][string]$Suite
     )
-    $script:SbExe = $Sandbox
-    $script:ProbeExe = $Probe
-    $script:StdioExe = $StdioLauncher
+    $script:SbExe = Resolve-PathArg $Sandbox
+    $script:ProbeExe = Resolve-PathArg $Probe
+    $script:StdioExe = if ($StdioLauncher) { Resolve-PathArg $StdioLauncher } else { $null }
+    # Under `bazel test` no -TempDir is passed; use the test's private scratch dir.
+    if ([string]::IsNullOrEmpty($TempDir)) {
+        $base = if ($env:TEST_TMPDIR) { $env:TEST_TMPDIR } else { [System.IO.Path]::GetTempPath() }
+        $TempDir = Join-Path $base 'sbx'
+    }
     $script:TempRoot = $TempDir
     $script:Passed = 0
     $script:Failed = 0
@@ -50,6 +81,17 @@ function Get-Probe { return $script:ProbeExe }
 function Set-Probe { param([string]$Path) $script:ProbeExe = $Path }
 function Get-Sandbox { return $script:SbExe }
 function Get-StdioLauncher { return $script:StdioExe }
+
+# Absolute path to cmd.exe, resolved from the OS system directory (via the
+# GetSystemDirectory API, which is env-independent) rather than via PATH.
+# Under `bazel test` the environment is scrubbed: a bare `cmd` that PATH cannot
+# resolve makes PowerShell fall back to ShellExecute("cmd"), which - with no
+# path and no association - pops a modal "Select an app to run 'cmd'" dialog
+# that blocks the test until it times out.
+function Get-CmdExe {
+    if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec)) { return $env:ComSpec }
+    return (Join-Path ([Environment]::SystemDirectory) 'cmd.exe')
+}
 
 # Runs the launcher: BazelSandbox <SandboxArgs> -- <Probe> <ProbeArgs>.
 # Returns the child's exit code. A local Continue preference keeps legitimate
@@ -120,7 +162,7 @@ function New-Workspace {
 # localdev/check-windows-filesystem-support.ps1.
 function Test-SymlinkPrivilege {
     try {
-        return [bool](& whoami /priv 2>$null |
+        return [bool](& (Join-Path ([Environment]::SystemDirectory) 'whoami.exe') /priv 2>$null |
             Select-String -SimpleMatch 'SeCreateSymbolicLinkPrivilege')
     } catch { return $false }
 }

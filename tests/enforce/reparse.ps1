@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)][string]$Sandbox,
     [Parameter(Mandatory)][string]$Probe,
     [string]$StdioLauncher,
-    [Parameter(Mandatory)][string]$TempDir
+    [string]$TempDir
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\harness.ps1')
@@ -22,7 +22,7 @@ $exec = Join-Path $ws 'jexec'
 $link = Join-Path $exec 'link'
 New-Item -ItemType Directory -Force -Path $real, $exec | Out-Null
 'payload' | Set-Content (Join-Path $real 'f.txt')
-cmd /c mklink /J "$link" "$real" *> $null
+& (Get-CmdExe) /c mklink /J "$link" "$real" *> $null
 
 # Reading through a junction declared with -r is allowed (the engine must not
 # resolve the junction to its undeclared target).
@@ -44,7 +44,7 @@ $target = Join-Path $ws 'target.txt'
 $linkdir = Join-Path $ws 'lnk'
 New-Item -ItemType Directory -Force -Path $linkdir | Out-Null
 $flink = Join-Path $linkdir 'flink.txt'
-cmd /c mklink "$flink" "$target" *> $null
+& (Get-CmdExe) /c mklink "$flink" "$target" *> $null
 if (-not (Test-Path $flink)) {
     Skip-Case 'file symlink enforcement' 'symlink creation failed at runtime'
     Complete-Harness
@@ -73,7 +73,7 @@ $realdir = Join-Path $ws 'realdir'
 New-Item -ItemType Directory -Force -Path $realdir | Out-Null
 'payload' | Set-Content (Join-Path $realdir 'f.txt')
 $dlink = Join-Path $ws 'dlink'
-cmd /c mklink /D "$dlink" "$realdir" *> $null
+& (Get-CmdExe) /c mklink /D "$dlink" "$realdir" *> $null
 if (Test-Path $dlink) {
     Assert-Exit 'read through declared dir symlink (-r on link) allowed' 0 `
         (Invoke-Sandbox @('-W', $ws, '-r', $dlink) @('read', (Join-Path $dlink 'f.txt')))

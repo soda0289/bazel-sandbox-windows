@@ -1,0 +1,6 @@
+# Marks //third_party/detours as a package so the `detours.BUILD.bazel` label
+# used by the http_archive in //MODULE.bazel resolves. No targets are needed
+# here; the BUILD file content lives in detours.BUILD.bazel and is applied to
+# the fetched @detours repository.
+
+exports_files(["detours.BUILD.bazel"])

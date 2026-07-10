@@ -1,0 +1,98 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//:defs.bzl", "WIN10_DEFINES")
+
+package(default_visibility = ["//visibility:public"])
+
+# The 22 vendored BuildXL DetoursServices translation units.
+_DETOURS_SERVICES_SRCS = [
+    "detours-services/Assertions.cpp",
+    "detours-services/CanonicalizedPath.cpp",
+    "detours-services/PolicyResult.cpp",
+    "detours-services/PolicyResult_common.cpp",
+    "detours-services/DebuggingHelpers.cpp",
+    "detours-services/DetoursServices.cpp",
+    "detours-services/DetouredFunctions.cpp",
+    "detours-services/DetoursHelpers.cpp",
+    "detours-services/FileAccessHelpers.cpp",
+    "detours-services/DetouredScope.cpp",
+    "detours-services/StringOperations.cpp",
+    "detours-services/SendReport.cpp",
+    "detours-services/stdafx.cpp",
+    "detours-services/MetadataOverrides.cpp",
+    "detours-services/HandleOverlay.cpp",
+    "detours-services/PolicySearch.cpp",
+    "detours-services/DeviceMap.cpp",
+    "detours-services/DetouredProcessInjector.cpp",
+    "detours-services/SubstituteProcessExecution.cpp",
+    "detours-services/FilesCheckedForAccess.cpp",
+    "detours-services/PathTree.cpp",
+    "detours-services/TreeNode.cpp",
+]
+
+# ---------------------------------------------------------------------------
+# The vendored BuildXL enforcement engine, as its own static library.
+#
+# alwayslink = True is REQUIRED: this becomes a static archive, and the linker
+# would otherwise drop archive members no one references by symbol - including
+# DllMain and the detour-attach registration in DetoursServices.cpp - yielding
+# a DLL that injects but installs no hooks (a silent no-op sandbox). alwayslink
+# forces every object into the final DLL.
+#
+# All vendored headers are PRIVATE (only the vendored TUs include them), so they
+# live in srcs. Two TUs include network_detours.h and every TU force-includes
+# detours_compat.h, both of which live in //src; the //:network_detours and
+# //:detours_compat deps expose those headers (and their -I src path) across the
+# package boundary.
+# ---------------------------------------------------------------------------
+cc_library(
+    name = "detours_services",
+    srcs = _DETOURS_SERVICES_SRCS + glob([
+        "detours-services/*.h",
+        "sandbox-common/*.h",
+    ]),
+    copts = [
+        "/W0",
+        "/wd4100",
+        "/wd4996",
+        "/EHsc",
+        "/bigobj",
+        # Force-include stdafx.h (pulls <windows.h> + <detours.h> first, like
+        # BuildXL's PCH) and detours_compat.h (a no-op DetourInit() shim so the
+        # vendored engine links against stock upstream Detours).
+        "/FIstdafx.h",
+        "/FIdetours_compat.h",
+    ],
+    # NOTE: no WIN32_LEAN_AND_MEAN - the vendored DetoursServices.h uses the COM
+    # `interface` macro, which windows.h only defines in the full configuration.
+    # The -I src path (for network_detours.h / detours_compat.h) comes from the
+    # //:network_detours and //:detours_compat deps below.
+    includes = [
+        "detours-services",
+        "sandbox-common",
+    ],
+    linkopts = [
+        "advapi32.lib",
+        "ole32.lib",
+        "oleaut32.lib",
+        "pathcch.lib",
+        "shlwapi.lib",
+        "user32.lib",
+        "shell32.lib",
+        "ntdll.lib",
+        "rpcrt4.lib",
+        "ws2_32.lib",
+    ],
+    local_defines = [
+        "DETOURS_SERVICES_NATIVES_LIBRARY",
+        "_CRT_SECURE_NO_WARNINGS",
+        "UNICODE",
+        "_UNICODE",
+        "NOMINMAX",
+    ] + WIN10_DEFINES,
+    alwayslink = True,
+    deps = [
+        "//:detours_compat",
+        "//:network_detours",
+        "@detours//:detours",
+    ],
+)

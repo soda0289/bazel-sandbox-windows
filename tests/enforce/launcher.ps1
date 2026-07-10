@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)][string]$Sandbox,
     [Parameter(Mandatory)][string]$Probe,
     [Parameter(Mandatory)][string]$StdioLauncher,
-    [Parameter(Mandatory)][string]$TempDir
+    [string]$TempDir
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\harness.ps1')
@@ -80,7 +80,7 @@ Assert-True '-l/-L captured child stdout+stderr' (
 # handles. stdio_launcher reproduces that exact launch.
 $scratch = Join-Path $ws 'stdio_out.txt'
 $ErrorActionPreference = 'Continue'
-& $StdioLauncher $Sandbox $Probe $scratch *> $null
+& (Get-StdioLauncher) (Get-Sandbox) (Get-Probe) $scratch *> $null
 $rc = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 Assert-Exit 'std handles valid under Bazel-style launch' 0 $rc
@@ -91,10 +91,10 @@ Assert-Exit 'std handles valid under Bazel-style launch' 0 $rc
 # hard-error dialog. Uses a 32-bit system binary; skipped on hosts without one
 # (e.g. non-x64 Windows). The target is not the probe, so invoke the launcher
 # directly.
-$w32 = Join-Path $env:WINDIR 'SysWOW64\whoami.exe'
+$w32 = Join-Path (Split-Path ([Environment]::SystemDirectory) -Parent) 'SysWOW64\whoami.exe'
 if (Test-Path $w32) {
     $ErrorActionPreference = 'Continue'
-    & $Sandbox '-W' $ws '--' $w32 *> $null
+    & (Get-Sandbox) '-W' $ws '--' $w32 *> $null
     $rcBit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     Assert-Exit 'non-x64 target refused before spawn (exit 3)' 3 $rcBit
@@ -107,11 +107,11 @@ if (Test-Path $w32) {
 # after -- and an unknown flag are usage errors (exit 1). Bazel relies on these
 # being distinct, non-zero, and never hanging.
 $ErrorActionPreference = 'Continue'
-& $Sandbox '-W' $ws '--' (Join-Path $ws 'does-not-exist.exe') *> $null
+& (Get-Sandbox) '-W' $ws '--' (Join-Path $ws 'does-not-exist.exe') *> $null
 $rcMissing = $LASTEXITCODE
-& $Sandbox '-W' $ws '--' *> $null
+& (Get-Sandbox) '-W' $ws '--' *> $null
 $rcNoCmd = $LASTEXITCODE
-& $Sandbox '-Z' '-W' $ws '--' $Probe 'read' $Probe *> $null
+& (Get-Sandbox) '-Z' '-W' $ws '--' (Get-Probe) 'read' (Get-Probe) *> $null
 $rcBadFlag = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 Assert-Exit 'nonexistent target exe fails spawn (exit 2)' 2 $rcMissing

@@ -1,0 +1,110 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//:defs.bzl", "WIN10_DEFINES")
+
+package(default_visibility = ["//visibility:public"])
+
+# ---------------------------------------------------------------------------
+# File-access manifest serializer. Reimplements BuildXL's FileAccessManifest
+# wire format + path hash (see src/manifest_builder.cpp). Used by the launcher
+# and exercised directly by //tests:manifest_unit. No BuildXL/Detours code.
+# ---------------------------------------------------------------------------
+cc_library(
+    name = "manifest_builder",
+    srcs = ["src/manifest_builder.cpp"],
+    hdrs = ["src/manifest_builder.h"],
+    includes = ["src"],
+    local_defines = [
+        "UNICODE",
+        "_UNICODE",
+        "WIN32_LEAN_AND_MEAN",
+        "NOMINMAX",
+    ] + WIN10_DEFINES,
+)
+
+# ---------------------------------------------------------------------------
+# BazelSandbox network sandboxing (-N / -n) Winsock detours.
+#
+# A SEPARATE library (not part of the vendored source set) because it must
+# include <winsock2.h> BEFORE <windows.h>. The vendored engine force-includes
+# stdafx.h (which pulls <windows.h> first), so the Winsock code cannot share a
+# translation unit with it. Its public header (src/network_detours.h) is
+# Winsock-free, so the engine TUs can call into it.
+# ---------------------------------------------------------------------------
+cc_library(
+    name = "network_detours",
+    srcs = ["src/network_detours.cpp"],
+    hdrs = ["src/network_detours.h"],
+    copts = ["/W0"],
+    includes = ["src"],
+    linkopts = ["ws2_32.lib"],
+    local_defines = [
+        "UNICODE",
+        "_UNICODE",
+        "NOMINMAX",
+        "_CRT_SECURE_NO_WARNINGS",
+        "_WINSOCK_DEPRECATED_NO_WARNINGS",
+    ] + WIN10_DEFINES,
+    deps = ["@detours//:detours"],
+)
+
+# ---------------------------------------------------------------------------
+# Header-only compatibility shim (a no-op DetourInit()) that lets the vendored
+# engine link against stock upstream Detours. Exposed as a library so the
+# vendored engine in //vendor can force-include it across the package boundary
+# (carrying both the header and its -I src path).
+# ---------------------------------------------------------------------------
+cc_library(
+    name = "detours_compat",
+    hdrs = ["src/detours_compat.h"],
+    includes = ["src"],
+)
+
+# ---------------------------------------------------------------------------
+# DetoursServices.dll - the hook DLL injected into every sandboxed child.
+#
+# linkshared=True + a `.dll` target name produces the shared library directly.
+# All the real code comes from //vendor:detours_services; this target only adds
+# the anchor export and links it into a shared library.
+# ---------------------------------------------------------------------------
+cc_binary(
+    name = "DetoursServices.dll",
+    srcs = ["src/dll_export_anchor.cpp"],
+    linkshared = True,
+    deps = ["//vendor:detours_services"],
+)
+
+# ---------------------------------------------------------------------------
+# BazelSandbox.exe - the launcher.
+#
+# Builds the file-access manifest itself (src/manifest_builder.cpp) and injects
+# DetoursServices.dll into a suspended child using upstream Detours directly. It
+# links ONLY against Detours - no BuildXL code is compiled into the launcher.
+# The DLL is carried in `data` so it sits next to the exe at runtime (the
+# launcher loads it from its own directory, see src/main.cpp:349).
+# ---------------------------------------------------------------------------
+cc_binary(
+    name = "BazelSandbox",
+    srcs = [
+        "src/main.cpp",
+    ],
+    additional_linker_inputs = ["src/BazelSandbox.manifest"],
+    data = [":DetoursServices.dll"],
+    includes = ["src"],
+    # Embed the application manifest (asInvoker + longPathAware). MSVC's linker
+    # embeds it via these options; the path is relative to the execroot (where
+    # the linker runs).
+    linkopts = [
+        "/MANIFEST:EMBED",
+        "/MANIFESTINPUT:src/BazelSandbox.manifest",
+    ],
+    local_defines = [
+        "UNICODE",
+        "_UNICODE",
+        "WIN32_LEAN_AND_MEAN",
+        "NOMINMAX",
+    ] + WIN10_DEFINES,
+    deps = [
+        ":manifest_builder",
+        "@detours//:detours",
+    ],
+)

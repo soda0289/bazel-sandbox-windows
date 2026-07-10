@@ -1,0 +1,31 @@
+"""bazel-sandbox-windows
+
+A standalone Windows process sandbox that reproduces BuildXL's BazelSandbox
+using ONLY upstream microsoft/Detours plus the vendored BuildXL DetoursServices
+enforcement engine. See README.md.
+"""
+
+module(
+    name = "bazel_sandbox_windows",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_powershell", version = "0.2.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# ---------------------------------------------------------------------------
+# Upstream microsoft/Detours, fetched (hermetically, pinned) from GitHub and
+# built with the BUILD file in //third_party/detours. Refresh by bumping the
+# commit + sha256 below (the archive URL is a codeload tarball for the exact
+# commit).
+# ---------------------------------------------------------------------------
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "detours",
+    build_file = "//third_party/detours:detours.BUILD.bazel",
+    sha256 = "76f3967856c78c458c1d282f1dd663b403c3694466d16fdf5b16f7d221a84f4b",
+    strip_prefix = "Detours-d644ce94e8c7f7f5a31591577c78134ea3ac1fae",
+    urls = ["https://github.com/microsoft/Detours/archive/d644ce94e8c7f7f5a31591577c78134ea3ac1fae.tar.gz"],
+)

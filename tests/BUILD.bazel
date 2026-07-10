@@ -1,0 +1,140 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+load("@rules_powershell//powershell:defs.bzl", "pwsh_library", "pwsh_test")
+
+package(default_visibility = ["//visibility:private"])
+
+# Bazel's MSVC toolchain pins /D_WIN32_WINNT=0x0601; re-target Windows 10 so the
+# newer file-info APIs the probe exercises are available (matches //BUILD.bazel).
+_WIN10_DEFINES = [
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+] + _WIN10_DEFINES
+
+# ---------------------------------------------------------------------------
+# C++ test helpers (plain, un-sandboxed tools invoked by the enforcement tests).
+# ---------------------------------------------------------------------------
+
+# Performs a single filesystem/network op and exits with a stable code
+# (0=allowed, 10=denied, 20=other, 30=usage, 40=bad std handle, 50=harness).
+cc_binary(
+    name = "probe",
+    srcs = ["probe.cpp"],
+    local_defines = _HELPER_DEFINES,
+)
+
+# Same probe source, but long-path-aware (its manifest sets longPathAware=true).
+# Used only by the long-path limitation test to show a raw >MAX_PATH access is
+# enforced correctly when the child is long-path aware. Must sit next to `probe`
+# (the harness derives its path from the probe's directory), which holds in
+# runfiles because both live in this package's runfiles subdir.
+cc_binary(
+    name = "probe_lpa",
+    srcs = ["probe.cpp"],
+    additional_linker_inputs = ["probe_lpa.manifest"],
+    linkopts = [
+        "/MANIFEST:EMBED",
+        "/MANIFESTINPUT:tests/probe_lpa.manifest",
+    ],
+    local_defines = _HELPER_DEFINES,
+)
+
+# Reproduces Bazel's std-handle launch (STARTF_USESTDHANDLES with inheritable
+# stdout/stderr but no stdin) and runs "BazelSandbox -- probe stdio".
+cc_binary(
+    name = "stdio_launcher",
+    srcs = ["stdio_launcher.cpp"],
+    local_defines = _HELPER_DEFINES,
+)
+
+# ---------------------------------------------------------------------------
+# Unit test: the manifest serializer (no BuildXL/Detours linked).
+# ---------------------------------------------------------------------------
+cc_test(
+    name = "manifest_unit",
+    size = "small",
+    srcs = ["manifest_builder_test.cpp"],
+    local_defines = _HELPER_DEFINES,
+    deps = ["//:manifest_builder"],
+)
+
+# ---------------------------------------------------------------------------
+# Integration tests: one PowerShell script per category, each dot-sourcing the
+# shared harness. The launcher/probe binaries are carried as runfiles and their
+# rlocationpaths are passed in; the harness resolves them (see tests/lib/harness.ps1).
+# BazelSandbox carries DetoursServices.dll in its own runfiles, co-located with
+# the exe so the launcher finds the hook DLL next to itself.
+# ---------------------------------------------------------------------------
+pwsh_library(
+    name = "harness",
+    srcs = ["lib/harness.ps1"],
+)
+
+_ENFORCE_CATEGORIES = [
+    "scopes",
+    "filesystem",
+    "network",
+    "launcher",
+    "pathforms",
+    "reparse",
+    "limitations",
+]
+
+[
+    pwsh_test(
+        name = "enforce_{}".format(category),
+        size = "small",
+        srcs = ["enforce/{}.ps1".format(category)],
+        args = [
+            "-Sandbox",
+            "$(rlocationpath //:BazelSandbox)",
+            "-Probe",
+            "$(rlocationpath :probe)",
+            "-StdioLauncher",
+            "$(rlocationpath :stdio_launcher)",
+        ],
+        data = [
+            ":probe",
+            ":probe_lpa",
+            ":stdio_launcher",
+            "//:BazelSandbox",
+        ],
+        # `bazel test` runs with a scrubbed environment. The sandboxed children
+        # (probe.exe, cmd.exe, whoami.exe) and the scripts' bare-name tool
+        # invocations need the standard Windows variables to initialize and be
+        # found on PATH; without them children hang or fail to launch.
+        env_inherit = [
+            "ALLUSERSPROFILE",
+            "APPDATA",
+            "CommonProgramFiles",
+            "ComSpec",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "LOCALAPPDATA",
+            "NUMBER_OF_PROCESSORS",
+            "OS",
+            "PATH",
+            "PATHEXT",
+            "PROCESSOR_ARCHITECTURE",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "PUBLIC",
+            "SystemDrive",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "WINDIR",
+        ],
+        deps = [":harness"],
+    )
+    for category in _ENFORCE_CATEGORIES
+]

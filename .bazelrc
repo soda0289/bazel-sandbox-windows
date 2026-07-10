@@ -1,0 +1,47 @@
+# bazel-sandbox-windows build configuration.
+
+# Bzlmod is the only dependency mechanism used by this project.
+common --enable_bzlmod
+
+# Make Bazel's JVM trust the Windows certificate store. Without this, fetching
+# the registry / http_archives fails with a PKIX TLS error on machines behind a
+# corporate TLS-inspecting proxy (whose root CA is in the OS store, not the
+# bundled Java cacerts). Safe on any Windows host; this project is Windows-only.
+startup --host_jvm_args=-Djavax.net.ssl.trustStoreType=Windows-ROOT
+
+# rules_powershell's downloaded pwsh toolchain runs `chmod +x pwsh.exe` through
+# bash during fetch. MSYS2 (which Bazel already requires on Windows) provides
+# chmod, but Bazel's repository-rule bash does not get MSYS2's bin on PATH by
+# default. Inherit the client PATH for repository rules so chmod resolves;
+# ensure C:\msys64\usr\bin is on your PATH (see README). Override in a
+# user.bazelrc if MSYS2 lives elsewhere.
+common --repo_env=PATH
+
+# Materialize a real runfiles tree on Windows. This keeps BazelSandbox.exe and
+# its injected DetoursServices.dll co-located at runtime (the launcher loads the
+# DLL from its own directory, see src/main.cpp), and lets the PowerShell test
+# harness resolve runfiles without depending on the manifest layout.
+build --enable_runfiles
+
+# CRITICAL: force the *static* CRT for every configuration.
+#   * DetoursServices.cpp #errors out unless linked with a static native runtime
+#     (a DLL CRT would be loaded into every detoured child, which is unsafe).
+#   * Combined with never building `-c dbg` (see below), this yields the static
+#     *release* CRT (/MT, not /MTd) so `_DEBUG` is never defined -- required for
+#     the manifest blob format (builder and DLL parser must agree on the
+#     tag-less, DebugFlag==0xDB600000 release layout). See README / manifest_builder.cpp.
+build --features=static_link_msvcrt
+
+# C++17 to match the CMake build.
+build --cxxopt=/std:c++17
+build --host_cxxopt=/std:c++17
+
+# Keep test output useful.
+test --test_output=errors
+
+# Run tests serially. Each enforcement test spawns many real sandboxed child
+# processes (each with a DLL injection + job object); running the eight
+# categories in parallel thrashes process creation / AV enough to blow the
+# per-test timeouts. Serial execution matches the old CTest behavior and keeps
+# the suite fast and deterministic (each category finishes in a few seconds).
+test --local_test_jobs=1

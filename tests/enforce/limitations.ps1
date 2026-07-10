@@ -9,7 +9,7 @@ param(
     [Parameter(Mandatory)][string]$Sandbox,
     [Parameter(Mandatory)][string]$Probe,
     [string]$StdioLauncher,
-    [Parameter(Mandatory)][string]$TempDir
+    [string]$TempDir
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\lib\harness.ps1')
@@ -30,7 +30,7 @@ Assert-Exit 'KNOWN-GAP: enumerate in denied workdir allowed' 0 `
 $ws = New-Workspace
 $longFile = Join-Path $ws 'longfilename.txt'
 'y' | Set-Content $longFile
-$shortFile = cmd /c "for %A in (`"$longFile`") do @echo %~sA"
+$shortFile = & (Get-CmdExe) /c "for %A in (`"$longFile`") do @echo %~sA"
 if ($shortFile -and ($shortFile -match '~') -and (Test-Path $shortFile)) {
     Assert-Exit 'exact -b blocks long-name write' 10 `
         (Invoke-Sandbox @('-W', $ws, '-r', $ws, '-w', $ws, '-b', $longFile) @('write', $longFile))
@@ -40,7 +40,7 @@ if ($shortFile -and ($shortFile -match '~') -and (Test-Path $shortFile)) {
     $longSub = Join-Path $ws 'longsubdir'
     New-Item -ItemType Directory -Force -Path $longSub | Out-Null
     'z' | Set-Content (Join-Path $longSub 'f.txt')
-    $shortSub = cmd /c "for %A in (`"$longSub`") do @echo %~sA"
+    $shortSub = & (Get-CmdExe) /c "for %A in (`"$longSub`") do @echo %~sA"
     if ($shortSub -and ($shortSub -match '~')) {
         Note-Exit 'KNOWN-GAP: 8.3 short-name vs subtree deny' `
             (Invoke-Sandbox @('-W', $ws) @('read', (Join-Path $shortSub 'f.txt'))) '(0 = bypass)'
@@ -77,7 +77,7 @@ if ($deepOk -and $deep.Length -gt 260) {
     # declared -r is honored and an undeclared access is still denied. This proves
     # long-path-aware API calls are supported end to end. Requires the system
     # policy LongPathsEnabled=1; skipped otherwise or if the binary is absent.
-    $probeLpa = Join-Path (Split-Path $Probe -Parent) 'probe_lpa.exe'
+    $probeLpa = Join-Path (Split-Path (Get-Probe) -Parent) 'probe_lpa.exe'
     $lpEnabled = 0
     try {
         $lpEnabled = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
@@ -140,7 +140,7 @@ $outside = Join-Path $ws 'outside'
 New-Item -ItemType Directory -Force -Path $inside, $outside | Out-Null
 'orig' | Set-Content (Join-Path $outside 'o.txt')
 $esc = Join-Path $inside 'esc'
-cmd /c mklink /J "$esc" "$outside" *> $null
+& (Get-CmdExe) /c mklink /J "$esc" "$outside" *> $null
 if (Test-Path $esc) {
     # Control: a direct write to the outside target (in neither -r nor -w) is denied.
     Assert-Exit 'direct write to out-of-scope target denied' 10 `
