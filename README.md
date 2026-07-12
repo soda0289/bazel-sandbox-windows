@@ -142,6 +142,7 @@ BazelSandbox [option...] -- command [arg...]
   -n         block all network access (no loopback either)
   -D <file>  write launcher diagnostics to a file
   --trace <file>  write a per-access report (from the sandbox DLL) to a file
+  -S <file>  write child resource-usage statistics (protobuf) to a file
   @FILE      read newline-separated arguments from FILE (until the first --)
   --         command to run in the sandbox, followed by its arguments
 ```
@@ -219,6 +220,19 @@ be used together.
   every process in the tree appending to one file, lines from concurrent
   grandchildren can interleave; treat `--trace` as a debugging aid, not a
   machine-parsed audit log.
+
+### Resource statistics: `-S`
+
+`-S <file>` writes the child's resource usage to `<file>` as a
+`tools.protos.ExecutionStatistics` protobuf — the same message and encoding that
+Bazel's `linux-sandbox` produces, so Bazel's `WindowsSandboxedSpawn` can consume
+it via `setResourceUsageFromProto` (feeding `--execution_log`, the JSON profile,
+and BEP). The numbers come from the job object, which accounts for the whole
+process tree: user/kernel CPU time (`TotalUserTime`/`TotalKernelTime`), peak
+memory (`PeakJobMemoryUsed`, reported as KiB to match Linux `ru_maxrss`), and
+I/O read/write operation counts. Fields with no Windows analog (e.g. involuntary
+context switches) are omitted. The file is the raw serialized message (no length
+framing), matching `linux-sandbox`.
 
 ### Examples
 

@@ -105,6 +105,24 @@ Assert-True '--trace wrote a non-empty access report' `
 $traceText = [System.Text.Encoding]::Unicode.GetString([System.IO.File]::ReadAllBytes($traceFile))
 Assert-True '--trace report references the read file' ($traceText -match 'a\.txt')
 
+# -S writes child resource-usage statistics as a tools.protos.ExecutionStatistics
+# protobuf (linux-sandbox parity). Enforcement is unchanged (allowed read exits 0),
+# and the file must be a well-formed message: it starts with the length-delimited
+# resource_usage field (tag 0x0A) whose declared length matches the payload.
+$ws = New-Workspace
+$statsFile = Join-Path $ws 'stats.pb'
+$aTxt      = Join-Path $ws 'a.txt'
+Assert-Exit '-S: allowed read still succeeds' 0 `
+    (Invoke-Sandbox @('-W', $ws, '-r', $ws, '-S', $statsFile) @('read', $aTxt))
+Assert-True '-S wrote a non-empty stats file' `
+    ((Test-Path $statsFile) -and (Get-Item $statsFile).Length -gt 0)
+$statsBytes = [System.IO.File]::ReadAllBytes($statsFile)
+Assert-True '-S stats start with resource_usage field tag (0x0A)' `
+    ($statsBytes.Length -ge 2 -and $statsBytes[0] -eq 0x0A)
+# The nested-message length is a single-byte varint here; verify framing is exact.
+Assert-True '-S stats nested length matches payload size' `
+    ($statsBytes[1] -lt 0x80 -and ($statsBytes.Length - 2) -eq $statsBytes[1])
+
 # Cross-bitness guard. The x64 hook DLL cannot be injected into a non-x64 child,
 # so the launcher refuses such a target UP FRONT (exit 3) - it reads the target's
 # PE machine type and never spawns it, so there is no injection and no blocking

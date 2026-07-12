@@ -42,6 +42,9 @@ struct Options {
     std::wstring debugPath;
     // --trace <file>: write a per-access report (from the injected DLL) here.
     std::wstring tracePath;
+    // -S <file>: write child resource-usage statistics (ExecutionStatistics
+    // protobuf) here, for linux-sandbox parity.
+    std::wstring statsPath;
     // Network sandboxing (Bazel linux-sandbox parity): 0 = allow (default),
     // 1 = loopback only (-N), 2 = no network at all (-n).
     int networkPolicy = 0;
@@ -83,6 +86,7 @@ void PrintUsage(int exitCode) {
         L"  -n         block all network access (no loopback either)\n"
         L"  -D <file>  write launcher diagnostics to a file\n"
         L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
+        L"  -S <file>  write child resource-usage statistics (protobuf) to a file\n"
         L"  @FILE      read newline-separated arguments from FILE\n"
         L"  --         command to run in the sandbox, followed by arguments\n");
     exit(exitCode);
@@ -161,6 +165,8 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 o.debugPath = ToAbsolute(next());
             } else if (name == L"-trace") {
                 o.tracePath = ToAbsolute(next());
+            } else if (name == L"S") {
+                o.statsPath = ToAbsolute(next());
             } else {
                 Die(L"unknown option: " + arg);
             }
@@ -232,6 +238,81 @@ std::wstring BuildCommandLine(const std::vector<std::wstring>& args) {
         EscapeArg(args[i], cmd);
     }
     return cmd;
+}
+
+// Encode a uint64 as a protobuf base-128 varint.
+void PutVarint(std::string& out, uint64_t v) {
+    while (v >= 0x80) {
+        out.push_back(static_cast<char>((v & 0x7F) | 0x80));
+        v >>= 7;
+    }
+    out.push_back(static_cast<char>(v));
+}
+
+// Append a proto3 int64 field (wire type 0) if the value is non-zero. Only used
+// with field numbers <= 15, so the tag always fits in a single byte.
+void PutInt64Field(std::string& out, uint32_t fieldNum, uint64_t value) {
+    if (value == 0) return;  // proto3 omits default (zero) values
+    out.push_back(static_cast<char>((fieldNum << 3) | 0));  // tag: varint field
+    PutVarint(out, value);
+}
+
+// Write a tools.protos.ExecutionStatistics protobuf describing the child's
+// resource usage, mirroring what linux-sandbox writes with -S. The numbers come
+// from the job object, which accounts for the whole (possibly multi-process)
+// tree and retains the totals after the processes have exited. Bazel parses the
+// whole file as a single message (no length framing), so we write raw bytes.
+void WriteStats(const std::wstring& statsPath, HANDLE hJob) {
+    if (statsPath.empty() || hJob == nullptr) return;
+
+    uint64_t utimeSec = 0, utimeUsec = 0, stimeSec = 0, stimeUsec = 0;
+    uint64_t maxrssKb = 0, inBlock = 0, ouBlock = 0;
+
+    JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION acct{};
+    if (QueryInformationJobObject(hJob, JobObjectBasicAndIoAccountingInformation,
+                                  &acct, sizeof(acct), nullptr)) {
+        // Times are in 100-ns units; split into whole seconds + microseconds.
+        uint64_t user100ns = static_cast<uint64_t>(acct.BasicInfo.TotalUserTime.QuadPart);
+        uint64_t kern100ns = static_cast<uint64_t>(acct.BasicInfo.TotalKernelTime.QuadPart);
+        utimeSec = user100ns / 10000000ULL;
+        utimeUsec = (user100ns % 10000000ULL) / 10ULL;
+        stimeSec = kern100ns / 10000000ULL;
+        stimeUsec = (kern100ns % 10000000ULL) / 10ULL;
+        inBlock = acct.IoInfo.ReadOperationCount;
+        ouBlock = acct.IoInfo.WriteOperationCount;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION ext{};
+    if (QueryInformationJobObject(hJob, JobObjectExtendedLimitInformation,
+                                  &ext, sizeof(ext), nullptr)) {
+        // Bazel treats maxrss as kilobytes on non-Darwin platforms (matching
+        // Linux getrusage); PeakJobMemoryUsed is in bytes.
+        maxrssKb = static_cast<uint64_t>(ext.PeakJobMemoryUsed) / 1024ULL;
+    }
+
+    // ResourceUsage message (field numbers from execution_statistics.proto).
+    std::string ru;
+    PutInt64Field(ru, 1, utimeSec);   // utime_sec
+    PutInt64Field(ru, 2, utimeUsec);  // utime_usec
+    PutInt64Field(ru, 3, stimeSec);   // stime_sec
+    PutInt64Field(ru, 4, stimeUsec);  // stime_usec
+    PutInt64Field(ru, 5, maxrssKb);   // maxrss (KiB)
+    PutInt64Field(ru, 12, inBlock);   // inblock
+    PutInt64Field(ru, 13, ouBlock);   // oublock
+
+    // ExecutionStatistics { ResourceUsage resource_usage = 1; }
+    // Always emit the length-delimited field so hasResourceUsage() is true.
+    std::string msg;
+    msg.push_back(static_cast<char>((1 << 3) | 2));  // tag: field 1, wire type 2
+    PutVarint(msg, ru.size());
+    msg.append(ru);
+
+    HANDLE h = CreateFileW(statsPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(h, msg.data(), static_cast<DWORD>(msg.size()), &written, nullptr);
+    CloseHandle(h);
 }
 
 std::string ToAnsi(const std::wstring& w) {
@@ -600,6 +681,9 @@ int wmain(int argc, wchar_t** argv) {
         GetExitCodeProcess(hProcess, &exitCode);
     }
     dline(L"child exit code: " + std::to_wstring(exitCode));
+
+    // Collect resource-usage statistics from the job before we close it.
+    WriteStats(o.statsPath, hJob);
 
     if (hStdOutFile) CloseHandle(hStdOutFile);
     if (hStdErrFile) CloseHandle(hStdErrFile);
