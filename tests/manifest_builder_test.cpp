@@ -129,6 +129,36 @@ void TestFlagsAffectBlob() {
     CHECK(a != b);
 }
 
+// A report path must be serialized (growing the blob) and, critically, must keep
+// the whole blob 4-byte aligned for ANY path length -- otherwise the manifest
+// tree that follows shifts off alignment and its child offsets collide with the
+// low bits the DLL reuses as bucket chain flags (a silent tree-corruption bug).
+// Exercising all four length residues would trip the SerializeNode assert if the
+// report field were not padded.
+void TestReportPath() {
+    std::vector<uint8_t> bare;
+    {
+        ManifestBuilder mb = MakeBuilder();
+        mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
+        mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll);
+        bare = mb.Build(10);
+    }
+    CHECK(bare.size() % 4 == 0);
+
+    for (int extra = 0; extra < 4; ++extra) {
+        std::wstring path = L"C:\\tmp\\trace";
+        path.append(extra, L'x');
+        path += L".txt";
+        ManifestBuilder mb = MakeBuilder();
+        mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
+        CHECK(mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll));
+        mb.SetReportPath(path);
+        std::vector<uint8_t> blob = mb.Build(10);
+        CHECK(blob.size() % 4 == 0);      // alignment preserved for any length
+        CHECK(blob.size() > bare.size()); // report path is actually serialized
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -137,6 +167,7 @@ int main() {
     TestDeterministic();
     TestScopeGrowsTree();
     TestFlagsAffectBlob();
+    TestReportPath();
 
     if (g_failures == 0) {
         wprintf(L"manifest_builder_test: all checks passed\n");

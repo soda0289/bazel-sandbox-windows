@@ -38,7 +38,10 @@ struct Options {
     std::vector<std::wstring> readonlyFiles;
     std::vector<std::wstring> writableFiles;
     std::vector<std::wstring> blockedFiles;
-    bool debug = false;
+    // -D <file>: write launcher diagnostics to this file (linux-sandbox parity).
+    std::wstring debugPath;
+    // --trace <file>: write a per-access report (from the injected DLL) here.
+    std::wstring tracePath;
     // Network sandboxing (Bazel linux-sandbox parity): 0 = allow (default),
     // 1 = loopback only (-N), 2 = no network at all (-n).
     int networkPolicy = 0;
@@ -78,7 +81,8 @@ void PrintUsage(int exitCode) {
         L"  -b <path>  make a file/directory inaccessible in the sandbox\n"
         L"  -N         allow only loopback network access (block external)\n"
         L"  -n         block all network access (no loopback either)\n"
-        L"  -D         print debug messages\n"
+        L"  -D <file>  write launcher diagnostics to a file\n"
+        L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
         L"  @FILE      read newline-separated arguments from FILE\n"
         L"  --         command to run in the sandbox, followed by arguments\n");
     exit(exitCode);
@@ -154,7 +158,9 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 if (o.networkPolicy == 1) Die(L"-N and -n are mutually exclusive");
                 o.networkPolicy = 2;
             } else if (name == L"D") {
-                o.debug = true;
+                o.debugPath = ToAbsolute(next());
+            } else if (name == L"-trace") {
+                o.tracePath = ToAbsolute(next());
             } else {
                 Die(L"unknown option: " + arg);
             }
@@ -324,7 +330,38 @@ int wmain(int argc, wchar_t** argv) {
     std::vector<std::wstring> rawArgs(argv + 1, argv + argc);
     Options o = ParseOptions(std::move(rawArgs));
 
+    // -D <file>: launcher-side diagnostics (Bazel linux-sandbox parity). This
+    // logs what *the sandbox wrapper* did (options, resolved paths, the manifest
+    // policy scopes, injection status, exit). It is distinct from --trace, which
+    // logs what the *sandboxed process* touched. Buffered writes are flushed by
+    // the CRT on any exit()/return-from-main path (incl. Die()).
+    FILE* dbgFp = nullptr;
+    if (!o.debugPath.empty()) {
+        dbgFp = _wfopen(o.debugPath.c_str(), L"w, ccs=UTF-8");
+        if (dbgFp == nullptr) Die(L"cannot open debug file: " + o.debugPath);
+    }
+    auto dline = [&](const std::wstring& s) {
+        if (dbgFp) { fputws(s.c_str(), dbgFp); fputwc(L'\n', dbgFp); }
+    };
+    // Scope-policy line (kind = na/ro/rw); mirrors the manifest we build.
+    auto dbg = [&](const wchar_t* kind, const std::wstring& p) {
+        if (dbgFp) fwprintf(dbgFp, L"scope %s: %s\n", kind, p.c_str());
+    };
+
+    dline(L"BazelSandbox debug log");
+    dline(L"working dir: " + o.workingDir);
+    if (o.timeoutSecs != kInfiniteTime)
+        dline(L"timeout (s): " + std::to_wstring(o.timeoutSecs));
+    if (!o.stdoutPath.empty()) dline(L"stdout -> " + o.stdoutPath);
+    if (!o.stderrPath.empty()) dline(L"stderr -> " + o.stderrPath);
+    dline(L"network policy: " +
+          std::wstring(o.networkPolicy == 0   ? L"allow"
+                       : o.networkPolicy == 1 ? L"loopback-only"
+                                              : L"blocked"));
+    if (!o.tracePath.empty()) dline(L"trace -> " + o.tracePath);
+
     const std::wstring toolPath = ToAbsolute(o.args[0]);
+    dline(L"tool: " + toolPath);
 
     // Refuse a target we cannot sandbox BEFORE spawning it. The injected hook
     // DLL is x64, so a non-x64 target (32-bit, or native ARM64) could not load
@@ -337,6 +374,7 @@ int wmain(int argc, wchar_t** argv) {
     USHORT toolMachine = 0;
     if (PeMachine(toolPath, &toolMachine) &&
         toolMachine != IMAGE_FILE_MACHINE_AMD64) {
+        dline(L"refused: non-x64 target");
         fwprintf(stderr,
                  L"BazelSandbox: refusing to run non-x64 target '%s' (machine "
                  L"0x%04X). Only x64 children can be sandboxed by the x64 hook "
@@ -351,6 +389,7 @@ int wmain(int argc, wchar_t** argv) {
         Die(L"cannot find DetoursServices.dll next to BazelSandbox.exe");
     }
     const std::string dllAnsi = ToAnsi(dllPath);
+    dline(L"dll: " + dllPath);
 
     // Build the file access manifest (CreateManifest in SandboxedProcess.cs).
     using namespace bazelsandbox;
@@ -358,11 +397,21 @@ int wmain(int argc, wchar_t** argv) {
                      Flag_MonitorChildProcesses | Flag_MonitorZwCreateOpenQueryFile |
                      Flag_IgnoreReparsePoints | Flag_IgnoreFullReparsePointResolving;
 
-    ManifestBuilder mb(flags, /*extraFlags*/ 0, dllAnsi, dllAnsi);
+    // --trace <file>: turn on the DLL's report channel (otherwise fully inert).
+    // We report both expected and unexpected accesses so the trace is a complete
+    // record. The DLL opens the report path itself (OPEN_ALWAYS, append) and
+    // propagates it to every child, so no pipe or reader thread is needed. We
+    // truncate the file up front so each run starts fresh (the DLL only appends).
+    if (!o.tracePath.empty()) {
+        flags |= Flag_ReportFileAccesses | Flag_ReportUnexpectedFileAccesses;
+        HANDLE ht = CreateFileW(o.tracePath.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                                nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (ht == INVALID_HANDLE_VALUE) Die(L"cannot open trace file: " + o.tracePath);
+        CloseHandle(ht);
+    }
 
-    auto dbg = [&](const wchar_t* kind, const std::wstring& p) {
-        if (o.debug) fwprintf(stderr, L"%s: %s\n", kind, p.c_str());
-    };
+    ManifestBuilder mb(flags, /*extraFlags*/ 0, dllAnsi, dllAnsi);
+    mb.SetReportPath(o.tracePath);
 
     // Whole file system read-only.
     mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
@@ -389,6 +438,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     std::vector<uint8_t> manifest = mb.Build(/*injectionTimeoutMins*/ 10);
+    dline(L"manifest bytes: " + std::to_wstring(manifest.size()));
 
     // DetoursServices.dll does not read the raw manifest directly. It reads a
     // "payload wrapper" (see DetouredProcessInjector::Init) laid out as:
@@ -431,10 +481,8 @@ int wmain(int argc, wchar_t** argv) {
     // tree automatically. CODESYNC: kNetworkEnvVar in src/network_detours.h.
     if (o.networkPolicy == 1) {
         SetEnvironmentVariableW(L"BAZEL_SANDBOX_NETWORK", L"loopback");
-        dbg(L"net", L"loopback-only");
     } else if (o.networkPolicy == 2) {
         SetEnvironmentVariableW(L"BAZEL_SANDBOX_NETWORK", L"block");
-        dbg(L"net", L"blocked");
     }
 
     // Standard handles (with optional redirection).
@@ -496,6 +544,7 @@ int wmain(int argc, wchar_t** argv) {
         /*pfCreateProcessW*/ nullptr);
 
     if (!created) {
+        dline(L"CreateProcess failed (gle=" + std::to_wstring(GetLastError()) + L")");
         fwprintf(stderr,
                  L"BazelSandbox: DetourCreateProcessWithDllEx failed (gle=%lu)\n",
                  GetLastError());
@@ -503,11 +552,13 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     HANDLE hProcess = pi.hProcess, hThread = pi.hThread;
+    dline(L"child started, pid " + std::to_wstring(pi.dwProcessId));
 
     // Attach the file-access manifest so DetoursServices.dll finds it (via
     // DetourFindPayload under kManifestGuid) when its DllMain runs.
     if (!DetourCopyPayloadToProcess(hProcess, kManifestGuid, payload.data(),
                                     static_cast<DWORD>(payload.size()))) {
+        dline(L"payload copy failed (gle=" + std::to_wstring(GetLastError()) + L")");
         fwprintf(stderr,
                  L"BazelSandbox: DetourCopyPayloadToProcess failed (gle=%lu)\n",
                  GetLastError());
@@ -531,6 +582,7 @@ int wmain(int argc, wchar_t** argv) {
                        : o.timeoutSecs * 1000;
     DWORD wr = WaitForSingleObject(hProcess, waitMs);
     if (wr == WAIT_TIMEOUT) {
+        dline(L"timeout after " + std::to_wstring(o.timeoutSecs) + L" s");
         fwprintf(stderr, L"BazelSandbox: timeout after %u s, terminating\n",
                  o.timeoutSecs);
         if (o.killDelaySecs != kInfiniteTime) {
@@ -547,6 +599,7 @@ int wmain(int argc, wchar_t** argv) {
     } else {
         GetExitCodeProcess(hProcess, &exitCode);
     }
+    dline(L"child exit code: " + std::to_wstring(exitCode));
 
     if (hStdOutFile) CloseHandle(hStdOutFile);
     if (hStdErrFile) CloseHandle(hStdErrFile);
@@ -557,5 +610,6 @@ int wmain(int argc, wchar_t** argv) {
     if (hProcess) CloseHandle(hProcess);
     if (hJob) CloseHandle(hJob);
 
+    if (dbgFp) fclose(dbgFp);
     return static_cast<int>(exitCode);
 }

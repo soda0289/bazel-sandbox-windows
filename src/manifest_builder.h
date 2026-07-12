@@ -68,6 +68,15 @@ public:
     // mask/values follow (parentPolicy & mask) | values semantics.
     void AddRootScope(uint32_t mask, uint32_t values);
 
+    // Enables file-access reporting. When set, the serialized manifest carries a
+    // report block naming this file; the injected DLL opens it (OPEN_ALWAYS,
+    // append) and writes a BuildXL-format report line for every intercepted
+    // access. An empty path (the default) emits a size-0 report block, i.e. no
+    // reporting (pure enforcement). CODESYNC: ManifestReport in DataTypes.h; the
+    // caller must also set Flag_ReportFileAccesses / Flag_ReportUnexpectedFileAccesses
+    // for lines to actually be emitted.
+    void SetReportPath(std::wstring reportPath);
+
     // Applies a cone scope policy at the given absolute path (and its subtree).
     // The path is canonicalized with GetFullPathNameW to match the DLL's runtime
     // canonicalization, then split into fragments the same way the DLL does.
@@ -105,6 +114,7 @@ private:
     uint32_t extraFlags_;
     std::string dllX86_;
     std::string dllX64_;
+    std::wstring reportPath_;
     Node root_;
 };
 

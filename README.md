@@ -61,9 +61,12 @@ Two binaries are produced:
 * **DeviceMap** — Microsoft-internal-only NT DOS-device-map path virtualization
   (gated behind `FEATURE_DEVICE_MAP`, left undefined). `DeviceMap.cpp` compiles
   to an empty translation unit.
-* **Reporting / report pipe** — `BazelSandbox` runs with reporting off; the
-  sandbox purely *enforces* (denies unexpected accesses) rather than reporting
-  them back over a pipe.
+* **Reporting / report pipe** — by default `BazelSandbox` runs with reporting
+  off; the sandbox purely *enforces* (denies unexpected accesses). Reporting can
+  be turned on for debugging with `--trace <file>` (see [Debugging: `-D` and
+  `--trace`](#debugging--d-and---trace)); we use the DLL's report-*path* mode
+  (the DLL opens the file itself) rather than BuildXL's report *pipe*, so there
+  is still no report pipe, injector pipe, or device map.
 * **Timestamp faking** — BuildXL's engine can normalize input-file timestamps to
   a well-known value (`NormalizeReadTimestamps`, exercised by its `Timestamps`
   DetoursTest) so build outputs are deterministic. The launcher does **not** set
@@ -83,6 +86,11 @@ For a detailed map of how the vendored engine is wired together — the
 bootstrap↔hooks contract, the policy/report facade, and exactly which
 manifest flags and policy bits `BazelSandbox` actually uses — see
 [`docs/vendor-architecture.md`](docs/vendor-architecture.md).
+
+For how this project relates to the original "Sandboxing on Windows" GSoC
+proposal and to Bazel's actual `windows-sandbox` CLI contract — including a
+feature parity table and an analysis of `-M`/`-m` bind mounts — see
+[`docs/gsoc-proposal-comparison.md`](docs/gsoc-proposal-comparison.md).
 
 ## Building
 
@@ -132,7 +140,8 @@ BazelSandbox [option...] -- command [arg...]
   -b <path>  make a file/directory inaccessible in the sandbox
   -N         allow only loopback network access (block external)
   -n         block all network access (no loopback either)
-  -D         print debug messages
+  -D <file>  write launcher diagnostics to a file
+  --trace <file>  write a per-access report (from the sandbox DLL) to a file
   @FILE      read newline-separated arguments from FILE (until the first --)
   --         command to run in the sandbox, followed by its arguments
 ```
@@ -175,6 +184,41 @@ network accidentally. Because `-N` must let sockets be created for loopback, its
 external block lives at the Winsock connect layer rather than at AFD; a
 determined process could still craft raw AFD IOCTLs. For a hostile-code-grade
 boundary, a kernel-enforced mechanism (WFP, AppContainer) would be required.
+
+### Debugging: `-D` and `--trace`
+
+Two optional flags help diagnose sandbox problems. They are independent and can
+be used together.
+
+* **`-D <file>`** writes **launcher-side diagnostics** — what *the sandbox
+  wrapper* did: the resolved working directory, tool, and DLL paths, the network
+  policy, each manifest policy scope (`scope na/ro/rw: <path>`), the manifest
+  size, the child PID, and the child's exit code (or a timeout/failure note).
+  This mirrors Bazel's `linux-sandbox -D <file>` (which likewise records the
+  sandbox's own setup). It does **not** record the child's file accesses.
+
+* **`--trace <file>`** writes a **per-access report** — what the *sandboxed
+  process* (and every descendant) touched. This turns on the vendored engine's
+  reporting channel (otherwise fully inert): the launcher sets the report flags
+  and names the file in the manifest, and the injected DLL opens it and appends
+  one line per intercepted operation. It is the fastest way to answer "why was
+  this access denied?". Enabling it does **not** change enforcement decisions —
+  it only adds logging.
+
+  The launcher truncates the trace file at startup; the DLL then appends. Output
+  is BuildXL's native report-line format, encoded as **UTF-16LE** (no BOM). Each
+  file-access line looks like:
+
+  ```
+  <type>,<Operation>:<pid>|<id>|<corrId>|<access>|<status>|<explicit>|<error>|<rawError>|<usn>|<desiredAccess>|<shareMode>|<creationDisposition>|<flagsAndAttributes>|<openedAttrs>|<pathId>|<path>|<filter>
+  ```
+
+  The most useful fields are `Operation` (e.g. `CreateFile`,
+  `GetFileAttributes`), `access` (the requested access class), `status`
+  (`1`=allowed, `2`=denied), and the final `path`. Because reports arrive from
+  every process in the tree appending to one file, lines from concurrent
+  grandchildren can interleave; treat `--trace` as a debugging aid, not a
+  machine-parsed audit log.
 
 ### Examples
 
@@ -360,6 +404,7 @@ defs.bzl                  shared build constants (Windows target defines)
 third_party/detours/      BUILD file applied to the fetched upstream Detours
 docs/
   vendor-architecture.md  vendored-engine coupling map + policy/manifest subset
+  gsoc-proposal-comparison.md  parity vs. GSoC proposal + Bazel CLI contract
 src/
   main.cpp                launcher (options, manifest, Detours injection, waiting)
   manifest_builder.{h,cpp} native FileAccessManifest blob + path hash-tree

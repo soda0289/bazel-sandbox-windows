@@ -85,6 +85,26 @@ $rc = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 Assert-Exit 'std handles valid under Bazel-style launch' 0 $rc
 
+# -D / --trace debugging aids. -D writes launcher diagnostics (UTF-8); --trace
+# turns on the DLL's report channel and writes a per-access report. Neither
+# changes enforcement: the allowed read still succeeds (exit 0).
+$ws = New-Workspace
+$dbgFile   = Join-Path $ws 'debug.log'
+$traceFile = Join-Path $ws 'trace.txt'
+$aTxt      = Join-Path $ws 'a.txt'
+Assert-Exit '-D/--trace: allowed read still succeeds' 0 `
+    (Invoke-Sandbox @('-W', $ws, '-r', $ws, '-D', $dbgFile, '--trace', $traceFile) @('read', $aTxt))
+Assert-True '-D wrote a non-empty debug log' `
+    ((Test-Path $dbgFile) -and (Get-Item $dbgFile).Length -gt 0)
+Assert-True '-D debug log records the child exit code' `
+    ((Get-Content $dbgFile -Raw) -match 'child exit code: 0')
+Assert-True '--trace wrote a non-empty access report' `
+    ((Test-Path $traceFile) -and (Get-Item $traceFile).Length -gt 0)
+# The report is UTF-16LE (no BOM); decode explicitly and confirm it recorded the
+# access to the file we read.
+$traceText = [System.Text.Encoding]::Unicode.GetString([System.IO.File]::ReadAllBytes($traceFile))
+Assert-True '--trace report references the read file' ($traceText -match 'a\.txt')
+
 # Cross-bitness guard. The x64 hook DLL cannot be injected into a non-x64 child,
 # so the launcher refuses such a target UP FRONT (exit 3) - it reads the target's
 # PE machine type and never spawns it, so there is no injection and no blocking

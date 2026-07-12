@@ -189,17 +189,35 @@ Policy bits we **never** use: `ReportAccessIfExistent`, `ReportUsnAfterOpen`,
 `AllowRealInputTimestamps`, `OverrideAllowWriteForExistingFiles`,
 `TreatDirectorySymlinkAsDirectory`, `EnableFullReparsePointParsing`.
 
-### No reporting channel
-Both report flags are **off** and the manifest emits a **size-0 report block**
-(`manifest_builder.cpp`), with **no** report pipe, injector pipe, or device map
-(`main.cpp`: "all no handle"). Consequently:
+### Reporting channel: off by default, opt-in via `--trace`
+By default both report flags are **off** and the manifest emits a **size-0
+report block** (`manifest_builder.cpp`), with **no** report pipe, injector pipe,
+or device map (`main.cpp`: "all no handle"). In that default configuration:
 
 - The sandbox is **pure API-level enforcement** — a denied access returns
   `ERROR_ACCESS_DENIED` (etc.) to the child. There is **no telemetry** back to
   the launcher; the launcher only observes the child's exit code.
-- `SendReport.cpp` and the 66 `ReportIfNeeded` call sites early-return / no-op in
-  our configuration (they exist to feed BuildXL's dynamic-dependency discovery,
-  which we do not use).
+- `SendReport.cpp` and the 66 `ReportIfNeeded` call sites early-return / no-op
+  (they exist to feed BuildXL's dynamic-dependency discovery, which we do not
+  use for scheduling).
+
+The launcher's `--trace <file>` flag turns this channel on for **debugging
+only** (it never changes enforcement decisions). When set, `main.cpp`:
+1. adds `Flag_ReportFileAccesses | Flag_ReportUnexpectedFileAccesses`, and
+2. calls `ManifestBuilder::SetReportPath`, which emits a report-**path** block
+   (a NUL-terminated `WCHAR` path, **padded to a 4-byte multiple** so the
+   manifest tree that follows stays aligned — an unpadded odd-length path shifts
+   the tree and makes serialized child offsets collide with the DLL's chain-flag
+   low bits; `manifest_builder_test.cpp` pins this).
+
+We use the DLL's report-**path** mode (`ManifestReport::IsReportHandle()` reads
+false → `ParseFileAccessManifest` calls `CreateFileW(ReportPath, …, OPEN_ALWAYS)`
+and appends), **not** the report-**pipe** mode. So `--trace` needs no pipe,
+reader thread, or payload handle slot; the report path is inherited by every
+child, which each open and append to it. This re-activates `SendReport.cpp` /
+`ReportIfNeeded`, but nothing else (process-data/USN/detouring-status reports
+stay gated behind flags we still don't set, so the trace is file-access lines
+only). See README → *Debugging: `-D` and `--trace`*.
 
 ### Consequences (dead / inert code paths for us)
 Because those flags/policies are off, large parts of the engine are compiled but
@@ -210,7 +228,8 @@ never meaningfully executed in our configuration:
 - Full reparse-point resolution + `ResolvedPathCache` — gated behind
   `IgnoreFullReparsePointResolving` (which we set), so the resolver is bypassed.
 - USN reporting, directory-enumeration reporting, process-arg reporting.
-- The entire reporting subsystem (`SendReport`, most of `DebuggingHelpers`).
+- The reporting subsystem (`SendReport`, most of `DebuggingHelpers`) — inert by
+  default; `--trace` re-activates the file-access report path (see above).
 - `DeviceMap` (stubs), `SubstituteProcessExecution` (wire-format only).
 
 ## 6. Guidance for future shrinking / extraction

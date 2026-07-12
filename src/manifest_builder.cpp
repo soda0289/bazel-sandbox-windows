@@ -125,6 +125,10 @@ ManifestBuilder::ManifestBuilder(uint32_t flags,
       dllX86_(std::move(dllX86Ansi)),
       dllX64_(std::move(dllX64Ansi)) {}
 
+void ManifestBuilder::SetReportPath(std::wstring reportPath) {
+    reportPath_ = std::move(reportPath);
+}
+
 void ManifestBuilder::AddRootScope(uint32_t mask, uint32_t values) {
     // ApplyConeFileAccess on the root node.
     root_.coneMask = mask & root_.coneMask;
@@ -277,8 +281,25 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
     PutU32(out, extraFlags_);
     // 8. PipId (int64)
     PutU64(out, 0);
-    // 9. Report block: size 0 (no report)
-    PutU32(out, 0);
+    // 9. Report block. Empty path => size 0 (no report block, pure enforcement).
+    // Otherwise a report *path* block: Size = byte length of the field holding a
+    // NUL-terminated WCHAR path, padded up to a 4-byte multiple. Padding matters:
+    // every following block (and the whole manifest tree) must stay 4-aligned, or
+    // serialized child offsets pick up low bits that the DLL reuses as bucket
+    // chain flags (kChainStart/kChainContinuation) -> tree corruption. The padded
+    // size is always even, so the DLL's IsReportHandle() low-bit test reads 0 and
+    // it opens the path directly. CODESYNC: ManifestReport in DataTypes.h.
+    if (reportPath_.empty()) {
+        PutU32(out, 0);
+    } else {
+        const uint32_t rawBytes =
+            static_cast<uint32_t>((reportPath_.size() + 1) * sizeof(wchar_t));
+        const uint32_t paddedBytes = (rawBytes + 3u) & ~3u;
+        PutU32(out, paddedBytes);
+        const auto* pb = reinterpret_cast<const uint8_t*>(reportPath_.c_str());
+        out.insert(out.end(), pb, pb + rawBytes);
+        out.insert(out.end(), paddedBytes - rawBytes, 0u);
+    }
     // 10. Dll block
     {
         uint32_t l0 = PaddedAnsiLength(dllX86_);
