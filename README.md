@@ -1,13 +1,33 @@
 # bazel-sandbox-windows
 
-A standalone Windows process sandbox that reproduces BuildXL's `BazelSandbox`
-(`Public/Src/BazelSandbox/Program.cs`) **without** the BuildXL managed/C# stack.
+A standalone Windows process sandbox that reproduces the `BazelSandbox`
+launcher (`Public/Src/BazelSandbox/Program.cs`) **without** the BuildXL
+managed/C# stack.
 
 It intercepts Windows file-system APIs with [Detours](https://github.com/microsoft/Detours)
 to enforce a per-process file-access policy: it can make the whole file system
 read-only, block a working directory, and selectively grant read / read-write /
 no access to individual files and directories. This is exactly what a build
 system such as Bazel needs to sandbox build actions on Windows.
+
+### Origin
+
+`BazelSandbox` is **not** part of Microsoft's BuildXL. It was written by
+**Rong Jie Loo** (`rongjiecomputer`) during **Google Summer of Code 2018** as a
+thin launcher on top of BuildXL's existing `DetoursServices` engine, and lives
+in a fork of BuildXL:
+[rongjiecomputer/BuildXL](https://github.com/rongjiecomputer/BuildXL). The goal
+was to give Bazel a `windows-sandbox` (invoked via
+`--experimental_windows_sandbox_path`), analogous to the existing
+`linux-sandbox`. The design and rationale are set out in the GSoC proposal,
+["Sandboxing on Windows"](https://docs.google.com/document/d/1ygpKUM_DwQDH9NX31p1MJlLGaYRzImCFD4F0rdvMqZk/edit).
+
+This project takes that idea and re-grounds it on **stock, upstream components**:
+it keeps the `DetoursServices` enforcement engine (which *does* originate in
+Microsoft's [microsoft/BuildXL](https://github.com/microsoft/BuildXL)) but builds
+it against public upstream Detours and drops all managed code. For a detailed
+comparison to the GSoC proposal and to Bazel's actual `windows-sandbox` CLI
+contract, see [`docs/gsoc-proposal-comparison.md`](docs/gsoc-proposal-comparison.md).
 
 ## How it works
 
@@ -91,6 +111,11 @@ For how this project relates to the original "Sandboxing on Windows" GSoC
 proposal and to Bazel's actual `windows-sandbox` CLI contract — including a
 feature parity table and an analysis of `-M`/`-m` bind mounts — see
 [`docs/gsoc-proposal-comparison.md`](docs/gsoc-proposal-comparison.md).
+
+For a flag-by-flag comparison with Bazel's `linux-sandbox` — which flags are
+implemented, which are intentionally not applicable on Windows, and which are
+worth adding (notably `-C` resource limits) — see
+[`docs/linux-sandbox-comparison.md`](docs/linux-sandbox-comparison.md).
 
 ## Building
 
@@ -419,6 +444,7 @@ third_party/detours/      BUILD file applied to the fetched upstream Detours
 docs/
   vendor-architecture.md  vendored-engine coupling map + policy/manifest subset
   gsoc-proposal-comparison.md  parity vs. GSoC proposal + Bazel CLI contract
+  linux-sandbox-comparison.md  flag-by-flag comparison with linux-sandbox
 src/
   main.cpp                launcher (options, manifest, Detours injection, waiting)
   manifest_builder.{h,cpp} native FileAccessManifest blob + path hash-tree
