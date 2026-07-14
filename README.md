@@ -155,7 +155,7 @@ Two environment notes are baked into `.bazelrc`:
 ```
 BazelSandbox [option...] -- command [arg...]
 
-  -W <dir>   working directory (default: current directory), blocked by default
+  -W <dir>   working directory (default: current directory)
   -T <secs>  timeout after which the child is terminated
   -t <secs>  grace period before force kill after timeout
   -l <file>  redirect stdout to a file
@@ -165,6 +165,8 @@ BazelSandbox [option...] -- command [arg...]
   -b <path>  make a file/directory inaccessible in the sandbox
   -N         allow only loopback network access (block external)
   -n         block all network access (no loopback either)
+  -H         hermetic reads: deny the working dir by default (default: reads
+             unconfined like the default linux-sandbox; writes still need -w)
   -D <file>  write launcher diagnostics to a file
   --trace <file>  write a per-access report (from the sandbox DLL) to a file
   -S <file>  write child resource-usage statistics (protobuf) to a file
@@ -174,14 +176,21 @@ BazelSandbox [option...] -- command [arg...]
 
 ### Policy model
 
-By default the sandbox makes the **entire file system read-only** and **blocks
-the working directory** (so a build action starts from a clean slate). The tool
+By default the sandbox makes the **entire file system read-only**, matching the
+default `linux-sandbox` ("the entire filesystem is made read-only"): reads are
+**not** confined to declared inputs, and only **writes** are restricted. The tool
 being launched is granted read access automatically. Callers then open up
-exactly the paths an action needs:
+exactly the paths an action needs to **write**:
 
-* `-r <path>` grants read-only access to a file or directory subtree.
+* `-r <path>` grants read-only access to a file or directory subtree. (Redundant
+  in the default permissive mode, where reads are already allowed; required under
+  `-H`.)
 * `-w <path>` grants read-write access.
-* `-b <path>` blocks a file or directory subtree.
+* `-b <path>` blocks a file or directory subtree (overrides read access too).
+* `-H` switches to **hermetic reads**: the working directory is denied by
+  default, so only `-r`/`-w` inputs are readable. This is the Windows analog of
+  Bazel's `--experimental_use_hermetic_linux_sandbox` and enforces read
+  hermeticity for Goal-2 builds. Writes are confined to `-w` in both modes.
 
 Scopes are hierarchical and later/more-specific scopes override broader ones, so
 e.g. `-w outdir -b outdir\secret.txt` makes `outdir` writable while keeping

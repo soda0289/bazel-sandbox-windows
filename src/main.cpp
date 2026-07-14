@@ -3,9 +3,8 @@
 // DetoursServices enforcement engine. See plan.md and README.md.
 
 #include <windows.h>
-
 #include <detours.h>
-
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -48,6 +47,13 @@ struct Options {
     // Network sandboxing (Bazel linux-sandbox parity): 0 = allow (default),
     // 1 = loopback only (-N), 2 = no network at all (-n).
     int networkPolicy = 0;
+    // -H / --hermetic: strict read hermeticity. When false (default) the working
+    // directory is READABLE (writes still confined to -w), matching the default
+    // linux-sandbox where "the entire filesystem is made read-only" and only the
+    // working dir is writable - i.e. reads are never confined to declared inputs.
+    // When true, the working directory is denied by default and only -r/-w grants
+    // expose it, matching --experimental_use_hermetic_linux_sandbox (Goal 2).
+    bool hermetic = false;
     std::vector<std::wstring> args;  // tool + arguments
 };
 
@@ -84,6 +90,9 @@ void PrintUsage(int exitCode) {
         L"  -b <path>  make a file/directory inaccessible in the sandbox\n"
         L"  -N         allow only loopback network access (block external)\n"
         L"  -n         block all network access (no loopback either)\n"
+        L"  -H         hermetic reads: deny the working dir by default so only\n"
+        L"             -r/-w inputs are readable (default: reads unconfined, like\n"
+        L"             the default linux-sandbox; writes still confined to -w)\n"
         L"  -D <file>  write launcher diagnostics to a file\n"
         L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
         L"  -S <file>  write child resource-usage statistics (protobuf) to a file\n"
@@ -161,6 +170,8 @@ Options ParseOptions(std::vector<std::wstring> args) {
             } else if (name == L"n") {
                 if (o.networkPolicy == 1) Die(L"-N and -n are mutually exclusive");
                 o.networkPolicy = 2;
+            } else if (name == L"H" || name == L"-hermetic") {
+                o.hermetic = true;
             } else if (name == L"D") {
                 o.debugPath = ToAbsolute(next());
             } else if (name == L"-trace") {
@@ -441,6 +452,17 @@ int wmain(int argc, wchar_t** argv) {
                                               : L"blocked"));
     if (!o.tracePath.empty()) dline(L"trace -> " + o.tracePath);
 
+    // Bazel passes the executable using its internal forward-slash path style
+    // (e.g. "bazel-out/.../validator.bat"). CreateProcessW - and the cmd.exe it
+    // auto-invokes for a .bat/.cmd target - only resolve a *relative* executable
+    // when it uses Windows '\' separators. Given forward slashes, cmd treats the
+    // first component as a bare command ("'bazel-out' is not recognized") and
+    // CreateProcessW fails outright (ERROR_FILE_NOT_FOUND). Normalize separators
+    // in the executable token only; the remaining arguments are left untouched so
+    // tools receive Bazel's forward-slash paths verbatim, exactly as they do under
+    // the local strategy.
+    std::replace(o.args[0].begin(), o.args[0].end(), L'/', L'\\');
+
     const std::wstring toolPath = ToAbsolute(o.args[0]);
     dline(L"tool: " + toolPath);
 
@@ -474,6 +496,18 @@ int wmain(int argc, wchar_t** argv) {
 
     // Build the file access manifest (CreateManifest in SandboxedProcess.cs).
     using namespace bazelsandbox;
+    // Enforce policy on the literal path opened rather than resolving symlinks/junctions to their
+    // targets. Reparse-point resolution cannot help the in-place execution model here: policy is
+    // evaluated on the path as opened (DetouredFunctions Detoured_CreateFileW computes accessCheck
+    // from the literal path and denies on it unconditionally), and resolution only ADDS enforcement
+    // on the target - it never turns a denied literal path into an allowed one. It is a
+    // hermeticity-tightening feature (deny symlink escapes), not an allow mechanism. Enabling full
+    // resolution (clearing Flag_IgnoreFullReparsePointResolving too) was also unstable in this
+    // standalone build (broke plain file copies with ERROR_INVALID_HANDLE). So instead the runner
+    // (WindowsSandboxedSpawnRunner) grants the in-place LINK paths directly: each declared input's
+    // execroot location is granted readable, which covers runfiles symlink forests name-agnostically.
+    // The one residual is the aspect_rules_js pnpm node_modules store, whose package directory
+    // junctions are not declared as inputs; the runner grants that store as a readable cone.
     uint32_t flags = Flag_FailUnexpectedFileAccesses | Flag_MonitorNtCreateFile |
                      Flag_MonitorChildProcesses | Flag_MonitorZwCreateOpenQueryFile |
                      Flag_IgnoreReparsePoints | Flag_IgnoreFullReparsePointResolving;
@@ -494,19 +528,40 @@ int wmain(int argc, wchar_t** argv) {
     ManifestBuilder mb(flags, /*extraFlags*/ 0, dllAnsi, dllAnsi);
     mb.SetReportPath(o.tracePath);
 
-    // Whole file system read-only.
-    mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-    // Block the working directory by default.
-    if (!mb.AddScope(o.workingDir, Policy_MaskAll, Policy_Deny))
+    // Whole file system read-only. AllowReadIfNonExistent lets probes of files that do not exist
+    // return the real "not found" status instead of a synthesized access-denied error: with plain
+    // AllowRead, BuildXL's policy (PolicyResult_common.cpp) only permits reads of files that exist,
+    // so a probe of an absent path is denied. Many tools probe optional files at startup - e.g.
+    // node.exe opens C:\Program Files\Common Files\SSL\openssl.cnf, which does not exist here, and
+    // treats access-denied (but not "not found") as a fatal OpenSSL configuration error. Granting
+    // AllowReadIfNonExistent never exposes file contents (it only changes the error for absent
+    // paths) and matches how the process behaves outside the sandbox and under linux-sandbox.
+    mb.AddRootScope(Policy_MaskAll, Policy_AllowRead | Policy_AllowReadIfNonExistent);
+    // Working directory (execroot) policy. In the default (permissive) mode the
+    // execroot stays READABLE like the rest of the file system - this mirrors the
+    // default linux-sandbox, where the whole FS is read-only and only writes are
+    // confined, so undeclared reads inside the execroot (e.g. sibling split-config
+    // outputs reached via --preserveSymlinks, or package.json files node walks for
+    // module-type resolution) succeed exactly as they do under linux. Writes are
+    // still confined because we grant no write bit here (only -w does). In hermetic
+    // mode the execroot is denied by default, so only -r/-w declared inputs are
+    // visible (Goal 2 / --experimental_use_hermetic_linux_sandbox parity).
+    uint32_t workingDirPolicy = o.hermetic
+        ? Policy_Deny
+        : (Policy_AllowRead | Policy_AllowReadIfNonExistent);
+    if (!mb.AddScope(o.workingDir, Policy_MaskAll, workingDirPolicy))
         Die(L"bad working dir: " + o.workingDir);
-    dbg(L"na", o.workingDir);
+    dbg(o.hermetic ? L"na" : L"ro", o.workingDir);
     // Allow reading the tool itself.
-    if (!mb.AddScope(toolPath, Policy_MaskAll, Policy_AllowRead))
+    if (!mb.AddScope(toolPath, Policy_MaskAll,
+                     Policy_AllowRead | Policy_AllowReadIfNonExistent))
         Die(L"bad tool path: " + toolPath);
     dbg(L"ro", toolPath);
 
     for (const auto& p : o.readonlyFiles) {
-        if (!mb.AddScope(p, Policy_MaskAll, Policy_AllowRead)) Die(L"bad -r: " + p);
+        if (!mb.AddScope(p, Policy_MaskAll,
+                         Policy_AllowRead | Policy_AllowReadIfNonExistent))
+            Die(L"bad -r: " + p);
         dbg(L"ro", p);
     }
     for (const auto& p : o.writableFiles) {

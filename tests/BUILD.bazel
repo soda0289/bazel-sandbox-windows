@@ -84,6 +84,7 @@ _ENFORCE_CATEGORIES = [
     "pathforms",
     "reparse",
     "limitations",
+    "modes",
 ]
 
 [

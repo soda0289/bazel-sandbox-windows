@@ -3449,6 +3449,48 @@ HANDLE WINAPI Detoured_CreateFileW(
         policyResult.GetCanonicalizedPath().GetPathStringWithoutTypePrefix(),
         policyResult);
 
+    // Handle-resolution read fallback (bazel-sandbox-windows).
+    //
+    // The bazel windows-sandbox runs in place in the execroot, which is denied by default; declared
+    // inputs are re-granted read. But rulesets wire inputs together with symlinks/junctions (runfiles
+    // forests, the aspect_rules_js pnpm node_modules store), and a tool frequently opens the file
+    // through a link path that is NOT itself a declared input - only the link's real target is. The
+    // literal-path policy check above then denies, even though the real file being read is a granted
+    // input. (linux-sandbox never hits this: it makes the whole filesystem readable and enforces
+    // hermeticity via a curated symlink-forest execroot, so any symlink to a readable target works.)
+    //
+    // Since Real_CreateFileW already followed the reparse chain and handed us a handle to the *real*
+    // file, resolve that handle to its final path and re-check policy there. If the resolved real path
+    // is allowed to read, honor the resolved-path policy instead of denying the literal path. This is
+    // name-agnostic (no node_modules/.runfiles heuristics) and strictly no less hermetic than the
+    // literal check: a link whose real target is undeclared still resolves to a non-granted path and
+    // stays denied. Reads only - write/create opens are never rescued.
+    if (accessCheck.ShouldDenyAccess()
+        && handle != INVALID_HANDLE_VALUE
+        && !WantsWriteAccess(dwDesiredAccess)
+        && (WantsReadAccess(dwDesiredAccess) || WantsProbeOnlyAccess(dwDesiredAccess))
+        && !isHandleToReparsePoint)
+    {
+        wstring resolvedPath;
+        if (DetourGetFinalPathByHandle(handle, resolvedPath) == ERROR_SUCCESS && !resolvedPath.empty())
+        {
+            PolicyResult resolvedPolicy;
+            if (resolvedPolicy.Initialize(resolvedPath.c_str()))
+            {
+                RequestedReadAccess requested =
+                    WantsReadAccess(dwDesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
+                AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
+                if (!resolvedCheck.ShouldDenyAccess())
+                {
+                    Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
+                        policyResult.GetCanonicalizedPath().GetPathString(),
+                        resolvedPolicy.GetCanonicalizedPath().GetPathString());
+                    accessCheck = resolvedCheck;
+                }
+            }
+        }
+    }
+
     // It is possible that we only reached a deny action under some access check combinations above (rather than a direct check),
     // so log and maybe break here as well now that it is final.
     if (accessCheck.Result != ResultAction::Allow)
@@ -6978,6 +7020,37 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
         policyResult);
 
     bool hasValidHandle = NT_SUCCESS(result) && !IsNullOrInvalidHandle(*FileHandle);
+
+    // Handle-resolution read fallback (bazel-sandbox-windows). See Detoured_CreateFileW for the full
+    // rationale: honor the resolved-target policy for a denied read when the real file behind the
+    // reparse chain is a granted input. Reads only; name-agnostic; no less hermetic than the literal
+    // check.
+    if (accessCheck.ShouldDenyAccess()
+        && hasValidHandle
+        && !WantsWriteAccess(opContext.DesiredAccess)
+        && (WantsReadAccess(opContext.DesiredAccess) || WantsProbeOnlyAccess(opContext.DesiredAccess))
+        && !isHandleToReparsePoint)
+    {
+        wstring resolvedPath;
+        if (DetourGetFinalPathByHandle(*FileHandle, resolvedPath) == ERROR_SUCCESS && !resolvedPath.empty())
+        {
+            PolicyResult resolvedPolicy;
+            if (resolvedPolicy.Initialize(resolvedPath.c_str()))
+            {
+                RequestedReadAccess requested =
+                    WantsReadAccess(opContext.DesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
+                AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
+                if (!resolvedCheck.ShouldDenyAccess())
+                {
+                    Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
+                        policyResult.GetCanonicalizedPath().GetPathString(),
+                        resolvedPolicy.GetCanonicalizedPath().GetPathString());
+                    accessCheck = resolvedCheck;
+                }
+            }
+        }
+    }
+
     if (accessCheck.ShouldDenyAccess())
     {
         error = accessCheck.DenialError();
@@ -7312,6 +7385,37 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
         policyResult);
 
     bool hasValidHandle = NT_SUCCESS(result) && !IsNullOrInvalidHandle(*FileHandle);
+
+    // Handle-resolution read fallback (bazel-sandbox-windows). See the detailed rationale in
+    // Detoured_CreateFileW: a denied literal path may be a symlink/junction (or reached through one)
+    // whose real target IS a granted input. NtCreateFile already followed the reparse chain, so
+    // resolve the handle to its final path and re-check policy there; honor the resolved-path policy
+    // if it allows the read. Reads only; name-agnostic; no less hermetic than the literal check.
+    if (accessCheck.ShouldDenyAccess()
+        && hasValidHandle
+        && !WantsWriteAccess(opContext.DesiredAccess)
+        && (WantsReadAccess(opContext.DesiredAccess) || WantsProbeOnlyAccess(opContext.DesiredAccess))
+        && !isHandleToReparsePoint)
+    {
+        wstring resolvedPath;
+        if (DetourGetFinalPathByHandle(*FileHandle, resolvedPath) == ERROR_SUCCESS && !resolvedPath.empty())
+        {
+            PolicyResult resolvedPolicy;
+            if (resolvedPolicy.Initialize(resolvedPath.c_str()))
+            {
+                RequestedReadAccess requested =
+                    WantsReadAccess(opContext.DesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
+                AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
+                if (!resolvedCheck.ShouldDenyAccess())
+                {
+                    Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
+                        policyResult.GetCanonicalizedPath().GetPathString(),
+                        resolvedPolicy.GetCanonicalizedPath().GetPathString());
+                    accessCheck = resolvedCheck;
+                }
+            }
+        }
+    }
 
     if (accessCheck.ShouldDenyAccess())
     {

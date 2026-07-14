@@ -100,6 +100,20 @@ function Get-CmdExe {
 function Invoke-Sandbox {
     param([string[]]$SandboxArgs = @(), [string[]]$ProbeArgs = @())
     $ErrorActionPreference = 'Continue'
+    # The enforcement suites validate the deny+grant machinery, which only applies
+    # inside the working dir under HERMETIC mode. The sandbox now defaults to
+    # permissive reads (linux-sandbox parity), so these suites force -H to exercise
+    # enforcement. Mode-distinction tests use Invoke-SandboxRaw (no implicit -H).
+    $all = @('-H') + @($SandboxArgs) + @('--', $script:ProbeExe) + @($ProbeArgs)
+    & $script:SbExe @all *> $null
+    return $LASTEXITCODE
+}
+
+# Like Invoke-Sandbox but passes NO implicit -H, so callers control the read mode
+# explicitly. Used by the modes suite to contrast permissive (default) vs -H.
+function Invoke-SandboxRaw {
+    param([string[]]$SandboxArgs = @(), [string[]]$ProbeArgs = @())
+    $ErrorActionPreference = 'Continue'
     $all = @($SandboxArgs) + @('--', $script:ProbeExe) + @($ProbeArgs)
     & $script:SbExe @all *> $null
     return $LASTEXITCODE
@@ -168,13 +182,21 @@ function Test-SymlinkPrivilege {
 }
 
 # Prints the summary, cleans the temp root, and exits 0 (all passed) or 1.
+#
+# Uses [Environment]::Exit rather than `exit`: rules_powershell's
+# process_wrapper.ps1 invokes this script via the call operator (`& $mainPath`)
+# inside a try/finally, and a plain `exit N` from an &-invoked script only sets
+# $LASTEXITCODE in the caller - it does NOT become the process exit code, so the
+# wrapper always returns 0 and every failing test is reported as PASS. A hard
+# CLR process exit forces the real code out through the wrapper. (Cleanup above
+# already ran; the wrapper skips its own runfiles cleanup under `bazel test`.)
 function Complete-Harness {
     Remove-Item -Recurse -Force $script:TempRoot -ErrorAction SilentlyContinue
     $summary = "$script:Passed passed, $script:Failed failed, $script:Skipped skipped"
     if ($script:Failed -gt 0) {
         Write-Host "== FAILED: $summary =="
-        exit 1
+        [Environment]::Exit(1)
     }
     Write-Host "== OK: $summary =="
-    exit 0
+    [Environment]::Exit(0)
 }
