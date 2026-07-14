@@ -184,11 +184,21 @@ cache / `bazel-out`:
   relying on it.**
 * A read that traverses the projected symlink is redirected by the OS to the real
   backing file on real NTFS. **The `GetFileData` callback is never invoked** for
-  that input, so there is no hydration and no byte copy — reads cost a symlink
-  traversal, not a file copy. This is the core performance property.
+  that input, so there is no hydration and no byte copy.
 * The provider still handles **directory enumeration** and **placeholder info**
   callbacks (cheap, metadata only) to present the tree shape; only content is
   offloaded to the symlink target.
+
+> **⚠ Measured caveat (spike, §12): no-hydration is confirmed, but per-file
+> virtual-symlink reads are NOT cheap.** Every file open *inside the
+> virtualization root* is intercepted by the ProjFS filter (`PrjFlt`) and
+> reparse-redirected to the target, costing **~8 ms/open** on a real
+> `node_modules` tree — ~34× a native open (0.23 ms) — even with hydration and
+> provider callbacks both at zero. This makes naive per-file projection too slow
+> for large input trees. The spike found that projecting **whole input
+> directories as a single symlink** (so the files resolve on real NTFS *outside*
+> the root) is near-native (**0.375 ms/file**). See §12 for the full data and the
+> resulting granularity strategy.
 
 Consequence for **input isolation**: the projected tree contains a symlink *only*
 for each declared input. Undeclared execroot paths are **absent** (enumeration
@@ -263,6 +273,16 @@ Two implementation options for capturing writes to the projected execroot
 **Recommendation:** start with **(a)** for correctness/parity (it matches Linux's
 copy-out semantics and keeps undeclared writes fully contained), then evaluate
 **(b)** as an optimization for large outputs once parity is proven.
+
+> **Spike result (§12): both write paths are confirmed working.** (b) Writing
+> *through* a projected virtual symlink reached the real target file on disk (no
+> copy) — viable for declared outputs. (a) Creating a *new* file inside the
+> virtual root produced a full, real on-disk file in the provider's backing store
+> — the natural overlay for undeclared/scratch writes. So the recommended model
+> is realizable: overlay for scratch + undeclared writes, optional
+> symlink-through for declared outputs to skip the copy. (Note: ProjFS suppresses
+> notifications for I/O issued by the *provider process itself*; a real child
+> process triggers `NEW_FILE_CREATED` / `FILE_PRE_CONVERT_TO_FULL` as expected.)
 
 ---
 
@@ -378,18 +398,28 @@ Parity is the whole point, so it must be *tested*, not asserted.
 * **ProjFS availability/enablement.** Optional feature; may be absent on some
   hosts. Need detection + graceful fallback (to Mode 1 or to the current
   in-place Detours behavior).
-* **Symlink-placeholder minimum build.** Confirm the exact Windows build that
-  supports symlink placeholders; have a content-placeholder fallback if a host is
-  too old (accepting hydration cost).
-* **Callback latency.** Per-entry enumeration/placeholder callbacks add latency
-  for actions with huge input trees (node_modules). Mitigate with batched
-  enumeration and aggressive negative caching. The Mode-1 spike must **measure**
-  this before we commit.
+* **Per-file open latency — the top risk (measured, §12).** It is *not*
+  enumeration/placeholder cost that dominates; it is that **every file open inside
+  the virtualization root is intercepted by `PrjFlt` and reparse-redirected**,
+  costing ~8–11 ms/open on a real `node_modules` tree (~30–40× native), even with
+  hydration and provider callbacks at zero. Naive per-file projection of a large
+  input tree is therefore too slow. **Mitigation (measured to work): project at
+  directory granularity** — a single directory symlink whose contents resolve on
+  real NTFS *outside* the root reads at ~0.375 ms/file. See §12 for the granularity
+  strategy this forces.
+* **Symlink-placeholder minimum build.** Confirmed working on this host (Win11
+  build 26200, SDK 10.0.26100) via `PrjWritePlaceholderInfo2` +
+  `PRJ_EXT_INFO_TYPE_SYMLINK`. Keep a content-placeholder fallback for hosts too
+  old for symlink placeholders (accepting hydration cost).
 * **`GetFinalPathNameByHandle` / realpath semantics.** Must match Linux for
   logical-path-sensitive tools (Node). Primary validation = the `ng_package`
   case.
-* **Antivirus / filter-driver interaction.** ProjFS is a filesystem filter;
-  security products can interfere or add latency. Document supported configs.
+* **Antivirus / filter-driver interaction (unquantified).** Could not be isolated:
+  this host has **Tamper Protection on**, which blocks Defender exclusion changes
+  even for administrators, so the "excluded vs not" A/B test was not possible. AV
+  scanning of reparse/placeholder opens is a plausible additional cost on top of
+  the intrinsic `PrjFlt` overhead but is unmeasured. Document supported AV configs;
+  re-run the exclusion A/B on a host where Tamper Protection can be disabled.
 * **Privilege.** Confirm ProjFS provider start does not require admin (it should
   not for user-owned roots) and that we no longer need
   `SeCreateSymbolicLinkPrivilege` / `--windows_enable_symlinks` for the execroot
@@ -409,8 +439,20 @@ Parity is the whole point, so it must be *tested*, not asserted.
    readable, **zero hydration**), and enumeration/placeholder latency on a large
    `node_modules` tree. **Gate:** latency acceptable and virtual symlinks avoid
    hydration.
+
+   > **DONE (spike, `spike/projfs/projfs_spike.cpp` + `projfs_spike2.cpp`).** See
+   > §12 for full data. Headlines: virtual-symlink projection works with **zero
+   > hydration** and **zero copy**; undeclared paths are **absent** with a working
+   > negative-path cache; writes work both through-symlink (no copy) and as
+   > overlay. **BUT** the pivotal finding: per-file opens through the ProjFS root
+   > cost **~8 ms/file** (~34× native) — intrinsic `PrjFlt` overhead, not
+   > hydration — so per-file projection is too slow for large trees, while
+   > **coarse directory-symlink projection is near-native (~0.375 ms/file)**. This
+   > reshapes Mode 1 (see §12 granularity strategy) but does **not** block it.
 2. **Mode 1 end to end.** `ProjFsSandboxedSpawn` + Bazel strategy
    `windows-processwrapper`; parity tests for the constructive read model.
+   **Adopt the §12 granularity strategy** (project declared-input *directories* as
+   single symlinks; project loose individual files only when necessary).
 3. **Mode 2 (default).** Add the Detours write-deny layer over Mode 1; the
    write overlay + output harvest (option a); make it the `sandboxed` default on
    Windows; run the full parity matrix + `ng_package`.
@@ -437,3 +479,123 @@ Parity is the whole point, so it must be *tested*, not asserted.
   work. Under the constructive model they are largely unnecessary (the projected
   tree already presents exactly the declared inputs), though handle-resolution may
   remain relevant for Mode 3's out-of-execroot read checks.
+
+---
+
+## 12. Spike measurements and their design impact
+
+Two throwaway providers under `spike/projfs/` (`projfs_spike.cpp`,
+`projfs_spike2.cpp`) validated the design's assumptions on this host (Win11 build
+26200, SDK 10.0.26100, ProjFS `Client-ProjFS` enabled). The `projfs_spike2.cpp`
+`read` mode deliberately **separates the phases** (enumerate / create placeholder
+/ read via ProjFS / read direct control) so we can see *which* operation costs
+what, driving each phase from the manifest to avoid ProjFS re-enumeration
+artifacts (see the re-enumeration caveat below).
+
+### 12.1 Correctness (all confirmed)
+
+* **Virtual-symlink projection works.** Each projected file is a real
+  `SymbolicLink` reparse point to its source; opening it redirects to real NTFS.
+* **Zero hydration, zero copy.** The `GetFileData` callback *never* fired; the
+  virtualization root's on-disk content size stayed 0. Bytes read through the
+  virtual tree matched the real totals exactly.
+* **Undeclared paths are absent.** 400/400 undeclared-path probes returned
+  not-found. The negative-path cache works: 200 `GetPlaceholderInfo` callbacks on
+  round 1, **0 on round 2**.
+* **Writes.** Writing *through* a projected virtual symlink reached the real
+  target file (no copy) → viable for declared outputs. Creating a *new* file in
+  the root produced a full real on-disk file in the provider store → the overlay
+  for scratch/undeclared writes.
+
+### 12.2 Performance (the pivotal finding)
+
+Measured on the real `fusion` `node_modules` tree (88,954 manifest entries;
+12,513 dirs / 76,441 files; 5,928 pnpm reparse-point leaves projected as symlink
+leaves without recursion for cycle-safety). Per-file numbers are over an 8,000-
+file sample:
+
+| Operation | Cost | Notes |
+| --- | --- | --- |
+| Manifest build (host-side walk) | 2.4–4.5 s | one-time, before virtualization |
+| **P1** full-tree enumeration | 15–24 s | one-time; provider enum callbacks |
+| **P2** placeholder creation (`GetPlaceholderInfo`) | 0.9–3.2 ms/file | one-time per opened input |
+| **P3** read via **per-file** virtual symlink | **~8–11 ms/file** | hydration=0, provider cb=0; run-to-run variance in this range |
+| **P5** read same files **direct** (no ProjFS, control) | **0.23–0.29 ms/file** | native baseline |
+| **dirlink** read via **coarse directory symlink** | **0.375 ms/file** | files resolve *outside* the root |
+
+Interpretation:
+
+* **The bottleneck is reading, not creating symlinks — and it is intrinsic to
+  ProjFS.** P3 triggers *zero* provider callbacks and *zero* hydration, yet each
+  open costs ~8–11 ms. That cost is the `PrjFlt` filter intercepting every open
+  *inside the virtualization root* and reparse-redirecting it. It is ~30–40× the
+  native open cost (P5).
+* **Windows Defender's contribution could not be isolated.** This host has
+  **Tamper Protection enabled**, which blocks adding a Defender exclusion even as
+  administrator, so the intended "excluded vs not" comparison could not be run.
+  The one apparently-lower P3 run (7.8 ms) is within normal run-to-run variance
+  and should **not** be attributed to an exclusion. AV overhead on reparse opens
+  is a plausible *additional* contributor but remains unquantified here; it does
+  not change the conclusion, since even the best P3 (~8 ms) is ~34× native.
+* **Coarse directory-symlink projection avoids the per-file tax.** When a whole
+  directory is projected as one symlink, the files underneath live on real NTFS
+  *outside* the virtualization root, so their opens are not intercepted per-file —
+  only the one directory-symlink prefix incurs a reparse. Result: ~0.375 ms/file,
+  within ~1.6× of native (and subject to normal Defender scanning, same as any
+  real file).
+
+### 12.3 Resulting granularity strategy (design change)
+
+Per-file virtual projection of a large input tree (tens of thousands of opens per
+action) is **too slow** to ship. The design must therefore choose projection
+granularity deliberately:
+
+* **Project declared-input *directories* as single directory symlinks** where an
+  action depends on a whole directory (the common case for `node_modules`
+  packages, runfiles trees, and repository inputs). Near-native reads; one reparse
+  per directory prefix.
+* **Project individual loose files** (build files, single declared source inputs)
+  as per-file virtual symlinks — acceptable because there are few of them.
+* **Tension with isolation to resolve:** a coarse directory symlink exposes the
+  *entire* real directory, not only the individually-declared files within it —
+  weaker than Linux's per-input symlink forest. Two ways to reconcile:
+  1. When Bazel declares a whole directory / tree artifact as the input (typical
+     for these cases), coarse projection *is* faithful — there is no finer
+     declaration to honor.
+  2. When only some files in a directory are declared, either accept the coarse
+     exposure (matches today's permissive default) or fall back to per-file
+     projection for that directory (slow but precise) — a per-action policy knob.
+* **Why not just use a real NTFS symlink forest (like Linux)?** That is the
+  current approach we are moving away from: it needs `SeCreateSymbolicLinkPrivilege`
+  / `--windows_enable_symlinks`, physically materializes a forest, and has the
+  reparse-handling issues (findings A1/A2/B4). ProjFS's win is *no privilege and no
+  physical forest* — but only coarse projection preserves that win at acceptable
+  read speed. This trade-off is the central engineering decision for Mode 1.
+
+### 12.4 Behavioral caveats discovered
+
+* **Re-enumeration loses virtual children.** Once a directory has been fully
+  enumerated, ProjFS materializes it as an on-disk placeholder directory;
+  re-enumerating it via `FindFirstFile` no longer lists virtual file children that
+  were never individually accessed. Provider/host code must therefore drive file
+  access from the manifest (by path), not by re-walking the virtual tree. (This
+  bit the first phase-split attempt, which reported 0 files on the second pass.)
+* **Provider-process self-I/O is not notified.** ProjFS suppresses notification
+  callbacks for I/O issued by the provider process itself; a separate child
+  process (the real action) triggers `NEW_FILE_CREATED` /
+  `FILE_PRE_CONVERT_TO_FULL` normally. Write-capture logic must be tested with a
+  child process, not the provider.
+* **pnpm reparse leaves.** The manifest walker must not recurse into
+  reparse-point directories (cycle/duplication risk); projecting them as symlink
+  leaves is cycle-safe and, conveniently, aligns with the coarse-projection
+  strategy above.
+
+### 12.5 Follow-ups before/with Mode 1 implementation
+
+* Prototype **coarse-by-default projection** in the provider and re-measure a full
+  `ng_package` action end-to-end (not just raw reads).
+* Confirm `realpath`/`GetFinalPathNameByHandle` behavior through a **directory**
+  symlink matches Linux for the Node logical-path (`package.json` walk) case.
+* Measure a **warm second-open** pass and worker/repeated-build reuse (does the
+  ~8 ms per-file cost amortize, or is it per-open every time?).
+* Decide the per-directory precise-vs-coarse policy knob and its default.
