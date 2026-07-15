@@ -8,6 +8,18 @@ architectural/feature narrative); this file is the running issue ledger.
 
 ## Framing: two reference points, two categories
 
+> **Current model (read this first).** The `windows-sandbox` spawn strategy runs
+> every action in **Mode 2 (`--filter-inputs`)**: the execroot is denied by
+> default and only *declared* inputs are visible (undeclared reads report
+> `NOT_FOUND`, undeclared entries are dropped from enumerations). Its north star
+> is **hermetic `linux-sandbox` / remote execution (RBE)** parity — only declared
+> inputs are visible — and it may be *stricter* than the default permissive
+> `linux-sandbox`. The bare `BazelSandbox.exe` still has a permissive-reads
+> default (a fast local fallback), but that is **not** how Bazel drives it. The
+> two "goals" below are historical reference points; several early findings
+> (A4/A5) were first worked around with a permissive-read default and were later
+> **superseded** by the Mode 2 + marker-bit design — their entries note this.
+
 We measure against two Linux behaviors:
 
 * **Goal 1 - linux *default* sandbox (permissive).** The default `linux-sandbox`
@@ -17,7 +29,8 @@ We measure against two Linux behaviors:
   also read/work under windows-sandbox, without patching individual rulesets.**
 * **Goal 2 - linux *strict hermetic* sandbox.** With hermetic inputs, only
   declared inputs are visible. Our north star for Goal 2: **files that are hidden
-  under strict linux should not be visible under windows-sandbox.**
+  under strict linux should not be visible under windows-sandbox.** *This is the
+  behavior the Mode 2 default now targets (hermetic/RBE parity).*
 
 Every finding is filed under one of:
 
@@ -29,15 +42,19 @@ Every finding is filed under one of:
 
 Enforcement model recap (needed to read the findings): `-W <dir>` marks the
 working dir (execroot); `-r`/`-w` add readable/writable grants; `-b` marks a path
-inaccessible. **Reads have two modes.** By default the sandbox is **permissive**:
-the whole file system *including the execroot* is readable, and only writes are
-confined (to `-w`) - this mirrors the default `linux-sandbox`, where "the entire
-filesystem is made read-only" and only the working dir is writable. Passing `-H`
-switches to **hermetic** reads: the execroot is denied by default and only `-r`/
-`-w` inputs are readable (Goal 2 / `--experimental_use_hermetic_linux_sandbox`).
-In both modes, reads use a hybrid check: the path *as requested* is checked
-first, and if denied, a **handle-resolution fallback** resolves the reparse/final
-target and re-checks *that* against the policy.
+inaccessible. **Reads have two modes.** The `windows-sandbox` strategy default is
+**`--filter-inputs` (Mode 2, hermetic-style)**: the execroot is denied by default,
+only `-r`/`-w` declared inputs are readable, and undeclared inputs are made
+*invisible* (`NOT_FOUND` + enumeration filtering) to match hermetic
+`linux-sandbox` / RBE. Without `--filter-inputs`/`-H` the bare exe is **permissive**
+(whole file system readable, only writes confined) — a local fallback that mirrors
+the *default* `linux-sandbox`, not the mode Bazel uses. In all modes, reads use a
+hybrid check: the path *as requested* is checked first, and if denied, a
+**handle-resolution fallback** resolves the reparse/final target and re-checks
+*that* against the policy — but under `--filter-inputs` the fallback only rescues
+targets that are **declared inputs** (carry the `DeclaredInput` marker bit),
+so it cannot leak undeclared workspace files reached through the execroot symlink
+forest.
 
 ---
 
@@ -71,8 +88,10 @@ target and re-checks *that* against the policy.
   resolved target is not denied. This is name-agnostic (replaced the earlier
   `.runfiles`/`node_modules` name-based "readable cone").
 * **Behavior, precisely:** an undeclared junction is allowed **iff its resolved
-  target is itself readable** (e.g. `-r`-granted), and denied iff the resolved
-  target lands in a denied region. See the caveat in B4.
+  target is a declared input** — under `--filter-inputs` this means the target
+  carries the `DeclaredInput` marker bit (`IsDeclaredInput()`), not merely
+  "not denied" (see A4 and B4). It is denied/hidden if the resolved target is only
+  readable via the whole-disk baseline or lands in a denied region.
 * **Status:** Fixed.
 * **Test:** `enforce_reparse` — "read through undeclared junction to -r-granted
   target allowed" (positive), "read through undeclared junction to denied target
@@ -92,68 +111,83 @@ target and re-checks *that* against the policy.
   (and the `-w` counterpart). *This is exactly the assertion the false-green
   harness had been hiding.*
 
-### A4. `ng_package` rollup reads an undeclared workspace package — FIXED (permissive-read mode)
+### A4. `ng_package` rollup reads a declared input through the execroot symlink forest — FIXED (marker bit)
 
-* **Symptom:** `ng_package`'s Rollup action (`AngularPackageRollup`) fails under
-  hermetic windows-sandbox with `EPERM` opening a workspace package it did not
-  declare as a rollup input. Confirmed denied path:
+* **Symptom:** `ng_package`'s Rollup action (`AngularPackageRollup`) failed under
+  the `windows-sandbox` (Mode 2 / `--filter-inputs`) with `EPERM` opening a
+  package it reaches via `--preserveSymlinks` + ambient `node_modules`. Confirmed
+  denied path:
   `...\execroot\_main\bazel-out\x64_windows-fastbuild-ST-<hash>\bin\...\node_modules\@shui\core-ng\package.json`.
-* **Root cause:** the file lives in a **split/transition-config** output dir
-  (`...-ST-<hash>`) that sits *inside* the execroot (`-W`) but is not a declared
-  input of the rollup action; it is reached via `--preserveSymlinks` + ambient
-  `node_modules`. Under the old always-hermetic behavior the execroot was
-  denied-by-default, so this undeclared read was blocked. The **default
-  linux-sandbox reads it fine** because the whole filesystem is readable there;
-  read hermeticity is not part of the default linux model.
-* **Fix:** the sandbox now defaults to **permissive reads** (the execroot is
-  readable; writes still confined to `-w`), matching the default linux-sandbox.
-  No `rules_angular` patch. Hermetic read confinement is available via `-H` for
-  Goal-2 builds. `src/main.cpp` sets the working-dir scope to
-  `AllowRead | AllowReadIfNonExistent` unless `-H` is given.
-* **Status:** Fixed. Verified end to end: `:pkg_apf` builds cleanly under the
-  default (permissive) windows-sandbox.
-* **Test:** `enforce_modes` — "permissive: undeclared read inside -W allowed".
+* **Root cause:** the Windows sandbox runs **in place** in the real execroot,
+  whose top-level entries (`_main/*`) are per-entry symlinks/junctions into the
+  real workspace source tree. The file is reached through that symlink forest.
+  Under Mode 2 the execroot is denied-by-default; the read of the *link path* was
+  denied, and the handle-resolution fallback could not safely adopt the resolved
+  target without risking a leak of *undeclared* workspace files reachable via the
+  same whole-disk read baseline.
+  > A short-lived earlier workaround made the default **permissive-read** (whole
+  > execroot readable) so this "just worked"; that was **rejected and superseded**
+  > because it broke hermetic/RBE parity (undeclared bazel-out files became
+  > visible). No `rules_angular` patch and no filename special-casing were used.
+* **Fix:** the `DeclaredInput` **marker bit** (`0x2000`), OR'd only into
+  explicit `-r`/`-w`/`-d`/tool grants (never the root baseline). The
+  handle-resolution read fallback now rescues a denied symlink/junction read
+  **iff its resolved target carries the marker** (`IsDeclaredInput()`). The
+  rolled-up package *is* a declared input, so it is allowed; undeclared workspace
+  files reached through the forest are not. `src/main.cpp` sets the marker on
+  explicit grants; the guard lives in `DetouredFunctions.cpp`. See
+  `docs/detours-input-filtering.md` §3.5.
+* **Status:** Fixed. Verified end to end: `:pkg` (and `:pkg_apf`) build cleanly
+  under the `windows-sandbox` (Mode 2) with no ESM/EPERM error.
+* **Test:** `enforce_reparse` — declared-input-through-junction cases; the
+  end-to-end proof is the fusion `:pkg` build.
 
 ### A5. `ng_package` packager: `exports is not defined in ES module scope` — FIXED (same root cause as A4)
 
 * **Symptom:** the `ng_package` packager (`AngularPackage`, the "Bundling APF"
-  action) failed **only under the hermetic sandbox** with `ReferenceError:
-  exports is not defined in ES module scope`. Non-sandboxed and permissive-mode
-  it succeeds.
+  action) failed under the Mode 2 sandbox with `ReferenceError: exports is not
+  defined in ES module scope`. Non-sandboxed and permissive-mode it succeeds.
 * **Root cause (corrected):** `rules_js` patches node so module resolution does
   **not** realpath symlinks - node keeps the **logical** (symlink) path. During
   module-type resolution node therefore walks *up the logical path inside the
-  execroot* reading `package.json` files. Under hermetic mode an intermediate
+  execroot* reading `package.json` files. Under Mode 2 an intermediate
   `package.json` (the one that would classify the emitted `index.js` as CommonJS,
-  or provide `exports`) was an undeclared read and got denied, so node kept
-  walking to the execroot-root `package.json` (`"type":"module"`) and treated the
-  CommonJS file as ESM → `exports is not defined`. It is the *same* undeclared-
-  read-inside-execroot problem as A4, just surfaced through node's `package.json`
-  walk instead of Rollup's resolver.
-* **Fix:** permissive-read default (A4's fix). With the execroot readable node
-  finds the correct nearer `package.json` and classifies the module correctly.
-  No ruleset patch.
-* **Status:** Fixed. Verified: the packager action succeeds under the default
-  (permissive) windows-sandbox in the same `:pkg_apf` build.
-* **Test:** covered indirectly by `enforce_modes` (undeclared execroot reads
-  allowed by default); the end-to-end proof is the `:pkg_apf` build.
+  or provide `exports`) was reached through the execroot symlink forest and, being
+  a declared input read through a link, got denied — so node kept walking to the
+  execroot-root `package.json` (`"type":"module"`) and treated the CommonJS file
+  as ESM → `exports is not defined`. It is the *same* declared-input-through-the-
+  symlink-forest problem as A4, surfaced through node's `package.json` walk instead
+  of Rollup's resolver.
+* **Fix:** the A4 marker-bit fix. With declared inputs reached through the forest
+  allowed (and undeclared ones still hidden), node finds the correct nearer
+  `package.json` and classifies the module correctly. No ruleset patch, no
+  filename special-casing.
+* **Status:** Fixed. Verified: the packager action succeeds under the
+  `windows-sandbox` (Mode 2) in the same `:pkg`/`:pkg_apf` build.
+* **Test:** covered by `enforce_reparse` (declared input reached through a
+  junction/symlink is readable); the end-to-end proof is the `:pkg` build.
 
 ---
 
 ## Category B - over-exposure (Goal 2)
 
-These matter under **hermetic mode (`-H`)**; the default permissive mode
-intentionally exposes reads (Goal-1 parity), so Category B is only about how well
-`-H` approximates strict linux. Most are documented as **KNOWN-GAP** or **NOTE**
-cases in `enforce_limitations` / `enforce_reparse` so a future tightening pass
-will notice if behavior changes.
+These are hermeticity leaks measured against strict linux — i.e. things that
+should be hidden under the Mode 2 (`--filter-inputs`) default (whose north star is
+hermetic/RBE parity) but may still leak. (In the bare permissive-reads fallback,
+reads are intentionally exposed, so Category B is only meaningful under
+`--filter-inputs`/`-H`.) Most are documented as **KNOWN-GAP** or **NOTE** cases in
+`enforce_limitations` / `enforce_reparse` so a future tightening pass will notice
+if behavior changes.
 
-### B1. Directory enumeration not enforced — KNOWN-GAP
+### B1. Directory enumeration not enforced *without* `--filter-inputs` — KNOWN-GAP
 
-* `FindFirstFile`/`FindNextFile` on a denied directory succeeds and lists
-  entries. File *opens* are still enforced; only the listing leaks. Info-leak
-  surface only.
-* **Test:** `enforce_limitations` (enumeration case).
+* In the bare permissive fallback, `FindFirstFile`/`FindNextFile` on a denied
+  directory succeeds and lists entries. File *opens* are still enforced; only the
+  listing leaks. **Under `--filter-inputs`** (the `windows-sandbox` default) this
+  is closed: undeclared entries are removed from enumeration results, so listings
+  show only declared inputs.
+* **Test:** `enforce_limitations` (enumeration case); `enforce_modes` /
+  `enforce_reparse` cover the filtered behavior.
 
 ### B2. Junction-in-`-w` escape — KNOWN-GAP
 
@@ -167,22 +201,24 @@ will notice if behavior changes.
   case-fold variant of the path.
 * **Test:** `enforce_limitations` (short-name / non-ASCII cases).
 
-### B4. Handle-resolution allows undeclared links to readable targets — KNOWN-GAP (hermetic mode; introduced by A2)
+### B4. Handle-resolution allowed undeclared links to merely-readable targets — FIXED under `--filter-inputs` (marker bit)
 
-* **What:** under `-H`, the A2 handle-resolution fallback adopts the resolved
-  target's policy. If an undeclared junction resolves to a target that sits
-  **outside the `-W` execroot** (the read-only root, readable in both modes), the
-  read is allowed even though the *link path* was denied.
-* **Why it is mostly benign:** in real Bazel usage the meaningful tree is the
-  execroot (under `-W`); out-of-execroot targets are system directories, which
-  are *also readable under the default linux-sandbox*. So this does not break
-  Goal 1 and only marginally affects Goal-2 (`-H`) hermeticity.
-* **Tightening option (deferred):** require the resolved target to match an
-  explicit allow scope (`-r`/`-w`) rather than merely "not denied". Deferred to a
-  future fixing pass because it risks regressing legitimate reads.
-* **Test:** `enforce_reparse` — "undeclared junction to allow-root target"
-  recorded via `Note-Exit` (non-gating; asserts the current behavior is
-  observed).
+* **What (original A2 behavior):** the A2 handle-resolution fallback adopted the
+  resolved target's policy whenever it was *not denied*. An undeclared junction
+  resolving to a target that sits **outside the `-W` execroot** (the read-only
+  root) would be allowed even though the *link path* was denied — a Goal-2 leak.
+* **Fix:** the A4 `DeclaredInput` **marker bit** implements exactly the
+  tightening option this entry used to defer. Under `--filter-inputs` the fallback
+  now adopts the resolved target **only if it is a declared input**
+  (`IsDeclaredInput()`), not merely "not denied". So an undeclared junction whose
+  target is only readable via the whole-disk baseline is now **denied/hidden**,
+  while a junction to a genuinely declared input is allowed. This closes the leak
+  without regressing legitimate declared-input reads (A2/A4).
+* **Residual:** in the bare permissive fallback (no `--filter-inputs`) the old
+  not-denied behavior still applies, but reads are intentionally exposed there
+  anyway, so there is nothing to leak relative to that mode's contract.
+* **Test:** `enforce_reparse` — declared-vs-undeclared junction-target cases
+  (declared allowed, undeclared-to-baseline hidden under filtering).
 
 ---
 

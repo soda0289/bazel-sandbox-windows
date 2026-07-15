@@ -200,9 +200,11 @@ extern GetFinalPathNameByHandleA_t Real_GetFinalPathNameByHandleA;
 extern NtClose_t Real_NtClose;
 extern NtCreateFile_t Real_NtCreateFile;
 extern NtOpenFile_t Real_NtOpenFile;
+extern GetFileInformationByName_t Real_GetFileInformationByName;
 extern ZwCreateFile_t Real_ZwCreateFile;
 extern ZwOpenFile_t Real_ZwOpenFile;
 extern NtQueryDirectoryFile_t Real_NtQueryDirectoryFile;
+extern NtQueryDirectoryFileEx_t Real_NtQueryDirectoryFileEx;
 extern ZwQueryDirectoryFile_t Real_ZwQueryDirectoryFile;
 extern ZwSetInformationFile_t Real_ZwSetInformationFile;
 

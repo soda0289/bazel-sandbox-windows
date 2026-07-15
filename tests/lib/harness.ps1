@@ -6,6 +6,7 @@
 # "run the launcher, assert the child's integer exit code". probe exit codes:
 #   0  = allowed        20 = other error      40 = bad std handle
 #   10 = denied         30 = bad usage        50 = harness error
+#   11 = not-found (path reported absent; --filter-inputs masks denied reads so)
 #
 # Fresh-workspace setup/teardown is provided by New-Workspace (a unique seeded
 # directory per call, i.e. per-case isolation) plus a single cleanup of the

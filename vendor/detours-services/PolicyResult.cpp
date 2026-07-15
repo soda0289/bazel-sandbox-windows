@@ -6,6 +6,49 @@
 #include "SendReport.h"
 #include "FilesCheckedForAccess.h"
 
+#include "UtilityHelpers.h"
+#include <shared_mutex>
+#include <string>
+#include <unordered_set>
+
+namespace {
+    // Per-process set of file paths that THIS process created via a write to a path
+    // that did not exist at the time of its first write. Used by AllowWrite when the
+    // scope carries FileAccessPolicy_OverrideAllowWriteForExistingFiles (the Bazel
+    // windows-sandbox "execroot-writable" mode) so that:
+    //   * writing a brand-new file (fresh scratch / undeclared output) is allowed, and
+    //   * the tool may freely RE-write a file it just created, while
+    //   * writing over a file that already existed before the process touched it (an
+    //     undeclared input / source file) is denied - preserving the no-clobber
+    //     guarantee even though the whole execroot cone is nominally writable.
+    // Lifetime is the process; it is intentionally NOT shared with child processes.
+    class CreatedFilesTracker {
+    public:
+        static CreatedFilesTracker& GetInstance() {
+            static CreatedFilesTracker instance;
+            return instance;
+        }
+
+        bool WasCreated(const std::wstring& path) {
+            std::shared_lock<std::shared_mutex> lock(m_lock);
+            return m_set.find(path) != m_set.end();
+        }
+
+        void MarkCreated(const std::wstring& path) {
+            std::unique_lock<std::shared_mutex> lock(m_lock);
+            m_set.insert(path);
+        }
+
+    private:
+        CreatedFilesTracker() = default;
+        CreatedFilesTracker(const CreatedFilesTracker&) = delete;
+        CreatedFilesTracker& operator=(const CreatedFilesTracker&) = delete;
+
+        std::unordered_set<std::wstring, CaseInsensitiveStringHasher, CaseInsensitiveStringComparer> m_set;
+        std::shared_mutex m_lock;
+    };
+}
+
 bool PolicyResult::Initialize(PCPathChar path)
 {
     assert(m_isIndeterminate);
@@ -48,18 +91,29 @@ void PolicyResult::InitializeFromCursor(CanonicalizedPathType const& canonicaliz
     PolicySearchCursor newCursor = FindFileAccessPolicyInTreeEx(policySearchCursor, translatedSearchSuffix, searchSuffixLength);
     Initialize(canonicalizedPath, newCursor);
 
-    if (GetSpecialCaseRulesForWindows(translatedSearchSuffix, searchSuffixLength, /*out*/ m_policy)) 
+    // Special-case rules (Windows staged-deletion, device/named-stream paths, code-coverage
+    // artifacts, special tools) classify the FULL path - they call GetRootLength, inspect the
+    // drive-letter prefix, match filename suffixes, etc. They must therefore be evaluated
+    // against the full translated path, NOT the cursor-relative search suffix. When extending
+    // a directory policy to a child (GetPolicyForSubpath), searchSuffix is only the child leaf
+    // (e.g. "secret.txt"); feeding that leaf to the device-path detection misclassifies any
+    // subpath of a Win32Nt (\\?\) or LocalDevice (\\.\) directory as a non-drive device and
+    // wrongly grants AllowAll (leaking undeclared entries through the Bazel enumeration filter).
+    wchar_t const* fullTranslatedPath = GetTranslatedPathWithoutTypePrefix();
+    size_t fullTranslatedPathLength = wcslen(fullTranslatedPath);
+
+    if (GetSpecialCaseRulesForWindows(fullTranslatedPath, fullTranslatedPathLength, /*out*/ m_policy)) 
     {
 #if SUPER_VERBOSE
         Dbg(L"match (special case rules for Windows): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
 #endif // SUPER_VERBOSE
     }
-    else if (GetSpecialCaseRulesForCoverageAndSpecialDevices(translatedSearchSuffix, searchSuffixLength, canonicalizedPath.Type, /*out*/ m_policy)) {
+    else if (GetSpecialCaseRulesForCoverageAndSpecialDevices(fullTranslatedPath, fullTranslatedPathLength, canonicalizedPath.Type, /*out*/ m_policy)) {
 #if SUPER_VERBOSE
         Dbg(L"match (special case rules for coverage and special devices): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
 #endif // SUPER_VERBOSE
     }
-    else if (GetSpecialCaseRulesForSpecialTools(translatedSearchSuffix, searchSuffixLength, /*out*/ m_policy))
+    else if (GetSpecialCaseRulesForSpecialTools(fullTranslatedPath, fullTranslatedPathLength, /*out*/ m_policy))
     {
 #if SUPER_VERBOSE
             Dbg(L"match (special case rules for special tools): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
@@ -111,40 +165,46 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
 
     bool isWriteAllowedByPolicy = (m_policy & FileAccessPolicy_AllowWrite) != 0;
 
-    // Send a special message to managed code if the policy to override allowed writes based on file existence is set
-    // and the write is allowed by policy (for the latter, if the write is denied, there is nothing to override)
+    // When the scope requests that writes be overridden based on file existence
+    // (the Bazel windows-sandbox "execroot-writable" mode - the execroot cone is
+    // granted AllowWrite|OverrideAllowWriteForExistingFiles) we ENFORCE inline
+    // instead of only reporting to managed code (BuildXL's original behavior):
+    //   * a write to a path that did NOT exist at the first write is allowed
+    //     (fresh scratch / undeclared output, like linux-sandbox's writable execroot),
+    //   * a subsequent re-write of a path this process already created is allowed, and
+    //   * a write over a pre-existing file this process did not create is DENIED,
+    //     preserving the no-clobber guarantee for undeclared inputs / source files.
+    // IndicateUntracked() is true only for AllowAll scopes (declared -w outputs); those
+    // bypass this check and stay freely overwritable. basedOnlyOnPolicy callers (static
+    // policy probes) also bypass it.
     if (!basedOnlyOnPolicy && !IndicateUntracked() && isWriteAllowedByPolicy && OverrideAllowWriteForExistingFiles()) {
+        const std::wstring path(m_canonicalizedPath.GetPathString());
+        CreatedFilesTracker& tracker = CreatedFilesTracker::GetInstance();
 
-        // Let's check if this path was already checked for allow writes in this process. Observe this structure lifespan is the same
-        // as the current process so other child processes won't share it.
-        // But for the current process it will avoid probing the file system over and over for the same path.
-        FilesCheckedForAccess* filesCheckedForWriteAccess = FilesCheckedForAccess::GetInstance();
-
-        if (filesCheckedForWriteAccess->TryRegisterPath(m_canonicalizedPath)) {
-            DWORD error = GetLastError();
-
-            // Our ultimate goal is to understand if the path represents a file that was there before the pip started (and therefore blocked for writes).
-            // The existence of the file on disk before the first time the file is written will tell us that. But the problem is that knowing when is the first
-            // time is not trivial: it involves sharing information across child processes.
-            // So what we do is just to emit a special report line with the information of whether the access should be allowed or not, based on existence, from
-            // the perspective of the running process. These special report lines are then processed outside of detours to determine the real first write attempt
-            // Observe this implies that in this case we never block accesses on detours based on file existence, but generate a DFA on managed code
-            bool fileExists = ExistsAsFile(m_canonicalizedPath.GetPathString());
-
-            FileOperationContext operationContext = 
-                FileOperationContext::CreateForRead(L"FirstAllowWriteCheckInProcess", this->GetCanonicalizedPath().GetPathString());
-
-            ReportFileAccess(
-                operationContext,
-                fileExists ? FileAccessStatus::FileAccessStatus_Denied : FileAccessStatus::FileAccessStatus_Allowed,
-                *this,
-                AccessCheckResult(RequestedAccess::Write, fileExists ? ResultAction::Deny : ResultAction::Allow, ReportLevel::Report),
-                0,
-                -1);
-
-            SetLastError(error);
+        if (tracker.WasCreated(path)) {
+            // We already saw this path not exist and created it; allow re-writes.
+            return true;
         }
+
+        DWORD error = GetLastError();
+        bool fileExists = ExistsAsFile(m_canonicalizedPath.GetPathString());
+        SetLastError(error);
+
+        if (fileExists) {
+            // Pre-existing file that this process did not create: deny the write so an
+            // undeclared input / source file is never clobbered.
+            return false;
+        }
+
+        // Brand-new path: allow, and remember it so the tool can re-write its own file.
+        tracker.MarkCreated(path);
+        return true;
     }
 
     return isWriteAllowedByPolicy;
+}
+
+bool PolicyResult::WasCreatedInThisProcess() const {
+    return CreatedFilesTracker::GetInstance().WasCreated(
+        std::wstring(m_canonicalizedPath.GetPathString()));
 }

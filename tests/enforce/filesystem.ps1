@@ -145,16 +145,16 @@ Assert-Exit 'GetTempFileName in denied workdir denied' 10 `
     (Invoke-Sandbox @('-W', $ws) @('tempfile', $ws))
 
 # --- absent-file probing ----------------------------------------------------
-# Opening a NON-existent file for read reports FILE_NOT_FOUND (other error, 20)
+# Opening a NON-existent file for read reports FILE_NOT_FOUND (not-found, 11)
 # under BOTH read-only and writable scopes, because the read scopes carry
 # Policy_AllowReadIfNonExistent. This matches the linux default sandbox (and
 # local execution), where probing an optional input that is absent yields ENOENT
 # rather than a spurious ACCESS_DENIED. Build tools that probe for optional
 # inputs (node module resolution, OpenSSL config, etc.) rely on this.
 $ws = New-Workspace
-Assert-Exit 'read absent file under -r reports not-found' 20 `
+Assert-Exit 'read absent file under -r reports not-found' 11 `
     (Invoke-Sandbox @('-W', $ws, '-r', $ws) @('read', (Join-Path $ws 'nope.txt')))
-Assert-Exit 'read absent file under -w reports not-found' 20 `
+Assert-Exit 'read absent file under -w reports not-found' 11 `
     (Invoke-Sandbox @('-W', $ws, '-w', $ws) @('read', (Join-Path $ws 'nope.txt')))
 
 Complete-Harness

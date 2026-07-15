@@ -177,6 +177,12 @@ public:
     bool AllowRead() const { return (m_policy & FileAccessPolicy_AllowRead) != 0; }
     bool AllowReadIfNonexistent() const { return (m_policy & FileAccessPolicy_AllowReadIfNonExistent) != 0; }
     bool AllowWrite(bool basedOnlyOnPolicy) const;
+    // True iff this exact path was created by the current process via an
+    // execroot-writable (OverrideAllowWriteForExistingFiles) write of a new file.
+    // Used so a tool can read back the undeclared scratch it just wrote even though
+    // the execroot read-filter otherwise hides undeclared paths. Windows-only
+    // (backed by the per-process created-files tracker in PolicyResult.cpp).
+    bool WasCreatedInThisProcess() const;
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool AllowRealInputTimestamps() const { return (m_policy & FileAccessPolicy_AllowRealInputTimestamps) != 0; }
@@ -191,6 +197,29 @@ public:
     USN GetExpectedUsn() const { return m_policySearchCursor.GetExpectedUsn(); }
     // Indicates if this policy is invalid (iff Initialize did not complete successfully or has not been called).
     bool IsIndeterminate() const { return m_isIndeterminate; }
+
+    // True iff this path corresponds to an exact node in the manifest policy tree,
+    // i.e. the path was explicitly declared as a scope/input, or it is an ancestor
+    // directory of such a declaration. This is distinct from AllowRead(): ancestor
+    // directories of a declared input carry an inherited Deny policy but still have
+    // an exact tree node (the search is not truncated). Used by the Bazel directory-
+    // enumeration filter to keep directories that lead to declared inputs visible.
+    bool IsExactManifestNode() const {
+        return m_policySearchCursor.IsValid() && !m_policySearchCursor.SearchWasTruncated;
+    }
+
+    // True iff the effective policy for this path carries the bazel "declared input"
+    // marker (FileAccessPolicy_DeclaredInput), i.e. the path is covered by an
+    // EXPLICIT -r/-w/-d/tool grant (or is a descendant of a granted directory, since
+    // the marker propagates through cone inheritance) - as opposed to a path that is
+    // merely readable via the blanket whole-filesystem root scope. The handle-
+    // resolution read fallback uses this to rescue a denied symlink/junction read ONLY
+    // when its resolved real target is a declared input, preserving hermetic/RBE parity
+    // (notably: the execroot/_main symlink resolves undeclared paths to the real source
+    // tree, which is root-readable but NOT declared - those must stay masked).
+    bool IsDeclaredInput() const {
+        return (m_policy & FileAccessPolicy_DeclaredInput) != 0;
+    }
 
     // d: is level 0, d:\office is level 1, d:\office\dev is level 2, etc...
     // Level of a policy search cursor refers to the level of the remainder of the path after this policyresult.

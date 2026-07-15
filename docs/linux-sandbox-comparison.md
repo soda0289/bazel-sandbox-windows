@@ -80,6 +80,77 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   mount onto an inaccessible helper file/dir; we have a first-class flag.
 - **`--trace <file>`** — per-access report from the DLL (allowed/denied events).
   A Windows-only debugging aid on top of the vendored reporting channel.
+- **`--filter-inputs`** — the closest analogue to linux-sandbox's *symlink forest*,
+  and the **default mode** the `windows-sandbox` strategy now runs in ("Mode 2",
+  matching default `linux-sandbox` reads). The Bazel runner passes it on every
+  spawn. It implies `-H` (hermetic reads) and additionally makes undeclared inputs
+  **invisible** rather than merely denied, so builds fail the same way they would
+  on Linux when an input is not declared:
+  - **Denied reads are masked as `NOT_FOUND`** (Mechanism A). On Linux an
+    undeclared file simply isn't in the forest, so a read returns `ENOENT`; here an
+    existing-but-undeclared file reports not-found instead of access-denied.
+  - **Undeclared entries are removed from directory listings** (Mechanism B). On
+    Linux `readdir` over an execroot dir only ever sees the declared inputs that
+    were symlinked in; here we post-filter enumeration results so an undeclared
+    file/dir is not listed. Declared files and the ancestor directories that lead
+    to them stay visible. This is enforced across all enumeration surfaces
+    (`FindFirstFile`, `GetFileInformationByHandleEx`, and direct
+    `ntdll!NtQueryDirectoryFile` — the path Node/libuv use).
+  - Writes are **not** masked: an undeclared write is still `ACCESS_DENIED`, so
+    missing-output declarations still fail loudly.
+
+  See `docs/detours-input-filtering.md` for the full design. This gives us
+  symlink-forest-like input hermeticity **without** materializing a per-action tree
+  (which is prohibitively slow on Windows NTFS / ProjFS), at effectively native
+  speed.
+
+- **`--hermetic-fs`** *(planned — "Mode 3")* — layers on top of `--filter-inputs`
+  to also deny reads **outside** the execroot (except a curated OS allowlist),
+  matching `linux-sandbox --experimental_use_hermetic_linux_sandbox`. Bazel will
+  select it via a new **`--experimental_use_hermetic_windows_sandbox`** option
+  (the direct analogue of the Linux flag), and the allowlist is seeded with
+  `C:\Windows\System32` (system DLLs) + other required OS locations and extended
+  through the existing **`--sandbox_add_mount_pair`** option. Not yet implemented;
+  see `docs/detours-input-filtering.md` §Modes.
+
+- **`--execroot-writable`** — matches the fact that linux-sandbox runs in a
+  **fully writable throwaway execroot**. Because the Windows sandbox runs *in
+  place* in the real execroot, we cannot simply make it writable (that would let
+  a tool clobber real inputs). Instead this flag lets the tool **create** new
+  files/dirs anywhere in the execroot and re-write files it created *this run*,
+  while still **denying overwrites** of pre-existing undeclared/input files
+  (enforced via the execroot cone's `OverrideAllowWriteForExistingFiles` bit).
+  The runner passes it alongside `--filter-inputs`. It covers tools that write
+  undeclared scratch inside the execroot (e.g. vite's `node_modules/.vite-temp`)
+  without opening a hole to overwrite declared inputs.
+- **`-d <path>`** — reveal a declared **output's parent directory**. linux-sandbox
+  pre-creates output parent dirs in its writable execroot; here `-d` applies a
+  node-only grant (read + create-directory + write on the exact dir) so the tool
+  can `stat`/enumerate it and its recursive `mkdir` succeeds, while the dir's
+  subtree stays denied — undeclared files inside it remain hidden and unwritable.
+
+### The `DeclaredInput` marker-bit fix (execroot symlink forest)
+
+linux-sandbox builds a fresh symlink forest so declared inputs are physically
+present and everything else is absent. The Windows sandbox runs in place, where
+the execroot's top-level entries (`_main/*`) are themselves per-entry
+symlinks/junctions into the **real workspace source tree**. That real tree is
+covered by the whole-disk read baseline, so *undeclared* workspace files were
+reachable through those links — a read leak absent on Linux. The fix is a policy
+marker bit `FileAccessPolicy_DeclaredInput` (`0x2000`) OR'd **only** into
+explicit `-r`/`-w`/`-d`/tool grants (never the root baseline). When a denied
+symlink/junction read resolves to a target carrying this marker
+(`IsDeclaredInput()`), the read is rescued; otherwise it stays hidden. So
+declared inputs reached through the forest stay visible while undeclared
+workspace files do not leak — giving the same net visibility as the Linux
+forest. See `docs/detours-input-filtering.md`.
+
+
+  > **Note on `-r` keys vs values:** the runner now grants **both** the in-place
+  > execroot KEY path of each declared input **and** its real target VALUE (plus a
+  > handle-resolution fallback for out-of-execroot targets). The KEYs define the
+  > visible manifest tree that Mechanism B enumerates against; the VALUEs let reads
+  > that resolve through junctions/symlinks succeed.
 
 ## 3. Intentionally not applicable (and why)
 
@@ -90,8 +161,8 @@ Bazel's `WindowsSandboxedSpawnRunner` never sends them.
   there is no way to build a "minimal view" where undeclared files are absent
   (the process still needs `C:\Windows` for system DLLs). Bazel already stages
   the execroot (symlinks/junctions) before invoking us, and its
-  `WindowsSandboxUtil` discards the sandbox-relative path keys, passing only real
-  paths as `-r`. Full analysis in [`gsoc-proposal-comparison.md`](gsoc-proposal-comparison.md) §7.
+  `WindowsSandboxUtil` passes each input's in-place execroot path (the key) **and**
+  its real target as `-r` grants. Full analysis in [`gsoc-proposal-comparison.md`](gsoc-proposal-comparison.md) §7.
 - **`-h` hermetic root (chroot)** — same root cause: no `chroot`/`pivot_root`.
   Our enforcement-by-detour model achieves hermeticity by *denial*, not by
   rebasing the filesystem root. (Our `-h` is repurposed as help.)

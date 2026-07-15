@@ -1,6 +1,6 @@
 # ProjFS-based Windows sandbox modes (design)
 
-Status: **proposal / pre-implementation.** This doc specifies a redesign of the
+Status: **deferred (superseded for the near term).** This doc specifies a redesign of the
 Windows sandbox around the Windows Projected File System (ProjFS) so that it uses
 the same **constructive** isolation model as Bazel's Linux and macOS sandboxes,
 instead of the current in-place Detours-only enforcement. It defines three
@@ -8,6 +8,19 @@ execution modes and, above all, a **strict parity contract with `linux-sandbox`*
 so that an action that builds under the default sandbox on a developer's Windows
 machine behaves identically when the same commit runs under `linux-sandbox` in
 CI.
+
+> **Why deferred:** the measurement spike (§12) confirmed the constructive model
+> is *correct* (zero hydration, zero copy, undeclared paths absent) but that
+> **per-file reads through a ProjFS root cost ~8 ms/open (~34× native)** — an
+> intrinsic `PrjFlt` per-open tax, not hydration. Preserving native-ish speed
+> requires **coarse directory-symlink projection** plus a write-overlay, a
+> re-enumeration workaround, and a new provider process: substantial, subtle new
+> code that would still be *slower* than what we have. We therefore chose the
+> in-place, subtractive **Detours input-filtering** approach instead (see
+> [`detours-input-filtering.md`](detours-input-filtering.md)), which reuses the
+> existing engine and reaches the same read-isolation goal at near-native speed.
+> This doc is retained for the measurements and as the reference design should a
+> constructive VFS become necessary later (e.g. for full Mode 3 hermeticity).
 
 Related docs:
 [`linux-sandbox-comparison.md`](linux-sandbox-comparison.md) (flag/feature map),
@@ -440,15 +453,18 @@ Parity is the whole point, so it must be *tested*, not asserted.
    `node_modules` tree. **Gate:** latency acceptable and virtual symlinks avoid
    hydration.
 
-   > **DONE (spike, `spike/projfs/projfs_spike.cpp` + `projfs_spike2.cpp`).** See
-   > §12 for full data. Headlines: virtual-symlink projection works with **zero
-   > hydration** and **zero copy**; undeclared paths are **absent** with a working
-   > negative-path cache; writes work both through-symlink (no copy) and as
+   > **DONE (measurement spike, since removed).** See §12 for full data. The two
+   > throwaway providers (`projfs_spike.cpp`, `projfs_spike2.cpp`) were deleted once
+   > they had served their purpose. Headlines: virtual-symlink projection works with
+   > **zero hydration** and **zero copy**; undeclared paths are **absent** with a
+   > working negative-path cache; writes work both through-symlink (no copy) and as
    > overlay. **BUT** the pivotal finding: per-file opens through the ProjFS root
    > cost **~8 ms/file** (~34× native) — intrinsic `PrjFlt` overhead, not
    > hydration — so per-file projection is too slow for large trees, while
    > **coarse directory-symlink projection is near-native (~0.375 ms/file)**. This
-   > reshapes Mode 1 (see §12 granularity strategy) but does **not** block it.
+   > cost is what led us to **defer the whole ProjFS model** in favor of the
+   > in-place Detours input-filtering sandbox (see
+   > [`detours-input-filtering.md`](detours-input-filtering.md)).
 2. **Mode 1 end to end.** `ProjFsSandboxedSpawn` + Bazel strategy
    `windows-processwrapper`; parity tests for the constructive read model.
    **Adopt the §12 granularity strategy** (project declared-input *directories* as
@@ -484,11 +500,12 @@ Parity is the whole point, so it must be *tested*, not asserted.
 
 ## 12. Spike measurements and their design impact
 
-Two throwaway providers under `spike/projfs/` (`projfs_spike.cpp`,
-`projfs_spike2.cpp`) validated the design's assumptions on this host (Win11 build
-26200, SDK 10.0.26100, ProjFS `Client-ProjFS` enabled). The `projfs_spike2.cpp`
-`read` mode deliberately **separates the phases** (enumerate / create placeholder
-/ read via ProjFS / read direct control) so we can see *which* operation costs
+Two throwaway providers (`projfs_spike.cpp`, `projfs_spike2.cpp`, kept under
+`spike/projfs/` while in use and **removed after measurement**) validated the
+design's assumptions on this host (Win11 build 26200, SDK 10.0.26100, ProjFS
+`Client-ProjFS` enabled). The `projfs_spike2.cpp`
+`read` mode deliberately **separated the phases** (enumerate / create placeholder
+/ read via ProjFS / read direct control) so we could see *which* operation costs
 what, driving each phase from the manifest to avoid ProjFS re-enumeration
 artifacts (see the re-enumeration caveat below).
 

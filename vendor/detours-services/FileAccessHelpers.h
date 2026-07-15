@@ -254,6 +254,27 @@ public:
         return 0;
     }
 
+    // True if this access is a pure read/probe with no write component. Used to
+    // decide whether a denial may be masked as "not found" (Bazel filtering mode):
+    // we never mask a write denial, so undeclared writes still fail loudly.
+    bool IsReadOnlyAccess() const {
+        return (Access & RequestedAccess::Write) == RequestedAccess::None;
+    }
+
+    // Denial error, optionally masking a read denial of an existing path as
+    // ERROR_FILE_NOT_FOUND (linux-sandbox parity: an undeclared input is absent,
+    // not permission-denied). Only applies to read-only accesses whose path is
+    // otherwise Valid (i.e. would have been ERROR_ACCESS_DENIED); path-not-found /
+    // invalid-name denials keep their authentic codes. The caller supplies the
+    // flag (read from g_fileAccessManifestExtraFlags) to keep this class free of
+    // global state.
+    DWORD DenialError(bool maskReadsAsNotFound) const {
+        if (maskReadsAsNotFound && IsReadOnlyAccess() && Validity == PathValidity::Valid) {
+            return ERROR_FILE_NOT_FOUND;
+        }
+        return DenialError();
+    }
+
     // Returns an NTSTATUS that should be reported on denial (ResultAction::Deny).
     // It is an error to call this method when ResultAction is not ResultAction::Deny.
     NTSTATUS DenialNtStatus() const {
@@ -274,6 +295,16 @@ public:
 
         assert(false);
         return 0;
+    }
+
+    // NTSTATUS denial code, optionally masking a read denial of an existing path
+    // as STATUS_OBJECT_NAME_NOT_FOUND (see DenialError(bool) for rationale).
+    NTSTATUS DenialNtStatus(bool maskReadsAsNotFound) const {
+        const NTSTATUS StatusObjectNameNotFound = 0xC0000034L;
+        if (maskReadsAsNotFound && IsReadOnlyAccess() && Validity == PathValidity::Valid) {
+            return StatusObjectNameNotFound;
+        }
+        return DenialNtStatus();
     }
 
     // Returns a new AccessCheckResult that is a copy of this one, but with the specified report level.
@@ -326,6 +357,11 @@ public:
     // It is an error to call this method when ResultAction is not ResultAction::Deny.
     void SetLastErrorToDenialError() const {
         SetLastError(DenialError());
+    }
+
+    // As above, but honoring the read-as-not-found masking flag.
+    void SetLastErrorToDenialError(bool maskReadsAsNotFound) const {
+        SetLastError(DenialError(maskReadsAsNotFound));
     }
 #endif
 };

@@ -111,7 +111,16 @@ inline bool CheckReportAnyAccess(FileAccessManifestFlag flags, bool accessDenied
     m(IgnoreDeviceIoControlGetReparsePoint,             0x40) \
     m(IgnoreUntrackedPathsInFullReparsePointResolving,  0x80) \
     m(MonitorCreateProcessAsUser,                       0x100) \
-    m(SecurityInodeGetattrIsProbe,                      0x200)
+    m(SecurityInodeGetattrIsProbe,                      0x200) \
+    /* Bazel-sandbox fork extensions (not present in BuildXL C#). CODESYNC: */ \
+    /* src/manifest_builder.h ExtraFlag_*. */ \
+    /* Report a denied READ of an existing-but-undeclared path as NOT_FOUND */ \
+    /* instead of ACCESS_DENIED, matching linux-sandbox (undeclared inputs */ \
+    /* are absent, not permission-denied). Writes are unaffected. */ \
+    m(DeniedReadsAsNotFound,                       0x400) \
+    /* Remove undeclared (non-read-allowed) children from directory */ \
+    /* enumerations so the process cannot see them. */ \
+    m(FilterDirectoryEnumeration,                  0x800)
 
 enum class FileAccessManifestExtraFlag {
     FOR_ALL_FAM_EXTRA_FLAGS(GEN_FAM_FLAG_ENUM_NAME_VALUE)
@@ -173,6 +182,20 @@ enum FileAccessPolicy
 
     // If set, full reparse point tracking should be done for this path/file
     FileAccessPolicy_EnableFullReparsePointParsing = 0x1000,
+
+    // bazel-sandbox-windows marker (NOT interpreted by BuildXL enforcement): tags a
+    // scope that was EXPLICITLY declared as a bazel input/output grant (-r/-w/-d/tool),
+    // as opposed to a path merely readable via the blanket whole-filesystem root scope.
+    // Set on explicit grant scopes in main.cpp and, because it is <= the 0xFFFF cone
+    // inheritance mask (Policy_MaskNothing), it propagates to every descendant of a
+    // granted directory. The handle-resolution read fallback (DetouredFunctions.cpp)
+    // uses it to rescue symlinks/junctions ONLY when their resolved real target is a
+    // declared input - never when the target is just root-baseline readable. This is
+    // what stops the bazel execroot symlink (execroot/_main -> the real source tree)
+    // from leaking undeclared source files. CODESYNC: Policy_DeclaredInput in
+    // src/manifest_builder.h. Enforcement bit-tests (AllowRead(), IndicateUntracked(),
+    // etc.) never inspect this bit, so it is inert for access decisions.
+    FileAccessPolicy_DeclaredInput = 0x2000,
 
     // If set, then we will report all attempts to access files under this scope (whether existent or not).
     // BuildXL uses this information to discover dynamic dependencies, such as #include-ed files.

@@ -187,6 +187,22 @@ bool ManifestBuilder::AddScope(const std::wstring& path,
     return true;
 }
 
+bool ManifestBuilder::AddNodeScope(const std::wstring& path,
+                                   uint32_t mask,
+                                   uint32_t values) {
+    std::wstring canonical;
+    if (!CanonicalizeForTree(path, canonical)) {
+        return false;
+    }
+    Node* leaf = AddPathFragments(canonical);
+    // ApplyNodeFileAccess on the leaf: touch only the node policy accumulators so
+    // the cone policy (inherited by the subtree) is left untouched. Finalize()
+    // computes nodePolicy = (conePolicy & nodeMask) | nodeValues.
+    leaf->nodeMask = mask & leaf->nodeMask;
+    leaf->nodeValues = values | leaf->nodeValues;
+    return true;
+}
+
 void ManifestBuilder::Finalize(Node* node, uint32_t parentPolicy) {
     node->conePolicy = (parentPolicy & node->coneMask) | node->coneValues;
     node->nodePolicy = (node->conePolicy & node->nodeMask) | node->nodeValues;

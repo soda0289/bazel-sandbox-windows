@@ -37,6 +37,13 @@ struct Options {
     std::vector<std::wstring> readonlyFiles;
     std::vector<std::wstring> writableFiles;
     std::vector<std::wstring> blockedFiles;
+    // -d <path>: a declared output's parent DIRECTORY. Applied as a node-only
+    // grant (read + create-directory + write on the exact dir) so the tool can
+    // stat/enumerate it and its recursive mkdir succeeds (ALREADY_EXISTS), while
+    // the dir's subtree stays Deny - undeclared files inside it remain hidden and
+    // unwritable. Mirrors linux-sandbox, which pre-creates output parent dirs in
+    // the (writable) sandbox execroot. See docs/detours-input-filtering.md.
+    std::vector<std::wstring> outputDirs;
     // -D <file>: write launcher diagnostics to this file (linux-sandbox parity).
     std::wstring debugPath;
     // --trace <file>: write a per-access report (from the injected DLL) here.
@@ -54,6 +61,22 @@ struct Options {
     // When true, the working directory is denied by default and only -r/-w grants
     // expose it, matching --experimental_use_hermetic_linux_sandbox (Goal 2).
     bool hermetic = false;
+    // --filter-inputs: strict "match linux-sandbox reads" mode. Implies hermetic
+    // (execroot denied by default; only -r/-w visible) and additionally makes the
+    // sandbox SUBTRACTIVE: denied reads of existing-but-undeclared paths report
+    // NOT_FOUND instead of ACCESS_DENIED, and undeclared entries are removed from
+    // directory enumerations - so undeclared inputs are invisible, as under
+    // linux-sandbox's symlink forest. See docs/detours-input-filtering.md.
+    bool filterInputs = false;
+    // --execroot-writable: allow the sandboxed tool to CREATE new files/directories
+    // anywhere in the execroot (working dir) and re-write files it created, while
+    // still DENYING overwrites of pre-existing undeclared/input files. This matches
+    // linux-sandbox, whose throwaway execroot is fully writable, and covers tools
+    // that write undeclared scratch inside the execroot (e.g. vite's node_modules/
+    // .vite-temp) without granting a hole to clobber real inputs. Declared -w outputs
+    // stay freely overwritable; -r inputs stay read-only. Enforced via the execroot
+    // cone's OverrideAllowWriteForExistingFiles policy bit (see PolicyResult::AllowWrite).
+    bool execrootWritable = false;
     std::vector<std::wstring> args;  // tool + arguments
 };
 
@@ -88,11 +111,19 @@ void PrintUsage(int exitCode) {
         L"  -w <path>  make a file/directory read/writable in the sandbox\n"
         L"  -r <path>  make a file/directory read-only in the sandbox\n"
         L"  -b <path>  make a file/directory inaccessible in the sandbox\n"
+        L"  -d <path>  reveal an output's parent dir (allow mkdir/write on the\n"
+        L"             dir itself; its undeclared contents stay hidden)\n"
         L"  -N         allow only loopback network access (block external)\n"
         L"  -n         block all network access (no loopback either)\n"
         L"  -H         hermetic reads: deny the working dir by default so only\n"
         L"             -r/-w inputs are readable (default: reads unconfined, like\n"
         L"             the default linux-sandbox; writes still confined to -w)\n"
+        L"  --filter-inputs  strict mode: implies -H and makes undeclared inputs\n"
+        L"             invisible - denied reads return NOT_FOUND and directory\n"
+        L"             listings hide undeclared entries (matches linux-sandbox)\n"
+        L"  --execroot-writable  allow creating NEW files/dirs anywhere in the\n"
+        L"             working dir (and re-writing files created this run) while still\n"
+        L"             denying overwrites of pre-existing undeclared/input files\n"
         L"  -D <file>  write launcher diagnostics to a file\n"
         L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
         L"  -S <file>  write child resource-usage statistics (protobuf) to a file\n"
@@ -164,6 +195,8 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 o.readonlyFiles.push_back(ToAbsolute(next()));
             } else if (name == L"b") {
                 o.blockedFiles.push_back(ToAbsolute(next()));
+            } else if (name == L"d") {
+                o.outputDirs.push_back(ToAbsolute(next()));
             } else if (name == L"N") {
                 if (o.networkPolicy == 2) Die(L"-N and -n are mutually exclusive");
                 o.networkPolicy = 1;
@@ -172,6 +205,11 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 o.networkPolicy = 2;
             } else if (name == L"H" || name == L"-hermetic") {
                 o.hermetic = true;
+            } else if (name == L"-filter-inputs") {
+                o.filterInputs = true;
+                o.hermetic = true;
+            } else if (name == L"-execroot-writable") {
+                o.execrootWritable = true;
             } else if (name == L"D") {
                 o.debugPath = ToAbsolute(next());
             } else if (name == L"-trace") {
@@ -512,6 +550,15 @@ int wmain(int argc, wchar_t** argv) {
                      Flag_MonitorChildProcesses | Flag_MonitorZwCreateOpenQueryFile |
                      Flag_IgnoreReparsePoints | Flag_IgnoreFullReparsePointResolving;
 
+    // --filter-inputs turns on the subtractive behaviors in the DLL: denied reads
+    // report NOT_FOUND (not ACCESS_DENIED) and directory enumerations hide
+    // undeclared children. See docs/detours-input-filtering.md.
+    uint32_t extraFlags = ExtraFlag_None;
+    if (o.filterInputs) {
+        extraFlags |= ExtraFlag_DeniedReadsAsNotFound |
+                      ExtraFlag_FilterDirectoryEnumeration;
+    }
+
     // --trace <file>: turn on the DLL's report channel (otherwise fully inert).
     // We report both expected and unexpected accesses so the trace is a complete
     // record. The DLL opens the report path itself (OPEN_ALWAYS, append) and
@@ -525,7 +572,7 @@ int wmain(int argc, wchar_t** argv) {
         CloseHandle(ht);
     }
 
-    ManifestBuilder mb(flags, /*extraFlags*/ 0, dllAnsi, dllAnsi);
+    ManifestBuilder mb(flags, /*extraFlags*/ extraFlags, dllAnsi, dllAnsi);
     mb.SetReportPath(o.tracePath);
 
     // Whole file system read-only. AllowReadIfNonExistent lets probes of files that do not exist
@@ -549,28 +596,50 @@ int wmain(int argc, wchar_t** argv) {
     uint32_t workingDirPolicy = o.hermetic
         ? Policy_Deny
         : (Policy_AllowRead | Policy_AllowReadIfNonExistent);
+    // --execroot-writable: grant write + create-directory on the execroot cone, with
+    // OverrideAllowWriteForExistingFiles so the DLL allows creating NEW files/dirs and
+    // re-writing files created this run but denies clobbering pre-existing undeclared
+    // files. Read bits are unchanged (still hidden under a hermetic/filter-inputs
+    // execroot). Declared -w outputs (AllowAll) and -r inputs are applied as more
+    // specific scopes below and are unaffected.
+    if (o.execrootWritable) {
+        workingDirPolicy |= Policy_AllowWrite | Policy_AllowCreateDirectory |
+                            Policy_OverrideAllowWriteForExistingFiles;
+    }
     if (!mb.AddScope(o.workingDir, Policy_MaskAll, workingDirPolicy))
         Die(L"bad working dir: " + o.workingDir);
     dbg(o.hermetic ? L"na" : L"ro", o.workingDir);
     // Allow reading the tool itself.
     if (!mb.AddScope(toolPath, Policy_MaskAll,
-                     Policy_AllowRead | Policy_AllowReadIfNonExistent))
+                     Policy_AllowRead | Policy_AllowReadIfNonExistent | Policy_DeclaredInput))
         Die(L"bad tool path: " + toolPath);
     dbg(L"ro", toolPath);
 
     for (const auto& p : o.readonlyFiles) {
         if (!mb.AddScope(p, Policy_MaskAll,
-                         Policy_AllowRead | Policy_AllowReadIfNonExistent))
+                         Policy_AllowRead | Policy_AllowReadIfNonExistent | Policy_DeclaredInput))
             Die(L"bad -r: " + p);
         dbg(L"ro", p);
     }
     for (const auto& p : o.writableFiles) {
-        if (!mb.AddScope(p, Policy_MaskAll, Policy_AllowAll)) Die(L"bad -w: " + p);
+        if (!mb.AddScope(p, Policy_MaskAll, Policy_AllowAll | Policy_DeclaredInput)) Die(L"bad -w: " + p);
         dbg(L"rw", p);
     }
     for (const auto& p : o.blockedFiles) {
         if (!mb.AddScope(p, Policy_MaskAll, Policy_Deny)) Die(L"bad -b: " + p);
         dbg(L"na", p);
+    }
+    // Output parent directories: node-only grant so the exact dir is revealed
+    // (readable/enumerable) and mkdir/write on it is allowed, but its subtree
+    // policy is left as-is (Deny under a hermetic execroot) so undeclared files
+    // inside stay hidden. See Options::outputDirs.
+    for (const auto& p : o.outputDirs) {
+        if (!mb.AddNodeScope(p, Policy_MaskAll,
+                             Policy_AllowRead | Policy_AllowReadIfNonExistent |
+                                 Policy_AllowWrite | Policy_AllowCreateDirectory |
+                                 Policy_DeclaredInput))
+            Die(L"bad -d: " + p);
+        dbg(L"od", p);
     }
 
     std::vector<uint8_t> manifest = mb.Build(/*injectionTimeoutMins*/ 10);

@@ -569,6 +569,22 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
     __in BOOLEAN RestartScan
     );
 
+// See NtQueryDirectoryFileEx on MSDN. The modern variant used by FindFirstFileEx
+// and GetFileInformationByHandleEx on Windows 8+; QueryFlags replaces the
+// ReturnSingleEntry/RestartScan booleans.
+NTSTATUS NTAPI Detoured_NtQueryDirectoryFileEx(
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID FileInformation,
+    __in ULONG Length,
+    __in FILE_INFORMATION_CLASS FileInformationClass,
+    __in ULONG QueryFlags,
+    __in_opt PUNICODE_STRING FileName
+    );
+
 // See ZwQueryDirectoryFile on MSDN: https://msdn.microsoft.com/en-us/library/windows/hardware/ff556633(v=vs.85).aspx
 NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
     __in HANDLE FileHandle,
@@ -617,6 +633,14 @@ NTSTATUS NTAPI Detoured_NtOpenFile(
     __out PIO_STATUS_BLOCK IoStatusBlock,
     __in ULONG ShareAccess,
     __in ULONG OpenOptions
+    );
+
+// Handle-less attribute probe used by modern libuv's fs.stat / fs.lstat. See DetouredFunctionTypes.h.
+BOOL WINAPI Detoured_GetFileInformationByName(
+    __in  PCWSTR FileName,
+    __in  BXL_FILE_INFO_BY_NAME_CLASS FileInformationClass,
+    __out PVOID FileInfoBuffer,
+    __in  ULONG FileInfoBufferSize
     );
 
 // See ZwCreateFile on MSDN: https://msdn.microsoft.com/en-us/library/bb432380(v=vs.85).aspx

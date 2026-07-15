@@ -102,6 +102,18 @@ extern "C" {
         _In_opt_ PUNICODE_STRING        FileName,
         _In_     BOOLEAN                RestartScan);
 
+    NTSTATUS NTAPI NtQueryDirectoryFileEx(
+        _In_     HANDLE                 FileHandle,
+        _In_opt_ HANDLE                 Event,
+        _In_opt_ PIO_APC_ROUTINE        ApcRoutine,
+        _In_opt_ PVOID                  ApcContext,
+        _Out_    PIO_STATUS_BLOCK       IoStatusBlock,
+        _Out_    PVOID                  FileInformation,
+        _In_     ULONG                  Length,
+        _In_     FILE_INFORMATION_CLASS FileInformationClass,
+        _In_     ULONG                  QueryFlags,
+        _In_opt_ PUNICODE_STRING        FileName);
+
     NTSTATUS NTAPI ZwQueryDirectoryFile(
         _In_     HANDLE                 FileHandle,
         _In_opt_ HANDLE                 Event,
@@ -358,9 +370,11 @@ GetFinalPathNameByHandleA_t Real_GetFinalPathNameByHandleA;
 NtClose_t Real_NtClose;
 NtCreateFile_t Real_NtCreateFile;
 NtOpenFile_t Real_NtOpenFile;
+GetFileInformationByName_t Real_GetFileInformationByName;
 ZwCreateFile_t Real_ZwCreateFile;
 ZwOpenFile_t Real_ZwOpenFile;
 NtQueryDirectoryFile_t Real_NtQueryDirectoryFile;
+NtQueryDirectoryFileEx_t Real_NtQueryDirectoryFileEx;
 ZwQueryDirectoryFile_t Real_ZwQueryDirectoryFile;
 ZwSetInformationFile_t Real_ZwSetInformationFile;
 
@@ -1246,6 +1260,22 @@ static bool DllProcessAttach()
             ATTACH(GetFileAttributesExW);
             ATTACH(GetFileAttributesExA);
 
+            // GetFileInformationByName is a modern (Win8+/Win11) handle-less attribute probe
+            // resolved dynamically: it may be absent on older OSes and isn't guaranteed to be
+            // in the import lib. When present, hook it so libuv's fast fs.stat path is filtered
+            // like the CreateFile/GetFileAttributes read paths. When absent, libuv falls back to
+            // CreateFileW (already hooked), so skipping is safe.
+            Real_GetFileInformationByName = (GetFileInformationByName_t)::GetProcAddress(
+                ::GetModuleHandleW(L"kernelbase.dll"), "GetFileInformationByName");
+            if (Real_GetFileInformationByName != nullptr)
+            {
+                error = DetourAttach((PVOID*)&Real_GetFileInformationByName, Detoured_GetFileInformationByName);
+                if (error != ERROR_SUCCESS) {
+                    Dbg(L"Failed to attach to function: GetFileInformationByName");
+                    failed = true;
+                }
+            }
+
             ATTACH(GetFileInformationByHandle);
             ATTACH(GetFileInformationByHandleEx);
             ATTACH(SetFileInformationByHandle);
@@ -1303,6 +1333,7 @@ static bool DllProcessAttach()
             ATTACH(ZwCreateFile);
             ATTACH(ZwOpenFile);
             ATTACH(NtQueryDirectoryFile);
+            ATTACH(NtQueryDirectoryFileEx);
             ATTACH(ZwQueryDirectoryFile);
             // See comments in DetorsFunctions.cpp
             // on the Detoured_NtClose for more information 

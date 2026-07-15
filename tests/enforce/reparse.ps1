@@ -6,10 +6,11 @@
 #   2. If the requested path is denied, a handle-resolution fallback resolves the
 #      final target (DetourGetFinalPathByHandle) and re-checks THAT against the
 #      policy. So an undeclared link is allowed iff its resolved target is itself
-#      readable (e.g. -r-granted, as with pnpm intra-store junctions), and denied
-#      iff the resolved target lands in a denied region. This is the mechanism
-#      that lets undeclared-but-legitimate junctions work without name-based
-#      cones; see docs/sandbox-parity-findings.md (Category A: pnpm junctions).
+#      a DECLARED input (-r/-w granted, as with pnpm intra-store junctions), and
+#      denied iff the resolved target lands in a denied region OR is only readable
+#      via the whole-filesystem root baseline (not a declared input). This is the
+#      mechanism that lets undeclared-but-legitimate junctions work without name-
+#      based cones; see docs/sandbox-parity-findings.md (Category A: pnpm junctions).
 
 [CmdletBinding()]
 param(
@@ -50,11 +51,30 @@ Assert-Exit 'read through undeclared junction to -r-granted target allowed' 0 `
 # denied region is still blocked (the fallback re-checks the real target).
 Assert-Exit 'read through undeclared junction to denied target denied' 10 `
     (Invoke-Sandbox @('-W', $exec) @('read', (Join-Path $link 'f.txt')))
-# Category-B observation (non-gating): a junction whose target resolves OUTSIDE
-# every -W deny scope follows the default-allow root policy and is therefore
-# readable. In real bazel such targets are system dirs (readable under linux too)
-# but this is the broadening the handle-resolution fallback introduces; tracked
-# as a known gap in docs/sandbox-parity-findings.md.
+# Handle-less stat parity (GetFileInformationByName, libuv's fast fs.stat path).
+# The mid-path junction is undeclared, so the literal-path probe is denied; the
+# handle-resolution PROBE fallback opens a transient handle that follows the
+# junction and re-checks the resolved target. A stat through an undeclared
+# junction to an -r-granted target must be ALLOWED (matches the read fallback and
+# linux-sandbox, where the forest lets stat follow the link). Without this a tool
+# that stats before opening (node/libuv ESM resolution) would see the file as
+# absent even though its content is readable. See docs/detours-input-filtering.md.
+Assert-Exit 'statbyname through undeclared junction to -r-granted target allowed' 0 `
+    (Invoke-Sandbox @('-W', $exec, '-r', $grant) @('statbyname', (Join-Path $glink 'f.txt')))
+# A stat through an undeclared junction to a denied target stays blocked (the
+# probe fallback re-checks the real target, so hermeticity is preserved).
+Assert-Exit 'statbyname through undeclared junction to denied target denied' 10 `
+    (Invoke-Sandbox @('-W', $exec) @('statbyname', (Join-Path $link 'f.txt')))
+# An undeclared junction whose target resolves OUTSIDE every -W deny scope, and is
+# therefore readable ONLY via the whole-filesystem root baseline (not a declared
+# input), is DENIED. The handle-resolution fallback rescues a link only when its
+# resolved target is a declared input (an exact manifest node); a target that would
+# merely be allowed by the catch-all root AllowRead scope stays masked. This matches
+# hermetic linux-sandbox / RBE, where only declared inputs are present in the input
+# root. It is also what prevents the bazel execroot symlink (execroot/_main -> the
+# real source tree) from leaking undeclared source files whose in-execroot path is
+# denied but which resolve to a root-readable location. (Previously a Category-B gap
+# that allowed such reads; now closed. See docs/detours-input-filtering.md.)
 $ws2 = New-Workspace
 $outside = Join-Path $ws2 'outside'
 $exec2 = Join-Path $ws2 'exec'
@@ -62,9 +82,8 @@ New-Item -ItemType Directory -Force -Path $outside, $exec2 | Out-Null
 'payload' | Set-Content (Join-Path $outside 'f.txt')
 $olink = Join-Path $exec2 'olink'
 & (Get-CmdExe) /c mklink /J "$olink" "$outside" *> $null
-Note-Exit 'undeclared junction to allow-root target' `
-    (Invoke-Sandbox @('-W', $exec2) @('read', (Join-Path $olink 'f.txt'))) `
-    '(expect 0: follows default-allow root; Category-B gap)'
+Assert-Exit 'read through undeclared junction to root-baseline-only target denied' 10 `
+    (Invoke-Sandbox @('-W', $exec2) @('read', (Join-Path $olink 'f.txt')))
 
 # --- File symlinks (require SeCreateSymbolicLinkPrivilege) ------------------
 if (-not (Test-SymlinkPrivilege)) {

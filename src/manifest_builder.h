@@ -28,10 +28,22 @@ enum FileAccessPolicy : uint32_t {
     Policy_AllowReadIfNonExistent = 0x4,
     Policy_AllowCreateDirectory = 0x8,
     Policy_AllowSymlinkCreation = 0x100,
+    // (parentPolicy-derived) writes are permitted only when the target file does
+    // NOT already exist. Enforced in the DLL's PolicyResult::AllowWrite (per-process
+    // "files I created" tracking): new files can be created/re-written, pre-existing
+    // undeclared files cannot be clobbered. Used by the execroot-writable mode.
+    // CODESYNC: FileAccessPolicy_OverrideAllowWriteForExistingFiles in DataTypes.h.
+    Policy_OverrideAllowWriteForExistingFiles = 0x400,
     // Matches C# FileAccessPolicy.AllowAll (includes symlink creation).
     Policy_AllowAll = Policy_AllowRead | Policy_AllowReadIfNonExistent |
                       Policy_AllowWrite | Policy_AllowCreateDirectory |
                       Policy_AllowSymlinkCreation,
+    // Marker (inert for enforcement) tagging an EXPLICITLY declared input/output grant
+    // (-r/-w/-d/tool) so the DLL's handle-resolution read fallback can distinguish a
+    // symlink target that is a real declared input from one merely readable via the
+    // blanket root scope. <= Policy_MaskNothing so it propagates to cone descendants.
+    // CODESYNC: FileAccessPolicy_DeclaredInput in DataTypes.h.
+    Policy_DeclaredInput = 0x2000,
     // Mask semantics: (parentPolicy & Mask) | Values.
     Policy_MaskAll = 0x0,       // mask away all inherited bits
     Policy_MaskNothing = 0xFFFF, // keep all inherited bits
@@ -54,6 +66,19 @@ enum FileAccessManifestFlag : uint32_t {
     // out-of-execroot targets that were never declared, denying valid reads.
     Flag_IgnoreReparsePoints = 0x400,
     Flag_IgnoreFullReparsePointResolving = 0x40000000,
+};
+
+// FileAccessManifestExtraFlag bits (the manifest's second flag word; parsed into
+// g_fileAccessManifestExtraFlags by the DLL). The values below marked "Bazel"
+// are fork-specific extensions not present in BuildXL's C# enum. CODESYNC:
+// FOR_ALL_FAM_EXTRA_FLAGS in vendor/detours-services/DataTypes.h.
+enum FileAccessManifestExtraFlag : uint32_t {
+    ExtraFlag_None = 0x0,
+    // Report a denied READ of an existing-but-undeclared path as NOT_FOUND
+    // instead of ACCESS_DENIED (linux-sandbox parity). Writes are unaffected.
+    ExtraFlag_DeniedReadsAsNotFound = 0x400,
+    // Remove undeclared (non-read-allowed) children from directory enumerations.
+    ExtraFlag_FilterDirectoryEnumeration = 0x800,
 };
 
 // Builds the FileAccessManifest blob for a single sandboxed process.
@@ -82,6 +107,18 @@ public:
     // canonicalization, then split into fragments the same way the DLL does.
     // Returns false if the path cannot be canonicalized.
     bool AddScope(const std::wstring& path, uint32_t mask, uint32_t values);
+
+    // Applies a NODE-only scope policy at the given absolute path: it affects the
+    // policy the DLL enforces for that EXACT path (its NodePolicy) without changing
+    // the cone policy inherited by the subtree. The DLL uses the node policy on an
+    // exact-path match and the nearest ancestor's cone policy for anything deeper
+    // (PolicyResult_common.cpp). This lets us reveal + allow create/write on a
+    // single directory (e.g. a declared output's parent dir) while keeping its
+    // subtree Deny, so undeclared children inside it stay hidden and unwritable -
+    // exactly what an output-dir grant needs. mask/values follow
+    // (conePolicy & mask) | values semantics for the node. Returns false if the
+    // path cannot be canonicalized.
+    bool AddNodeScope(const std::wstring& path, uint32_t mask, uint32_t values);
 
     // Finalizes policies and serializes the whole payload.
     std::vector<uint8_t> Build(uint32_t injectionTimeoutMins);

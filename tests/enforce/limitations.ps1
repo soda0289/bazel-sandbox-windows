@@ -67,13 +67,13 @@ if ($deepOk -and $deep.Length -gt 260) {
     # A non-long-path-aware child truncates the raw >260 path at MAX_PATH before
     # the engine sees it, so the -r grant (keyed on the full path) never matches.
     # The exact failure the child then surfaces - ACCESS_DENIED (10) if the engine
-    # denies the truncated path, or FILE_NOT_FOUND (20) if the mangled path is
+    # denies the truncated path, or FILE_NOT_FOUND (11) if the mangled path is
     # simply absent - depends on the CRT's truncation behavior and is not
     # something the engine controls. Recorded, not gated. The \\?\ and
     # long-path-aware cases below are the ones that assert real engine behavior.
     Note-Exit 'KNOWN-GAP: raw >260 -r over-restricts (child-side truncation)' `
         (Invoke-Sandbox @('-W', $ws, '-r', $deep) @('read', $deepFile)) `
-        '(10=denied or 20=not-found; both reflect the truncation, not a grant)'
+        '(10=denied or 11=not-found; both reflect the truncation, not a grant)'
     Assert-Exit '\\?\ >260 -r allows correctly' 0 `
         (Invoke-Sandbox @('-W', $ws, '-r', ('\\?\' + $deep)) @('read', ('\\?\' + $deepFile)))
     Assert-Exit '\\?\ >260 deny still holds' 10 `

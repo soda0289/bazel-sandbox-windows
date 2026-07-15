@@ -159,6 +159,39 @@ void TestReportPath() {
     }
 }
 
+// AddNodeScope must set the exact-path (node) policy WITHOUT opening the subtree
+// (cone) policy, so it serializes differently from the equivalent cone AddScope.
+// This is what lets an output parent dir be revealed/creatable while its
+// undeclared children stay Deny. Both forms still grow the tree over bare.
+void TestNodeScopeDiffersFromConeScope() {
+    const wchar_t* kDir = L"C:\\Users\\test\\out\\bin";
+    const uint32_t grant = Policy_AllowRead | Policy_AllowReadIfNonExistent |
+                           Policy_AllowWrite | Policy_AllowCreateDirectory;
+    std::vector<uint8_t> bare, cone, node;
+    {
+        ManifestBuilder mb = MakeBuilder();
+        mb.AddRootScope(Policy_MaskAll, Policy_Deny);
+        bare = mb.Build(10);
+    }
+    {
+        ManifestBuilder mb = MakeBuilder();
+        mb.AddRootScope(Policy_MaskAll, Policy_Deny);
+        CHECK(mb.AddScope(kDir, Policy_MaskAll, grant));
+        cone = mb.Build(10);
+    }
+    {
+        ManifestBuilder mb = MakeBuilder();
+        mb.AddRootScope(Policy_MaskAll, Policy_Deny);
+        CHECK(mb.AddNodeScope(kDir, Policy_MaskAll, grant));
+        node = mb.Build(10);
+    }
+    // Both grow the tree, but the node-only grant leaves the cone policy Deny
+    // while the cone grant sets both -> the two blobs must differ.
+    CHECK(cone.size() > bare.size());
+    CHECK(node.size() > bare.size());
+    CHECK(cone != node);
+}
+
 }  // namespace
 
 int main() {
@@ -166,6 +199,7 @@ int main() {
     TestHeaderLayout();
     TestDeterministic();
     TestScopeGrowsTree();
+    TestNodeScopeDiffersFromConeScope();
     TestFlagsAffectBlob();
     TestReportPath();
 

@@ -117,6 +117,12 @@ implemented, which are intentionally not applicable on Windows, and which are
 worth adding (notably `-C` resource limits) — see
 [`docs/linux-sandbox-comparison.md`](docs/linux-sandbox-comparison.md).
 
+For the design of the **in-place input-filtering path** — the `--filter-inputs`
+default that makes undeclared inputs invisible (matching hermetic
+`linux-sandbox` / remote execution), the mode mapping, the `--execroot-writable`
+model, and the `DeclaredInput` marker-bit fix for the execroot symlink
+forest — see [`docs/detours-input-filtering.md`](docs/detours-input-filtering.md).
+
 ## Building
 
 Requirements: Windows x64, Visual Studio 2022+ (MSVC), and
@@ -163,10 +169,18 @@ BazelSandbox [option...] -- command [arg...]
   -w <path>  make a file/directory read/writable in the sandbox
   -r <path>  make a file/directory read-only in the sandbox
   -b <path>  make a file/directory inaccessible in the sandbox
+  -d <path>  reveal an output's parent dir (allow mkdir/write on the dir
+             itself; its undeclared contents stay hidden)
   -N         allow only loopback network access (block external)
   -n         block all network access (no loopback either)
   -H         hermetic reads: deny the working dir by default (default: reads
              unconfined like the default linux-sandbox; writes still need -w)
+  --filter-inputs  strict mode: implies -H and makes undeclared inputs
+             invisible (denied reads return NOT_FOUND, directory listings hide
+             undeclared entries) - matches hermetic linux-sandbox / remote exec
+  --execroot-writable  allow creating NEW files/dirs anywhere in the working
+             dir (and re-writing files created this run) while still denying
+             overwrites of pre-existing undeclared/input files
   -D <file>  write launcher diagnostics to a file
   --trace <file>  write a per-access report (from the sandbox DLL) to a file
   -S <file>  write child resource-usage statistics (protobuf) to a file
@@ -184,9 +198,13 @@ exactly the paths an action needs to **write**:
 
 * `-r <path>` grants read-only access to a file or directory subtree. (Redundant
   in the default permissive mode, where reads are already allowed; required under
-  `-H`.)
+  `-H`/`--filter-inputs`.)
 * `-w <path>` grants read-write access.
 * `-b <path>` blocks a file or directory subtree (overrides read access too).
+* `-d <path>` reveals a declared **output's parent directory**: a node-only grant
+  so the tool can `stat`/enumerate it and its recursive `mkdir` succeeds, while
+  the directory's subtree stays denied (undeclared files inside it remain hidden
+  and unwritable). Mirrors `linux-sandbox` pre-creating output parent dirs.
 * `-H` switches to **hermetic reads**: the working directory is denied by
   default, so only `-r`/`-w` inputs are readable. This is the Windows analog of
   Bazel's `--experimental_use_hermetic_linux_sandbox` and enforces read
@@ -195,6 +213,40 @@ exactly the paths an action needs to **write**:
 Scopes are hierarchical and later/more-specific scopes override broader ones, so
 e.g. `-w outdir -b outdir\secret.txt` makes `outdir` writable while keeping
 `secret.txt` inaccessible.
+
+### Input filtering (`--filter-inputs`) — the `windows-sandbox` default
+
+The Bazel `windows-sandbox` spawn strategy runs actions **in place in the real
+execroot** (there is no throwaway symlink forest, unlike `linux-sandbox`) and
+passes `--filter-inputs` on every spawn. This turns the sandbox **subtractive**
+so that it reaches the same practical isolation as **hermetic `linux-sandbox` /
+remote execution (RBE)** — where only *declared* inputs are visible — without
+building any virtual filesystem:
+
+* `--filter-inputs` implies `-H` (execroot denied by default; only `-r`/`-w`
+  grants are visible) and additionally makes undeclared inputs **invisible**:
+  denied reads of an existing-but-undeclared path report **`NOT_FOUND`** (not
+  `ACCESS_DENIED`), and undeclared entries are **removed from directory
+  enumerations**. So an undeclared file looks *absent*, exactly as it would under
+  Linux's symlink forest. There is **no filename special-casing** — visibility is
+  decided purely by whether Bazel declared the path as an input to this action.
+* `--execroot-writable` matches `linux-sandbox`'s fully-writable throwaway
+  execroot: the tool may **create** new files/dirs anywhere in the working dir
+  and re-write files it created this run, while still **denying overwrites** of
+  pre-existing undeclared/input files. This covers tools that write undeclared
+  scratch inside the execroot (e.g. vite's `node_modules/.vite-temp`) without
+  opening a hole to clobber real inputs.
+
+Because the action runs in place, declared inputs reached through the execroot's
+per-entry symlink forest (each `_main/*` entry is a symlink/junction into the
+real workspace) are rescued by a policy **marker bit**
+(`FileAccessPolicy_DeclaredInput`): it is OR'd only into explicit `-r`/`-w`/
+`-d`/tool grants, never the whole-disk read baseline, so a denied
+symlink/junction read is allowed **only** when its resolved target is a declared
+input — closing the leak where undeclared workspace files were reachable via the
+baseline read grant. This whole design (mode mapping, the subtractive behaviors,
+and the marker-bit fix) is specified in
+[`docs/detours-input-filtering.md`](docs/detours-input-filtering.md).
 
 ### Network sandboxing
 
@@ -383,9 +435,13 @@ suite so a future rewrite that fixes one will make the corresponding test change
 loudly. None is an under-deny that would let a *declared* deny be silently
 bypassed by a normal long path — they are edge cases:
 
-* **Directory enumeration is not enforced.** `FindFirstFile`/`FindNextFile` on a
-  denied directory succeeds (the entries are listed). File *opens* are still
-  enforced; only the listing is visible. Potential info-leak surface.
+* **Directory enumeration is not enforced *in the default (non-filtering) mode.***
+  `FindFirstFile`/`FindNextFile` on a denied directory succeeds (the entries are
+  listed). File *opens* are still enforced; only the listing is visible. Potential
+  info-leak surface. **Under `--filter-inputs`** (the `windows-sandbox` default)
+  this is closed: undeclared entries are removed from enumeration results at the
+  Detours layer, so listings show only declared inputs — matching the symlink
+  forest. The limitation therefore applies only to bare permissive-mode runs.
 * **Raw paths longer than `MAX_PATH` (260) over-deny.** A non-long-path-aware
   child that passes a raw >260-char path (no `\\?\`) has it truncated by its own
   Win32 layer before the engine sees it, so a legitimate `-r`/`-w` access is
@@ -417,7 +473,13 @@ bypassed by a normal long path — they are edge cases:
   `SymLinkTests` suite — chain-of-symlinks, resolved-path cache, directory-symlink
   selective enforcement) is designed to prevent; those features are intentionally
   disabled here, so the corresponding chain-resolution tests do not apply. The
-  suite pins the escape with a deterministic junction case.
+  suite pins the escape with a deterministic junction case. Note this is the
+  *escape* direction (an undeclared target reached through a link inside an
+  allowed scope); the *reverse* — a **declared input** reached through the
+  execroot's per-entry symlink forest — is resolved and allowed under
+  `--filter-inputs` via the `DeclaredInput` marker bit (see
+  [`docs/detours-input-filtering.md`](docs/detours-input-filtering.md)), so
+  declared inputs stay visible while undeclared ones do not leak.
 * **Case-insensitive matching is ASCII-only.** Path fragments are upper-cased
   with `_towupper_l` under the invariant locale, which folds `a`–`z` but not
   non-ASCII letters, so a non-ASCII path is matched **case-sensitively**. NTFS,

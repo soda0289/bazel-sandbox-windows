@@ -1171,11 +1171,12 @@ static bool EnforceReparsePointAccess(
 
         if (accessCheck.ShouldDenyAccess())
         {
-            lastError = accessCheck.DenialError();
+            const bool maskRead = ShouldDeniedReadsAsNotFound();
+            lastError = accessCheck.DenialError(maskRead);
 
             if (pNtStatus != nullptr)
             {
-                *pNtStatus = accessCheck.DenialNtStatus();
+                *pNtStatus = accessCheck.DenialNtStatus(maskRead);
             }
 
             ret = false;
@@ -2862,9 +2863,10 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
 
         if (readCheck.ShouldDenyAccess())
         {
-            DWORD denyError = readCheck.DenialError();
+            const bool maskRead = ShouldDeniedReadsAsNotFound();
+            DWORD denyError = readCheck.DenialError(maskRead);
             ReportIfNeeded(readCheck, operationContext, policyResult, denyError);
-            readCheck.SetLastErrorToDenialError();
+            readCheck.SetLastErrorToDenialError(maskRead);
             return FALSE;
         }
 
@@ -3210,7 +3212,6 @@ HANDLE WINAPI Detoured_CreateFileW(
     _In_opt_ HANDLE                hTemplateFile)
 {
     DetouredScope scope;
-
     // The are potential complication here: How to handle a call to CreateFile with the FILE_FLAG_OPEN_REPARSE_POINT?
     // Is it a real file access. Some code in Windows (urlmon.dll) inspects reparse points when mapping a path to a particular security "Zone".
     if (scope.Detoured_IsDisabled() || IsNullOrEmptyW(lpFileName) || IsSpecialDeviceName(lpFileName))
@@ -3285,9 +3286,10 @@ HANDLE WINAPI Detoured_CreateFileW(
 
         if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
         {
-            DWORD denyError = accessCheck.DenialError();
+            const bool maskRead = ShouldDeniedReadsAsNotFound();
+            DWORD denyError = accessCheck.DenialError(maskRead);
             ReportIfNeeded(accessCheck, opContext, policyResult, denyError); // We won't make it to the post-read-check report below.
-            accessCheck.SetLastErrorToDenialError();
+            accessCheck.SetLastErrorToDenialError(maskRead);
             return INVALID_HANDLE_VALUE;
         }
 
@@ -3480,7 +3482,15 @@ HANDLE WINAPI Detoured_CreateFileW(
                 RequestedReadAccess requested =
                     WantsReadAccess(dwDesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
                 AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
-                if (!resolvedCheck.ShouldDenyAccess())
+                // Only rescue when the resolved real target is a DECLARED input (carries the
+                // FileAccessPolicy_DeclaredInput marker set on -r/-w/-d/tool grants and
+                // inherited by granted-directory descendants), not merely readable via the
+                // whole-filesystem root scope. The bazel execroot itself is a symlink to the real
+                // source tree (execroot/_main -> the workspace), so an undeclared in-execroot path
+                // like _main/package.json resolves to a source-tree file that the root AllowRead
+                // baseline would otherwise permit - leaking undeclared inputs and breaking
+                // hermetic/RBE parity.
+                if (!resolvedCheck.ShouldDenyAccess() && resolvedPolicy.IsDeclaredInput())
                 {
                     Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
                         policyResult.GetCanonicalizedPath().GetPathString(),
@@ -3502,7 +3512,7 @@ HANDLE WINAPI Detoured_CreateFileW(
 
     if (accessCheck.ShouldDenyAccess())
     {
-        error = accessCheck.DenialError();
+        error = accessCheck.DenialError(ShouldDeniedReadsAsNotFound());
         reportedError = error;
 
         if (handle != INVALID_HANDLE_VALUE)
@@ -3644,7 +3654,7 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
 
     if (accessCheck.ShouldDenyAccess())
     {
-        error = accessCheck.DenialError();
+        error = accessCheck.DenialError(ShouldDeniedReadsAsNotFound());
         reportedError = error;
         attributes = INVALID_FILE_ATTRIBUTES;
     }
@@ -4954,6 +4964,282 @@ HANDLE WINAPI Detoured_FindFirstFileA(
     // The output value differs too - WIN32_FIND_DATA{A, W}
 }
 
+// ---------------------------------------------------------------------------
+// Bazel directory-enumeration input filtering (see docs/detours-input-filtering.md).
+//
+// When ShouldFilterDirectoryEnumeration() is set, directory listings hide
+// entries that are not declared inputs so that undeclared files are invisible to
+// the sandboxed process, matching linux-sandbox / processwrapper-sandbox (which
+// enumerate a constructed symlink forest rather than the real execroot).
+//
+// An entry is visible iff:
+//   - it is "." or ".." (always kept), or
+//   - its resolved policy allows read (a declared input, or anything under a
+//     declared directory-input cone), or
+//   - it is an exact node in the manifest policy tree, i.e. an ancestor
+//     directory that leads to a declared input. Such directories carry an
+//     inherited Deny policy but must remain visible so the input can be reached.
+// ---------------------------------------------------------------------------
+
+
+static bool IsEnumChildVisible(const PolicyResult& directoryPolicyResult, const wchar_t* name, size_t nameChars)
+{
+    // Always keep the "." and ".." pseudo-entries.
+    if ((nameChars == 1 && name[0] == L'.') ||
+        (nameChars == 2 && name[0] == L'.' && name[1] == L'.'))
+    {
+        return true;
+    }
+
+    std::wstring childName(name, nameChars);
+    PolicyResult childPolicy = directoryPolicyResult.GetPolicyForSubpath(childName.c_str());
+
+    // Be conservative: if we somehow can't determine a policy, don't hide.
+    if (childPolicy.IsIndeterminate())
+    {
+        return true;
+    }
+
+    return childPolicy.AllowRead() || childPolicy.IsExactManifestNode();
+}
+
+// Convenience overload for null-terminated Win32 names (WIN32_FIND_DATAW.cFileName).
+static bool IsEnumChildVisible(const PolicyResult& directoryPolicyResult, const wchar_t* name)
+{
+    return IsEnumChildVisible(directoryPolicyResult, name, wcslen(name));
+}
+
+// Returns the byte offsets of the FileNameLength field and the FileName field
+// within a FILE_*_INFORMATION record for the given NtQueryDirectoryFile info
+// class. Returns false for classes we do not know how to filter (the caller must
+// then leave the buffer untouched). Offsets assume the natural x64 layout of the
+// documented structures.
+static bool TryGetDirInfoLayout(ULONG infoClass, ULONG& fileNameLengthOffset, ULONG& fileNameOffset)
+{
+    switch (infoClass)
+    {
+    case 1:  fileNameLengthOffset = 60; fileNameOffset = 64;  return true; // FileDirectoryInformation
+    case 2:  fileNameLengthOffset = 60; fileNameOffset = 68;  return true; // FileFullDirectoryInformation
+    case 3:  fileNameLengthOffset = 60; fileNameOffset = 94;  return true; // FileBothDirectoryInformation
+    case 12: fileNameLengthOffset = 8;  fileNameOffset = 12;  return true; // FileNamesInformation
+    case 37: fileNameLengthOffset = 60; fileNameOffset = 104; return true; // FileIdBothDirectoryInformation
+    case 38: fileNameLengthOffset = 60; fileNameOffset = 80;  return true; // FileIdFullDirectoryInformation
+    default: return false;
+    }
+}
+
+// Maps a GetFileInformationByHandleEx directory-enumeration info class to the
+// equivalent NtQueryDirectoryFile info class understood by TryGetDirInfoLayout
+// (the underlying FILE_*_DIR_INFO structures are byte-for-byte identical). Also
+// returns the "continue" variant of the class to use when re-querying for the
+// next batch (Restart variants would otherwise rewind and loop forever).
+// Returns false for classes we do not know how to filter.
+static bool TryMapHandleDirInfoClass(
+    FILE_INFO_BY_HANDLE_CLASS handleClass,
+    ULONG& ntInfoClass,
+    FILE_INFO_BY_HANDLE_CLASS& continueClass)
+{
+    switch ((int)handleClass)
+    {
+    case 10: // FileIdBothDirectoryInfo
+    case 11: // FileIdBothDirectoryRestartInfo
+        ntInfoClass = 37; continueClass = (FILE_INFO_BY_HANDLE_CLASS)10; return true;
+    case 14: // FileFullDirectoryInfo
+    case 15: // FileFullDirectoryRestartInfo
+        ntInfoClass = 2;  continueClass = (FILE_INFO_BY_HANDLE_CLASS)14; return true;
+    default:
+        return false;
+    }
+}
+
+// Filters a packed chain of FILE_*_INFORMATION records in-place, dropping entries
+// whose names are not visible under directoryPolicyResult and re-linking the
+// surviving records via NextEntryOffset. Surviving records stay at their original
+// byte offsets; hidden records are simply left unreferenced. Returns the number of
+// visible records kept, or SIZE_MAX if the info class is not one we know how to
+// filter (in which case the buffer is left untouched).
+//
+// bufferLen is the number of valid bytes in `buffer` (the caller's buffer). The
+// walk is bounded against it: a record whose fixed header would extend past the
+// buffer stops the scan rather than over-reading, and a final record's name is
+// clamped to what actually fits. This guards the case where an upstream re-query
+// copies back only a truncated prefix of the OS-produced chain, leaving a record's
+// NextEntryOffset pointing past the caller's buffer.
+static size_t FilterDirectoryInformation(
+    PVOID buffer,
+    ULONG infoClass,
+    ULONG bufferLen,
+    const PolicyResult& directoryPolicyResult)
+{
+    ULONG nameLenOff, nameOff;
+    if (!TryGetDirInfoLayout(infoClass, nameLenOff, nameOff))
+    {
+        return SIZE_MAX;
+    }
+
+    // Minimum bytes we must be able to read at a record before touching its fixed
+    // header: NextEntryOffset (4 bytes at 0), the name-length field, and the start
+    // of the name at nameOff.
+    ULONG headerMin = static_cast<ULONG>(sizeof(ULONG));
+    if (nameLenOff + static_cast<ULONG>(sizeof(ULONG)) > headerMin) headerMin = nameLenOff + static_cast<ULONG>(sizeof(ULONG));
+    if (nameOff > headerMin) headerMin = nameOff;
+
+    BYTE* base = reinterpret_cast<BYTE*>(buffer);
+    ULONG offset = 0;
+    BYTE* lastKept = nullptr;
+    size_t kept = 0;
+
+    for (;;)
+    {
+        // Bound the fixed-header read against the caller's buffer. A malformed or
+        // truncated chain that points past the buffer stops the walk here.
+        if (offset > bufferLen || bufferLen - offset < headerMin)
+        {
+            break;
+        }
+
+        BYTE* rec = base + offset;
+        ULONG next = *reinterpret_cast<ULONG*>(rec);
+        ULONG nameLen = *reinterpret_cast<ULONG*>(rec + nameLenOff);
+        const wchar_t* name = reinterpret_cast<const wchar_t*>(rec + nameOff);
+
+        // Clamp the name to what actually fits so IsEnumChildVisible never
+        // reads past the end of the buffer on a truncated final record.
+        ULONG availNameBytes = bufferLen - offset - nameOff;
+        if (nameLen > availNameBytes)
+        {
+            nameLen = availNameBytes;
+        }
+        size_t nameChars = nameLen / sizeof(wchar_t);
+
+        if (IsEnumChildVisible(directoryPolicyResult, name, nameChars))
+        {
+            if (lastKept != nullptr)
+            {
+                *reinterpret_cast<ULONG*>(lastKept) = static_cast<ULONG>(rec - lastKept);
+            }
+            lastKept = rec;
+            kept++;
+        }
+
+        if (next == 0)
+        {
+            break;
+        }
+        offset += next;
+    }
+
+    if (lastKept != nullptr)
+    {
+        *reinterpret_cast<ULONG*>(lastKept) = 0; // terminate the surviving chain
+    }
+
+    return kept;
+}
+
+typedef NTSTATUS(NTAPI* QueryDirectoryFileFn)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, BOOLEAN, PUNICODE_STRING, BOOLEAN);
+
+// Applies the Bazel enumeration filter to the result of an Nt/Zw QueryDirectoryFile
+// call, re-querying the underlying handle (continuing the scan) as needed so that
+// we never hand back a batch that contains only hidden entries. Updates result /
+// reportedError / lastError to reflect the filtered output. `buffer`/`bufferSize`
+// is the (possibly larger) working buffer actually passed to the Real API;
+// FileInformation/Length is the caller's buffer that ultimately receives the data.
+static void ApplyEnumerationFilterNt(
+    QueryDirectoryFileFn realFn,
+    HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
+    PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length,
+    FILE_INFORMATION_CLASS FileInformationClass, BOOLEAN ReturnSingleEntry,
+    PUNICODE_STRING FileName,
+    PVOID buffer, ULONG bufferSize,
+    const PolicyResult& directoryPolicyResult,
+    NTSTATUS& result, DWORD& reportedError, DWORD& lastError)
+{
+    for (;;)
+    {
+        if (!NT_SUCCESS(result))
+        {
+            break;
+        }
+
+        size_t kept = FilterDirectoryInformation(FileInformation, (ULONG)FileInformationClass, Length, directoryPolicyResult);
+        if (kept == SIZE_MAX || kept > 0)
+        {
+            // Either an info class we don't filter (leave as-is), or we kept at
+            // least one visible entry.
+            break;
+        }
+
+        // All entries in this batch were hidden. Continue the scan to fetch the
+        // next batch and filter again, until we find a visible entry or run out.
+        result = realFn(
+            FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+            buffer, bufferSize, FileInformationClass, ReturnSingleEntry, FileName,
+            FALSE /* RestartScan: continue from where we left off */);
+        reportedError = RtlNtStatusToDosError(result);
+        lastError = GetLastError();
+
+        if (buffer != FileInformation && NT_SUCCESS(result))
+        {
+            memcpy_s(FileInformation, Length, buffer, Length);
+        }
+    }
+}
+
+// SL_* query flags for NtQueryDirectoryFileEx (from ntifs.h).
+#ifndef SL_RESTART_SCAN
+#define SL_RESTART_SCAN 0x00000001
+#endif
+#ifndef SL_RETURN_SINGLE_ENTRY
+#define SL_RETURN_SINGLE_ENTRY 0x00000002
+#endif
+
+typedef NTSTATUS(NTAPI* QueryDirectoryFileExFn)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, ULONG, PUNICODE_STRING);
+
+// Ex-form analogue of ApplyEnumerationFilterNt for NtQueryDirectoryFileEx,
+// whose ReturnSingleEntry/RestartScan booleans are folded into a QueryFlags mask.
+// Re-queries clear SL_RESTART_SCAN so the scan advances instead of restarting.
+static void ApplyEnumerationFilterNtEx(
+    QueryDirectoryFileExFn realFn,
+    HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext,
+    PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length,
+    FILE_INFORMATION_CLASS FileInformationClass, ULONG QueryFlags,
+    PUNICODE_STRING FileName,
+    PVOID buffer, ULONG bufferSize,
+    const PolicyResult& directoryPolicyResult,
+    NTSTATUS& result, DWORD& reportedError, DWORD& lastError)
+{
+    for (;;)
+    {
+        if (!NT_SUCCESS(result))
+        {
+            break;
+        }
+
+        size_t kept = FilterDirectoryInformation(FileInformation, (ULONG)FileInformationClass, Length, directoryPolicyResult);
+        if (kept == SIZE_MAX || kept > 0)
+        {
+            break;
+        }
+
+        ULONG continueFlags = QueryFlags & ~static_cast<ULONG>(SL_RESTART_SCAN);
+        result = realFn(
+            FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+            buffer, bufferSize, FileInformationClass, continueFlags, FileName);
+        reportedError = RtlNtStatusToDosError(result);
+        lastError = GetLastError();
+
+        if (buffer != FileInformation && NT_SUCCESS(result))
+        {
+            memcpy_s(FileInformation, Length, buffer, Length);
+        }
+    }
+}
+
 /// <summary>
 /// Enforces allowed access for a path that leads to the target of a reparse point.
 /// </summary>
@@ -5013,6 +5299,26 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
     wchar_t const* filter = canonicalizedPathIncludingFilter.GetLastComponent();
     bool isEnumeration = !searchPathIsFile && PathContainsWildcard(filter);
     bool isProbeOfLastComponent = !isEnumeration && !searchPathIsFile;
+
+    // Bazel input filtering: advance past undeclared entries so that the first
+    // result we report and return is a visible (declared) one. "." and ".." always
+    // match a wildcard filter, so enumerating an existing directory keeps at least
+    // those entries; a narrower filter matching only hidden entries collapses to
+    // "no matches" (ERROR_FILE_NOT_FOUND), just like an empty directory.
+    if (ShouldFilterDirectoryEnumeration() && success && isEnumeration)
+    {
+        while (!IsEnumChildVisible(directoryPolicyResult, findFileDataAtLevel->cFileName))
+        {
+            if (!Real_FindNextFileW(searchHandle, findFileDataAtLevel))
+            {
+                FindClose(searchHandle);
+                searchHandle = INVALID_HANDLE_VALUE;
+                success = false;
+                error = ERROR_FILE_NOT_FOUND;
+                break;
+            }
+        }
+    }
 
     // Read context used for access-checking a probe to the search-directory.
     // This is only used if searchPathIsFile, i.e., we got ERROR_DIRECTORY.
@@ -5107,7 +5413,11 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
         if (fileAccessCheck.ShouldDenyAccess())
         {
             // Note that we won't hard-deny enumeration probes (isEnumeration == true, requested EnumerationProbe). See CheckReadAccess.
-            error = fileAccessCheck.DenialError();
+            // So this branch is a probe of a concrete file path (e.g. FindFirstFileEx("dir\\file")), which tools such as
+            // cmd.exe's `type` and many CRT stat() implementations use as an existence check. Under Bazel input filtering,
+            // an undeclared-but-existing file must look ABSENT (ERROR_FILE_NOT_FOUND), not ACCESS_DENIED, to match
+            // linux-sandbox's symlink forest (where the path simply is not there) - otherwise these probes diverge.
+            error = fileAccessCheck.DenialError(ShouldDeniedReadsAsNotFound());
             reportedError = error;
 
             if (searchHandle != INVALID_HANDLE_VALUE)
@@ -5222,6 +5532,19 @@ BOOL WINAPI Detoured_FindNextFileW(
     HandleOverlayRef overlay = TryLookupHandleOverlay(hFindFile);
     if (overlay != nullptr)
     {
+        // Bazel input filtering: skip undeclared entries so they are invisible.
+        if (ShouldFilterDirectoryEnumeration())
+        {
+            while (!IsEnumChildVisible(overlay->Policy, lpFindFileData->cFileName))
+            {
+                if (!Real_FindNextFileW(hFindFile, lpFindFileData))
+                {
+                    return FALSE; // ERROR_NO_MORE_FILES set by Real_FindNextFileW
+                }
+            }
+            error = ERROR_SUCCESS;
+        }
+
         FileOperationContext fileOperationContext = FileOperationContext::CreateForProbe(L"FindNextFile", overlay->Policy.GetCanonicalizedPath().GetPathString());
 
         wchar_t const* enumeratedComponent = &lpFindFileData->cFileName[0];
@@ -5297,7 +5620,58 @@ BOOL WINAPI Detoured_GetFileInformationByHandleEx(
         dwBufferSize);
     error = GetLastError();
 
-    if (scope.Detoured_IsDisabled() || IsNullOrInvalidHandle(hFile) || fileInformationClass != FileBasicInfo || lpFileInformation == nullptr)
+    if (scope.Detoured_IsDisabled() || IsNullOrInvalidHandle(hFile) || lpFileInformation == nullptr)
+    {
+        return result;
+    }
+
+    // Bazel input filtering: hide undeclared entries from directory enumerations
+    // performed via GetFileInformationByHandleEx (e.g. the .NET Directory APIs and
+    // some CRTs). This wrapper establishes its own DetouredScope before calling the
+    // real API, which shields the inner NtQueryDirectoryFile call from our Nt-level
+    // enumeration filter (it observes a disabled/nested scope). So we filter the
+    // returned buffer directly here for the directory-enumeration info classes.
+    if (result && ShouldFilterDirectoryEnumeration())
+    {
+        ULONG ntInfoClass = 0;
+        FILE_INFO_BY_HANDLE_CLASS continueClass = fileInformationClass;
+        if (TryMapHandleDirInfoClass(fileInformationClass, ntInfoClass, continueClass))
+        {
+            HandleOverlayRef dirOverlay = TryLookupHandleOverlay(hFile);
+            if (dirOverlay != nullptr && dirOverlay->Type == HandleType::Directory)
+            {
+                PolicyResult directoryPolicyResult = dirOverlay->Policy;
+                for (;;)
+                {
+                    size_t kept = FilterDirectoryInformation(
+                        lpFileInformation, ntInfoClass, dwBufferSize, directoryPolicyResult);
+                    if (kept == SIZE_MAX || kept > 0)
+                    {
+                        // Info class we cannot filter (leave as-is) or at least one
+                        // visible entry survived this batch.
+                        break;
+                    }
+
+                    // The whole batch was hidden. Continue the scan (using the
+                    // non-restart variant) so the caller never sees a success with
+                    // zero visible entries, until a visible entry appears or the
+                    // enumeration is exhausted.
+                    result = Real_GetFileInformationByHandleEx(
+                        hFile, continueClass, lpFileInformation, dwBufferSize);
+                    error = GetLastError();
+                    if (!result)
+                    {
+                        break;
+                    }
+                }
+
+                SetLastError(error);
+                return result;
+            }
+        }
+    }
+
+    if (fileInformationClass != FileBasicInfo || lpFileInformation == nullptr)
     {
         return result;
     }
@@ -6396,6 +6770,17 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
             return DETOURS_STATUS_ACCESS_DENIED;
         }
 
+        // Bazel input filtering: hide undeclared entries from the returned buffer.
+        if (ShouldFilterDirectoryEnumeration())
+        {
+            ApplyEnumerationFilterNt(
+                Real_NtQueryDirectoryFile,
+                FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+                FileInformation, Length, FileInformationClass, ReturnSingleEntry, FileName,
+                buffer, bufferSize, directoryPolicyResult,
+                result, reportedError, lastError);
+        }
+
         // Only report the enumeration if specified by the policy
         bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
         bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
@@ -6545,6 +6930,17 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
                 return DETOURS_STATUS_ACCESS_DENIED;
             }
 
+            // Bazel input filtering: hide undeclared entries from the returned buffer.
+            if (ShouldFilterDirectoryEnumeration())
+            {
+                ApplyEnumerationFilterNt(
+                    Real_ZwQueryDirectoryFile,
+                    FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+                    FileInformation, Length, FileInformationClass, ReturnSingleEntry, FileName,
+                    buffer, bufferSize, directoryPolicyResult,
+                    result, reportedError, lastError);
+            }
+
             // Only report the enumeration if specified by the policy
             bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
             bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
@@ -6566,6 +6962,147 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
             // We can report the status for directory now.
             ReportIfNeeded(directoryAccessCheck, fileOperationContext, overlay->Policy, reportedError, lastError);
         }
+    }
+
+    return result;
+}
+
+// Detoured_NtQueryDirectoryFileEx
+//
+// The modern successor to NtQueryDirectoryFile: FindFirstFileEx and
+// GetFileInformationByHandleEx are serviced by this on Windows 8+. It differs from
+// NtQueryDirectoryFile only in that the ReturnSingleEntry and RestartScan booleans
+// are folded into a single QueryFlags mask (SL_RETURN_SINGLE_ENTRY / SL_RESTART_SCAN).
+// We hook it so the Bazel enumeration filter applies to tools that call it directly,
+// bypassing both the Win32 FindFirstFileEx hook and the legacy NtQueryDirectoryFile.
+IMPLEMENTED(Detoured_NtQueryDirectoryFileEx)
+NTSTATUS NTAPI Detoured_NtQueryDirectoryFileEx(
+    _In_     HANDLE                 FileHandle,
+    _In_opt_ HANDLE                 Event,
+    _In_opt_ PIO_APC_ROUTINE        ApcRoutine,
+    _In_opt_ PVOID                  ApcContext,
+    _Out_    PIO_STATUS_BLOCK       IoStatusBlock,
+    _Out_    PVOID                  FileInformation,
+    _In_     ULONG                  Length,
+    _In_     FILE_INFORMATION_CLASS FileInformationClass,
+    _In_     ULONG                  QueryFlags,
+    _In_opt_ PUNICODE_STRING        FileName)
+{
+    DetouredScope scope;
+    LPCWSTR directoryName = nullptr;
+    wstring filter;
+    bool isEnumeration = true;
+    CanonicalizedPath canonicalizedDirectoryPath;
+    HandleOverlayRef overlay = nullptr;
+
+    bool noDetour = scope.Detoured_IsDisabled();
+
+    if (!noDetour)
+    {
+        // Check for enumeration. The default for us is true, but if the FileName
+        // parameter is present and is not a wild card, we'll set it to false.
+        if (FileName != nullptr)
+        {
+            filter.assign(FileName->Buffer, (size_t)(FileName->Length / sizeof(wchar_t)));
+            isEnumeration = PathContainsWildcard(filter.c_str());
+        }
+
+        overlay = TryLookupHandleOverlay(FileHandle);
+
+        if (overlay == nullptr || overlay->EnumerationHasBeenReported)
+        {
+            noDetour = true;
+        }
+        else
+        {
+            canonicalizedDirectoryPath = overlay->Policy.GetCanonicalizedPath();
+            directoryName = canonicalizedDirectoryPath.GetPathString();
+
+            if (_wcsicmp(directoryName, L"\\\\.\\MountPointManager") == 0 ||
+                IsSpecialDeviceName(directoryName))
+            {
+                noDetour = true;
+            }
+        }
+    }
+
+    PVOID buffer = FileInformation;
+    ULONG bufferSize = Length;
+    std::unique_ptr<char[]> largerBuffer;
+
+    if (ShouldUseLargeEnumerationBuffer() && Length < NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE)
+    {
+        largerBuffer = std::make_unique<char[]>(NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE);
+        buffer = largerBuffer.get();
+        bufferSize = NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE;
+    }
+
+    NTSTATUS result = Real_NtQueryDirectoryFileEx(
+        FileHandle,
+        Event,
+        ApcRoutine,
+        ApcContext,
+        IoStatusBlock,
+        buffer,
+        bufferSize,
+        FileInformationClass,
+        QueryFlags,
+        FileName);
+    DWORD reportedError = RtlNtStatusToDosError(result);
+    DWORD lastError = GetLastError();
+
+    if (buffer != FileInformation)
+    {
+        memcpy_s(FileInformation, Length, buffer, Length);
+    }
+
+    if (noDetour)
+    {
+        return result;
+    }
+
+    if (overlay->Type == HandleType::Directory)
+    {
+        PolicyResult directoryPolicyResult = overlay->Policy;
+        FileOperationContext fileOperationContext = isEnumeration
+            ? FileOperationContext::CreateForRead(L"NtQueryDirectoryFileEx", directoryName)
+            : FileOperationContext::CreateForProbe(L"NtQueryDirectoryFileEx", directoryName);
+        fileOperationContext.OpenedFileOrDirectoryAttributes = FILE_ATTRIBUTE_DIRECTORY;
+
+        if (!AdjustOperationContextAndPolicyResultWithFullyResolvedPath(fileOperationContext, directoryPolicyResult, false))
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return DETOURS_STATUS_ACCESS_DENIED;
+        }
+
+        // Bazel input filtering: hide undeclared entries from the returned buffer.
+        if (ShouldFilterDirectoryEnumeration())
+        {
+            ApplyEnumerationFilterNtEx(
+                Real_NtQueryDirectoryFileEx,
+                FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+                FileInformation, Length, FileInformationClass, QueryFlags, FileName,
+                buffer, bufferSize, directoryPolicyResult,
+                result, reportedError, lastError);
+        }
+
+        // Only report the enumeration if specified by the policy
+        bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
+        bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
+
+        AccessCheckResult directoryAccessCheck(
+            isEnumeration ? RequestedAccess::Enumerate : RequestedAccess::Probe,
+            ResultAction::Allow,
+            explicitlyReportDirectoryEnumeration ? ReportLevel::ReportExplicit : ReportLevel::Ignore);
+
+        if (!explicitlyReportDirectoryEnumeration && ReportAnyAccess(false))
+        {
+            directoryAccessCheck.Level = ReportLevel::Report;
+        }
+
+        overlay->EnumerationHasBeenReported = NT_SUCCESS(result) && directoryAccessCheck.ShouldReport();
+
+        ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, reportedError, lastError, -1, filter.c_str());
     }
 
     return result;
@@ -6870,9 +7407,10 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
 
         if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
         {
-            ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError());
-            accessCheck.SetLastErrorToDenialError();
-            return accessCheck.DenialNtStatus();
+            const bool maskRead = ShouldDeniedReadsAsNotFound();
+            ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError(maskRead));
+            accessCheck.SetLastErrorToDenialError(maskRead);
+            return accessCheck.DenialNtStatus(maskRead);
         }
 
         SetLastError(error);
@@ -7024,7 +7562,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
     // Handle-resolution read fallback (bazel-sandbox-windows). See Detoured_CreateFileW for the full
     // rationale: honor the resolved-target policy for a denied read when the real file behind the
     // reparse chain is a granted input. Reads only; name-agnostic; no less hermetic than the literal
-    // check.
+    // check. Only DECLARED inputs (carrying the DeclaredInput marker) are rescued.
     if (accessCheck.ShouldDenyAccess()
         && hasValidHandle
         && !WantsWriteAccess(opContext.DesiredAccess)
@@ -7040,7 +7578,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
                 RequestedReadAccess requested =
                     WantsReadAccess(opContext.DesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
                 AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
-                if (!resolvedCheck.ShouldDenyAccess())
+                if (!resolvedCheck.ShouldDenyAccess() && resolvedPolicy.IsDeclaredInput())
                 {
                     Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
                         policyResult.GetCanonicalizedPath().GetPathString(),
@@ -7053,7 +7591,8 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
 
     if (accessCheck.ShouldDenyAccess())
     {
-        error = accessCheck.DenialError();
+        const bool maskRead = ShouldDeniedReadsAsNotFound();
+        error = accessCheck.DenialError(maskRead);
 
         if (hasValidHandle)
         {
@@ -7061,7 +7600,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
         }
 
         *FileHandle = INVALID_HANDLE_VALUE;
-        result = accessCheck.DenialNtStatus();
+        result = accessCheck.DenialNtStatus(maskRead);
     }
     else if (hasValidHandle)
     {
@@ -7229,9 +7768,10 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
 
         if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
         {
-            ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError());
-            accessCheck.SetLastErrorToDenialError();
-            return accessCheck.DenialNtStatus();
+            const bool maskRead = ShouldDeniedReadsAsNotFound();
+            ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError(maskRead));
+            accessCheck.SetLastErrorToDenialError(maskRead);
+            return accessCheck.DenialNtStatus(maskRead);
         }
 
         SetLastError(error);
@@ -7391,6 +7931,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
     // whose real target IS a granted input. NtCreateFile already followed the reparse chain, so
     // resolve the handle to its final path and re-check policy there; honor the resolved-path policy
     // if it allows the read. Reads only; name-agnostic; no less hermetic than the literal check.
+    // Only DECLARED inputs (carrying the DeclaredInput marker) are rescued.
     if (accessCheck.ShouldDenyAccess()
         && hasValidHandle
         && !WantsWriteAccess(opContext.DesiredAccess)
@@ -7406,7 +7947,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
                 RequestedReadAccess requested =
                     WantsReadAccess(opContext.DesiredAccess) ? RequestedReadAccess::Read : RequestedReadAccess::Probe;
                 AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(requested, readContext);
-                if (!resolvedCheck.ShouldDenyAccess())
+                if (!resolvedCheck.ShouldDenyAccess() && resolvedPolicy.IsDeclaredInput())
                 {
                     Dbg(L"Handle-resolution read fallback: allowing '%s' via resolved target '%s'.",
                         policyResult.GetCanonicalizedPath().GetPathString(),
@@ -7419,7 +7960,8 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
 
     if (accessCheck.ShouldDenyAccess())
     {
-        error = accessCheck.DenialError();
+        const bool maskRead = ShouldDeniedReadsAsNotFound();
+        error = accessCheck.DenialError(maskRead);
 
         if (hasValidHandle)
         {
@@ -7427,7 +7969,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
         }
 
         *FileHandle = INVALID_HANDLE_VALUE;
-        result = accessCheck.DenialNtStatus();
+        result = accessCheck.DenialNtStatus(maskRead);
     }
     else if (hasValidHandle)
     {
@@ -7498,6 +8040,144 @@ NTSTATUS NTAPI Detoured_NtOpenFile(
         (PVOID)NULL, // EaBuffer,
         0L // EaLength
     );
+}
+
+// FileAttributes offset within FILE_STAT_BASIC_INFORMATION (the record returned for
+// FileStatBasicByNameInfo): FileId + 6 timestamp/size LARGE_INTEGERs precede it. We only read
+// FileAttributes (to detect directories) and avoid pulling in the full SDK struct definition.
+typedef struct _BXL_FILE_STAT_BASIC_INFORMATION {
+    LARGE_INTEGER FileId;
+    LARGE_INTEGER CreationTime;
+    LARGE_INTEGER LastAccessTime;
+    LARGE_INTEGER LastWriteTime;
+    LARGE_INTEGER ChangeTime;
+    LARGE_INTEGER AllocationSize;
+    LARGE_INTEGER EndOfFile;
+    ULONG         FileAttributes;
+    // ... trailing fields (ReparseTag, NumberOfLinks, DeviceType, ...) intentionally omitted.
+} BXL_FILE_STAT_BASIC_INFORMATION;
+
+// Detoured_GetFileInformationByName: mask undeclared-input probes for modern libuv's fast
+// fs.stat path (GetFileInformationByName + FileStatBasicByNameInfo). Without this, an
+// undeclared existing file would remain visible to stat() even though CreateFile/read of the
+// same file are masked to NOT_FOUND, breaking parity with linux-sandbox (where an undeclared
+// input is simply absent from the symlink forest, so BOTH stat and read observe ENOENT).
+// Mirrors the Detoured_GetFileAttributesExW probe-masking logic.
+IMPLEMENTED(Detoured_GetFileInformationByName)
+BOOL WINAPI Detoured_GetFileInformationByName(
+    _In_  PCWSTR FileName,
+    _In_  BXL_FILE_INFO_BY_NAME_CLASS FileInformationClass,
+    _Out_ PVOID  FileInfoBuffer,
+    _In_  ULONG  FileInfoBufferSize)
+{
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() || IsNullOrEmptyW(FileName) || IsSpecialDeviceName(FileName))
+    {
+        return Real_GetFileInformationByName(FileName, FileInformationClass, FileInfoBuffer, FileInfoBufferSize);
+    }
+
+    FileOperationContext fileOperationContext = FileOperationContext::CreateForProbe(L"GetFileInformationByName", FileName);
+
+    PolicyResult policyResult;
+    if (!policyResult.Initialize(FileName))
+    {
+        policyResult.ReportIndeterminatePolicyAndSetLastError(fileOperationContext);
+        return FALSE;
+    }
+
+    BOOL querySucceeded = Real_GetFileInformationByName(FileName, FileInformationClass, FileInfoBuffer, FileInfoBufferSize);
+    DWORD error = GetLastError();
+    DWORD reportedError = GetReportedError(querySucceeded, error);
+
+    if (!AdjustOperationContextAndPolicyResultWithFullyResolvedPath(fileOperationContext, policyResult, true))
+    {
+        return FALSE;
+    }
+
+    // We can extract file attributes (to detect directories) only for the layout we understand
+    // (FileStatBasicByNameInfo). For other classes we conservatively treat the type as unknown;
+    // that only matters for directories, whose accesses BuildXL always allows via policy anyway.
+    DWORD attributes = INVALID_FILE_ATTRIBUTES;
+    if (querySucceeded
+        && FileInformationClass == BxlFileStatBasicByNameInfo
+        && FileInfoBuffer != nullptr
+        && FileInfoBufferSize >= sizeof(BXL_FILE_STAT_BASIC_INFORMATION))
+    {
+        attributes = ((BXL_FILE_STAT_BASIC_INFORMATION*)FileInfoBuffer)->FileAttributes;
+    }
+
+    FileReadContext fileReadContext;
+    fileReadContext.InferExistenceFromError(reportedError);
+    fileReadContext.OpenedDirectory =
+        attributes != INVALID_FILE_ATTRIBUTES
+        && IsDirectoryFromAttributes(
+            attributes,
+            ShouldTreatDirectoryReparsePointAsFile(fileOperationContext.DesiredAccess, fileOperationContext.FlagsAndAttributes, policyResult));
+    fileOperationContext.OpenedFileOrDirectoryAttributes = attributes;
+
+    AccessCheckResult accessCheck = policyResult.CheckReadAccess(RequestedReadAccess::Probe, fileReadContext);
+
+    // Handle-resolution probe fallback (bazel-sandbox-windows).
+    //
+    // GetFileInformationByName is handle-less: it queries by path. When the queried path traverses
+    // an UNDECLARED reparse point mid-path (e.g. the aspect_rules_js pnpm store's intra-store package
+    // junctions, @a+cli@v/node_modules/@scope/b -> @scope+b@v/...), the literal-path policy check
+    // above denies even though the junction's real target IS a granted input. The CreateFile read
+    // fallback (see Detoured_CreateFileW) cannot apply here because there is no handle to resolve, and
+    // BuildXL's fast path only resolves a reparse point when it is the LAST path component - not a
+    // middle-of-path junction. Node/libuv stat the target before opening it, so a masked stat here
+    // yields ERR_MODULE_NOT_FOUND before the (rescuable) CreateFile read is ever attempted, breaking
+    // parity with linux-sandbox (whose symlink forest lets stat follow the link to the readable
+    // target). Mirror the read fallback: open a transient read handle that FOLLOWS the reparse chain
+    // (no FILE_FLAG_OPEN_REPARSE_POINT), resolve its final path, and honor that path's read policy.
+    // Reads/probes only; a link whose real target is undeclared still resolves to a non-granted path
+    // and stays denied, so hermeticity is preserved.
+    if (accessCheck.ShouldDenyAccess() && querySucceeded)
+    {
+        HANDLE probeHandle = Real_CreateFileW(
+            FileName,
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        if (probeHandle != INVALID_HANDLE_VALUE)
+        {
+            wstring resolvedPath;
+            if (DetourGetFinalPathByHandle(probeHandle, resolvedPath) == ERROR_SUCCESS && !resolvedPath.empty())
+            {
+                PolicyResult resolvedPolicy;
+                if (resolvedPolicy.Initialize(resolvedPath.c_str()))
+                {
+                    AccessCheckResult resolvedCheck = resolvedPolicy.CheckReadAccess(RequestedReadAccess::Probe, fileReadContext);
+                    // Only rescue links to DECLARED inputs (carrying the DeclaredInput marker) - not files merely
+                    // readable via the whole-filesystem root scope. See Detoured_CreateFileW for the
+                    // execroot-symlink leak this guards against (_main -> real source tree).
+                    if (!resolvedCheck.ShouldDenyAccess() && resolvedPolicy.IsDeclaredInput())
+                    {
+                        Dbg(L"Handle-resolution probe fallback: allowing '%s' via resolved target '%s'.",
+                            policyResult.GetCanonicalizedPath().GetPathString(),
+                            resolvedPolicy.GetCanonicalizedPath().GetPathString());
+                        accessCheck = resolvedCheck;
+                    }
+                }
+            }
+            CloseHandle(probeHandle);
+        }
+    }
+
+    if (accessCheck.ShouldDenyAccess())
+    {
+        error = accessCheck.DenialError(ShouldDeniedReadsAsNotFound());
+        reportedError = error;
+        querySucceeded = FALSE;
+    }
+
+    ReportIfNeeded(accessCheck, fileOperationContext, policyResult, reportedError, error);
+
+    SetLastError(error);
+    return querySucceeded;
 }
 
 IMPLEMENTED(Detoured_NtClose)

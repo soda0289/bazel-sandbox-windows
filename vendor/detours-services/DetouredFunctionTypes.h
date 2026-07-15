@@ -495,6 +495,19 @@ typedef NTSTATUS(NTAPI *ZwQueryDirectoryFile_t)(
     __in BOOLEAN RestartScan
     );
 
+typedef NTSTATUS(NTAPI *NtQueryDirectoryFileEx_t)(
+    __in HANDLE FileHandle,
+    __in_opt HANDLE Event,
+    __in_opt PIO_APC_ROUTINE ApcRoutine,
+    __in_opt PVOID ApcContext,
+    __out PIO_STATUS_BLOCK IoStatusBlock,
+    __out_bcount(Length) PVOID FileInformation,
+    __in ULONG Length,
+    __in FILE_INFORMATION_CLASS FileInformationClass,
+    __in ULONG QueryFlags,
+    __in_opt PUNICODE_STRING FileName
+    );
+
 typedef NTSTATUS(NTAPI *NtCreateFile_t)(
     __out PHANDLE FileHandle,
     __in ACCESS_MASK DesiredAccess,
@@ -516,6 +529,27 @@ typedef NTSTATUS(NTAPI *NtOpenFile_t)(
     __out PIO_STATUS_BLOCK IoStatusBlock,
     __in ULONG ShareAccess,
     __in ULONG OpenOptions
+    );
+
+// Handle-less attribute probe (Windows 8+ / modern libuv fast path). libuv's fs.stat /
+// fs.lstat call GetFileInformationByName(FileStatBasicByNameInfo) when available instead of
+// opening a CreateFile handle, so it must be filtered too or an undeclared existing file
+// would be visible to stat() even while open()/read() are masked to NOT_FOUND. Declared here
+// (rather than relying on the SDK's fileapi.h) so the DLL builds against any SDK; the real
+// function is resolved dynamically at attach time.
+typedef enum _BXL_FILE_INFO_BY_NAME_CLASS {
+    BxlFileStatByNameInfo,
+    BxlFileStatLxByNameInfo,
+    BxlFileCaseSensitiveByNameInfo,
+    BxlFileStatBasicByNameInfo,
+    BxlMaximumFileInfoByNameClass
+} BXL_FILE_INFO_BY_NAME_CLASS;
+
+typedef BOOL(WINAPI *GetFileInformationByName_t)(
+    __in  PCWSTR FileName,
+    __in  BXL_FILE_INFO_BY_NAME_CLASS FileInformationClass,
+    __out PVOID FileInfoBuffer,
+    __in  ULONG FileInfoBufferSize
     );
 
 typedef NTSTATUS(NTAPI *ZwCreateFile_t)(

@@ -4,11 +4,16 @@
 //
 //   0  = operation succeeded (access allowed)
 //   10 = operation denied (ERROR_ACCESS_DENIED, i.e. the sandbox blocked it)
+//   11 = operation reported the path as NOT_FOUND (the sandbox hid it; this is
+//        how --filter-inputs masks a denied read - linux-sandbox "absent" parity)
 //   20 = operation failed for some other reason
 //   30 = bad usage
 //
 // Usage:
 //   probe read  <path>            open <path> for reading
+//   probe statbyname <path>       stat <path> via GetFileInformationByName
+//                                 (FileStatBasicByNameInfo) -- the handle-less fast path
+//                                 modern libuv/Node use for fs.stat; 0 visible, 11 hidden
 //   probe write <path>            create/overwrite <path>
 //   probe delete <path>           delete <path>
 //   probe deleteh <path>          delete <path> via SetFileInformationByHandle
@@ -26,6 +31,16 @@
 //   probe cwdis <dir>             0 iff the current directory equals <dir>
 //   probe tempfile <dir>          GetTempFileNameW in <dir> (intercepted API)
 //   probe ntread <path>           open <path> for read via native NtCreateFile
+//   probe findfile <path>         FindFirstFileEx on an EXACT file path (single-file
+//                                 existence probe, as cmd `type` does); 0 if visible,
+//                                 11 if absent/hidden, 10 if denied
+//   probe enumfind <dir> <name>   0 iff <name> is listed when enumerating <dir>
+//                                 via Win32 FindFirstFile/FindNextFile, else 11
+//   probe enumfindnt <dir> <name> same, via GetFileInformationByHandleEx
+//                                 (FileIdBothDirectoryInfo)
+//   probe enumfindntdirect <dir> <name>
+//                                 same, via a direct ntdll!NtQueryDirectoryFile
+//                                 call (the path Node/libuv use)
 
 #include <windows.h>
 #include <winternl.h>
@@ -43,12 +58,15 @@ namespace {
 
 constexpr int kOk = 0;
 constexpr int kDenied = 10;
+constexpr int kNotFound = 11;
 constexpr int kOtherError = 20;
 constexpr int kBadUsage = 30;
 
 int MapLastError() {
     DWORD e = GetLastError();
-    return (e == ERROR_ACCESS_DENIED) ? kDenied : kOtherError;
+    if (e == ERROR_ACCESS_DENIED) return kDenied;
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return kNotFound;
+    return kOtherError;
 }
 
 int DoRead(const wchar_t* path) {
@@ -68,6 +86,27 @@ int DoWrite(const wchar_t* path) {
     WriteFile(h, data, sizeof(data) - 1, &written, nullptr);
     CloseHandle(h);
     return kOk;
+}
+
+// Write the same path twice (CREATE_ALWAYS) within a SINGLE process. Exercises the
+// execroot-writable per-process "files I created" cache: the first write creates a
+// new file (allowed), the second sees it exists but was created by THIS process, so
+// it must still be allowed. Returns the mapped result of the SECOND write.
+int DoRewrite(const wchar_t* path) {
+    int first = DoWrite(path);
+    if (first != kOk) return first;
+    return DoWrite(path);
+}
+
+// Create a NEW file, then read it back within the SAME process. Under execroot-
+// writable this must succeed: the file the process just created has to be readable
+// even though the execroot read-filter otherwise hides undeclared paths (mirrors
+// vite writing then importing a .vite-temp timestamp module). Returns the mapped
+// result of the READ.
+int DoWriteRead(const wchar_t* path) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    return DoRead(path);
 }
 
 int DoDelete(const wchar_t* path) {
@@ -161,6 +200,53 @@ int DoStatA(const wchar_t* path) {
     return kOk;
 }
 
+// Stat via GetFileInformationByName(FileStatBasicByNameInfo) -- the handle-less fast path that
+// modern libuv (Node) uses for fs.stat. Resolved dynamically since it only exists on Win8+/Win11
+// and may be absent from the SDK import lib. Regression coverage for the stat/read masking fix:
+// the ordinary "stat" op above uses GetFileAttributesW, which was already masked, so it could
+// not catch a GetFileInformationByName leak.
+int DoStatByName(const wchar_t* path) {
+    typedef enum {
+        pFileStatByNameInfo,
+        pFileStatLxByNameInfo,
+        pFileCaseSensitiveByNameInfo,
+        pFileStatBasicByNameInfo
+    } P_FILE_INFO_BY_NAME_CLASS;
+    typedef struct {
+        LARGE_INTEGER FileId;
+        LARGE_INTEGER CreationTime;
+        LARGE_INTEGER LastAccessTime;
+        LARGE_INTEGER LastWriteTime;
+        LARGE_INTEGER ChangeTime;
+        LARGE_INTEGER AllocationSize;
+        LARGE_INTEGER EndOfFile;
+        ULONG FileAttributes;
+        ULONG ReparseTag;
+        ULONG NumberOfLinks;
+        ULONG DeviceType;
+        ULONG DeviceCharacteristics;
+        ULONG Reserved;
+        LARGE_INTEGER VolumeSerialNumber;
+        struct { BYTE Id[16]; } FileId128;
+    } P_FILE_STAT_BASIC_INFORMATION;
+    typedef BOOL(WINAPI * GetFileInformationByName_fn)(
+        PCWSTR, P_FILE_INFO_BY_NAME_CLASS, PVOID, ULONG);
+
+    static GetFileInformationByName_fn pGetFileInformationByName =
+        (GetFileInformationByName_fn)GetProcAddress(
+            GetModuleHandleW(L"kernelbase.dll"), "GetFileInformationByName");
+    if (pGetFileInformationByName == nullptr) {
+        // API unavailable on this OS: skip (harness treats this op as N/A -> allowed).
+        return kOk;
+    }
+
+    P_FILE_STAT_BASIC_INFORMATION info{};
+    if (!pGetFileInformationByName(path, pFileStatBasicByNameInfo, &info, sizeof(info))) {
+        return MapLastError();
+    }
+    return kOk;
+}
+
 int DoReadA(const wchar_t* path) {
     char pathA[1024];
     WideCharToMultiByte(CP_ACP, 0, path, -1, pathA, sizeof(pathA), nullptr,
@@ -182,6 +268,114 @@ int DoEnumerate(const wchar_t* dir) {
     }
     FindClose(h);
     return kOk;
+}
+
+// Enumerate <dir> via the Win32 FindFirstFile/FindNextFile APIs and report
+// whether an entry named <name> is visible: kOk if present, kNotFound if the
+// directory lists but <name> is not among the entries (i.e. it was filtered).
+int DoEnumFind(const wchar_t* dir, const wchar_t* name) {
+    std::wstring pattern = std::wstring(dir) + L"\\*";
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    bool found = false;
+    do {
+        if (_wcsicmp(fd.cFileName, name) == 0) { found = true; break; }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return found ? kOk : kNotFound;
+}
+
+// FindFirstFileEx on an EXACT file path (no wildcard) - this is a single-file
+// existence/metadata probe, not a directory enumeration. It is the path cmd.exe's
+// `type`, GetShortPathName, and many CRT stat() implementations use. Under input
+// filtering an undeclared-but-existing file must look ABSENT (kNotFound), matching
+// linux-sandbox, rather than kDenied.
+int DoFindFile(const wchar_t* path) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileExW(path, FindExInfoStandard, &fd, FindExSearchNameMatch,
+                                nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    FindClose(h);
+    return kOk;
+}
+
+// Enumerate <dir> via GetFileInformationByHandleEx(FileIdBothDirectoryInfo) and
+// report whether an entry named <name> is visible. This is the path used by the
+// .NET Directory APIs and some CRTs; it is filtered inside the sandbox's
+// GetFileInformationByHandleEx interception (the wrapper shields the inner
+// NtQueryDirectoryFile call from the native filter).
+int DoEnumFindNt(const wchar_t* dir, const wchar_t* name) {
+    HANDLE h = CreateFileW(
+        dir, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+
+    bool found = false;
+    std::vector<char> buf(64 * 1024);
+    while (!found &&
+           GetFileInformationByHandleEx(h, FileIdBothDirectoryInfo, buf.data(), (DWORD)buf.size())) {
+        auto* info = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buf.data());
+        for (;;) {
+            std::wstring n(info->FileName, info->FileNameLength / sizeof(wchar_t));
+            if (_wcsicmp(n.c_str(), name) == 0) { found = true; break; }
+            if (info->NextEntryOffset == 0) break;
+            info = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(
+                reinterpret_cast<char*>(info) + info->NextEntryOffset);
+        }
+    }
+    CloseHandle(h);
+    return found ? kOk : kNotFound;
+}
+
+typedef NTSTATUS (NTAPI* NtQueryDirectoryFile_fn)(
+    HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, BOOLEAN, PUNICODE_STRING, BOOLEAN);
+
+// Enumerate <dir> by calling ntdll!NtQueryDirectoryFile directly (via
+// GetProcAddress) with FILE_NAMES_INFORMATION, and report whether an entry named
+// <name> is visible. This mirrors how Node/libuv enumerate directories, and
+// exercises the native (un-nested) NtQueryDirectoryFile enumeration filter
+// directly rather than going through a hooked Win32 wrapper.
+int DoEnumFindNtDirect(const wchar_t* dir, const wchar_t* name) {
+    HANDLE h = CreateFileW(
+        dir, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+
+    auto pNtQuery = reinterpret_cast<NtQueryDirectoryFile_fn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
+    if (pNtQuery == nullptr) { CloseHandle(h); return kOtherError; }
+
+    const ULONG FileNamesInformation = 12;
+    std::vector<char> buf(64 * 1024);
+    bool found = false;
+    BOOLEAN restart = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK iosb{};
+        NTSTATUS st = pNtQuery(
+            h, nullptr, nullptr, nullptr, &iosb,
+            buf.data(), (ULONG)buf.size(),
+            (FILE_INFORMATION_CLASS)FileNamesInformation,
+            FALSE, nullptr, restart);
+        restart = FALSE;
+        if (st != 0) break; // STATUS_NO_MORE_FILES or an error
+        char* p = buf.data();
+        for (;;) {
+            ULONG next = *reinterpret_cast<ULONG*>(p + 0);
+            ULONG nameLen = *reinterpret_cast<ULONG*>(p + 8);
+            const wchar_t* nm = reinterpret_cast<const wchar_t*>(p + 12);
+            std::wstring n(nm, nameLen / sizeof(wchar_t));
+            if (_wcsicmp(n.c_str(), name) == 0) { found = true; break; }
+            if (next == 0) break;
+            p += next;
+        }
+        if (found) break;
+    }
+    CloseHandle(h);
+    return found ? kOk : kNotFound;
 }
 
 int DoCopy(const wchar_t* src, const wchar_t* dst) {
@@ -370,6 +564,10 @@ int DoNtRead(const wchar_t* path) {
     }
     // STATUS_ACCESS_DENIED.
     if (st == static_cast<NTSTATUS>(0xC0000022L)) return kDenied;
+    // STATUS_OBJECT_NAME_NOT_FOUND / STATUS_OBJECT_PATH_NOT_FOUND (how
+    // --filter-inputs masks a denied native read).
+    if (st == static_cast<NTSTATUS>(0xC0000034L) ||
+        st == static_cast<NTSTATUS>(0xC000003AL)) return kNotFound;
     return kOtherError;
 }
 
@@ -384,6 +582,8 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring op = argv[1];
     if (op == L"read") return DoRead(argv[2]);
     if (op == L"write") return DoWrite(argv[2]);
+    if (op == L"rewrite") return DoRewrite(argv[2]);
+    if (op == L"writeread") return DoWriteRead(argv[2]);
     if (op == L"delete") return DoDelete(argv[2]);
     if (op == L"deleteh") return DoDeleteByHandle(argv[2]);
     if (op == L"delonclose") return DoDeleteOnClose(argv[2]);
@@ -410,9 +610,32 @@ int wmain(int argc, wchar_t** argv) {
         return DoReplace(argv[2], argv[3]);
     }
     if (op == L"stat") return DoStat(argv[2]);
+    if (op == L"statbyname") return DoStatByName(argv[2]);
     if (op == L"stata") return DoStatA(argv[2]);
     if (op == L"reada") return DoReadA(argv[2]);
     if (op == L"enumerate") return DoEnumerate(argv[2]);
+    if (op == L"findfile") return DoFindFile(argv[2]);
+    if (op == L"enumfind") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe enumfind <dir> <name>\n");
+            return kBadUsage;
+        }
+        return DoEnumFind(argv[2], argv[3]);
+    }
+    if (op == L"enumfindnt") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe enumfindnt <dir> <name>\n");
+            return kBadUsage;
+        }
+        return DoEnumFindNt(argv[2], argv[3]);
+    }
+    if (op == L"enumfindntdirect") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe enumfindntdirect <dir> <name>\n");
+            return kBadUsage;
+        }
+        return DoEnumFindNtDirect(argv[2], argv[3]);
+    }
     if (op == L"rmdir") return DoRmdir(argv[2]);
     if (op == L"copy") {
         if (argc < 4) {
