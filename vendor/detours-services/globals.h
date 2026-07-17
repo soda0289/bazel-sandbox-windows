@@ -115,6 +115,14 @@ typedef BOOL(__stdcall* SubstituteProcessExecutionPluginFunc)(
 
 extern wchar_t* g_SubstituteProcessExecutionShimPath;
 extern bool g_ProcessExecutionShimAllProcesses;
+
+// Bazel fork: name of the launcher-created shared-memory region holding the
+// cross-process "files created by this process tree" set (execroot-writable
+// mode). Parsed from the manifest payload (ParseFileAccessManifest) so it rides
+// the payload that is re-copied verbatim to every child (robust propagation,
+// independent of the child's environment block). Null when the launcher did not
+// request created-files tracking. CODESYNC: ManifestBuilder::SetCreatedShmName.
+extern wchar_t* g_bazelCreatedShmName;
 extern wchar_t* g_SubstituteProcessExecutionPluginDllPath;
 extern HMODULE g_SubstituteProcessExecutionPluginDllHandle;
 extern SubstituteProcessExecutionPluginFunc g_SubstituteProcessExecutionPluginFunc;

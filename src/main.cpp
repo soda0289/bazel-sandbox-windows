@@ -237,6 +237,14 @@ Options ParseOptions(std::vector<std::wstring> args) {
         GetCurrentDirectoryW(MAX_PATH, cwd);
         o.workingDir = cwd;
     }
+    if (o.tracePath.empty()) {
+        wchar_t envTrace[1024];
+        DWORD n = GetEnvironmentVariableW(L"BAZEL_SANDBOX_TRACE", envTrace, 1024);
+        if (n > 0 && n < 1024) {
+            o.tracePath = std::wstring(envTrace) + L"." +
+                          std::to_wstring(GetCurrentProcessId());
+        }
+    }
     return o;
 }
 
@@ -287,6 +295,169 @@ std::wstring BuildCommandLine(const std::vector<std::wstring>& args) {
         EscapeArg(args[i], cmd);
     }
     return cmd;
+}
+
+// Case-insensitive test whether a tool path's final component is "cmd.exe".
+bool IsCmdExe(const std::wstring& toolPath) {
+    size_t slash = toolPath.find_last_of(L"\\/");
+    std::wstring base =
+        (slash == std::wstring::npos) ? toolPath : toolPath.substr(slash + 1);
+    if (base.size() != 7) return false;
+    static const wchar_t kCmd[] = L"cmd.exe";
+    for (size_t k = 0; k < 7; k++) {
+        if (towlower(base[k]) != kCmd[k]) return false;
+    }
+    return true;
+}
+
+// Build the child command line from the parsed argv (o.args).
+//
+// We deliberately match how Bazel itself launches Windows subprocesses (see
+// Bazel's src/main/java/com/google/devtools/build/lib/shell/
+// WindowsSubprocessFactory.java, method escapeArgvRest). Doing exactly what
+// Bazel's own launcher does means a command behaves identically whether Bazel
+// runs it directly (local strategy) or through this sandbox wrapper.
+//
+// The child's command-line STRING must be quoted for the child's own parser, and
+// Windows has two parsing regimes, so Bazel dispatches on argv0 == "cmd.exe":
+//
+//  - Normal programs parse their command line with the CommandLineToArgvW / CRT
+//    convention (inner quotes as \"), so each argument is escaped with EscapeArg
+//    (Bazel uses ShellUtils.windowsEscapeArg for this branch).
+//  - cmd.exe does NOT use that convention: it strips one outer quote pair (with
+//    /S) and otherwise treats the text literally, and does not understand \".
+//    So when argv0 is cmd.exe, Bazel (and therefore we) append its arguments
+//    VERBATIM (no escaping). The command already carries real, literal quotes:
+//    Bazel's transport \" escaping was consumed when THIS process parsed its own
+//    argv via CommandLineToArgvW. Re-escaping would corrupt quoted paths such as
+//    "external\zlib+\crc32.h" (cmd's copy would then read '+' as its file-
+//    concatenation operator).
+//
+// This is dispatch on the child's command-line grammar (the same key Bazel uses),
+// not filename special-casing.
+std::wstring BuildChildCommandLine(const std::vector<std::wstring>& args) {
+    bool isCmd = !args.empty() && IsCmdExe(args[0]);
+    std::wstring out;
+    for (size_t k = 0; k < args.size(); k++) {
+        if (k != 0) out += L' ';
+        // argv0 is always escaped so a path with spaces stays one token; the
+        // rest is verbatim for cmd.exe, escaped for every other tool.
+        if (k == 0 || !isCmd) {
+            EscapeArg(args[k], out);
+        } else {
+            out += args[k];
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process created-files set (shared memory).
+//
+// The whole sandboxed process tree is a single Bazel action. Like linux-sandbox's
+// shared writable execroot, a scratch file/dir CREATED by ANY process in the tree
+// must be readable/enumerable/deletable by EVERY other process in the tree (e.g.
+// JavaBuilder forks javac to create _javac/*_tmp/native_headers in one process and
+// cleans it up in another). The DetoursServices DLL keeps that "created this run"
+// set here; a per-process set cannot see a sibling/parent's creations, so the set
+// is backed by a named shared-memory region created per launcher invocation (i.e.
+// per action - no cross-action leakage) and inherited by every injected DLL. The
+// region name is carried in the manifest payload (ManifestBuilder::SetCreatedShmName
+// -> g_bazelCreatedShmName in the DLL), which is re-copied verbatim to every child
+// on injection, so it propagates robustly even to a child spawned with a custom
+// environment block. Layout / semantics are mirrored in
+// vendor/detours-services/PolicyResult.cpp (CreatedFilesTracker). Only set up when
+// --execroot-writable is in effect (the only mode that consults the tracker).
+// ---------------------------------------------------------------------------
+struct CreatedShmHeader {
+    volatile long long usedBytes;  // bytes of records written into the data region
+    long long capacity;            // usable data-region size in bytes
+};
+constexpr long long kCreatedShmDataBytes = 32ll * 1024 * 1024;
+
+struct CreatedShmHandles {
+    HANDLE mapping = nullptr;
+    HANDLE mutex = nullptr;
+    std::wstring name;
+};
+
+// Create the shared-memory region + mutex and initialize the header. The region
+// name is returned in CreatedShmHandles::name so the caller can carry it in the
+// manifest payload (ManifestBuilder::SetCreatedShmName), which propagates it to
+// every injected DLL in the process tree via the payload that is re-copied on
+// injection - robust even for children spawned with a custom environment block.
+// Returns the owning handles; keep them open for the lifetime of the process tree.
+CreatedShmHandles SetupCreatedFilesShm() {
+    CreatedShmHandles shm;
+    std::wstring base = L"Local\\BazelSandboxCreated_" +
+                        std::to_wstring(GetCurrentProcessId()) + L"_" +
+                        std::to_wstring(GetTickCount64());
+    long long total = static_cast<long long>(sizeof(CreatedShmHeader)) + kCreatedShmDataBytes;
+    HANDLE mapping = CreateFileMappingW(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+        static_cast<DWORD>(total >> 32), static_cast<DWORD>(total & 0xFFFFFFFF),
+        base.c_str());
+    if (mapping == nullptr) return shm;
+    void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(CreatedShmHeader));
+    if (view == nullptr) {
+        CloseHandle(mapping);
+        return shm;
+    }
+    auto* h = static_cast<CreatedShmHeader*>(view);
+    h->usedBytes = 0;
+    h->capacity = kCreatedShmDataBytes;
+    UnmapViewOfFile(view);
+    shm.mutex = CreateMutexW(nullptr, FALSE, (base + L".mtx").c_str());
+    shm.mapping = mapping;
+    shm.name = base;
+    return shm;
+}
+
+// Discard undeclared scratch after the sandboxed process tree exits, mirroring
+// linux-sandbox, which throws away its writable execroot after every action so no
+// action ever inherits another's (or a prior attempt's) leftover files. We run
+// IN PLACE, so the execroot persists between actions and across Bazel's reduced->
+// full classpath re-execution of the same Java action; a first attempt that fails
+// mid-way leaves scratch (e.g. _javac/*_tmp/native_headers) that the second
+// attempt's JavaBuilder cleanupDirectory cannot remove (hidden by the input
+// filter) -> "directory not empty". Deleting our own tracked creations on exit
+// gives each attempt/action the clean slate it would get under linux-sandbox.
+//
+// The SHM created-set records ONLY undeclared creations under the execroot-writable
+// (OverrideAllowWriteForExistingFiles) cone; declared -w outputs are AllowAll /
+// IndicateUntracked and are never in the set, so they are preserved. Deleting
+// deepest-first empties a scratch directory before its own removal; a directory
+// that still holds a declared output (e.g. an -d output parent dir) simply fails
+// RemoveDirectory and is left in place. Skipped under -D (--sandbox_debug), matching
+// linux-sandbox keeping its sandbox dir for inspection.
+void CleanupCreatedScratch(HANDLE mapping) {
+    if (mapping == nullptr) return;
+    BYTE* view = static_cast<BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
+    if (view == nullptr) return;
+    auto* h = reinterpret_cast<CreatedShmHeader*>(view);
+    long long used = h->usedBytes;
+    BYTE* data = view + sizeof(CreatedShmHeader);
+    std::vector<std::wstring> paths;
+    long long off = 0;
+    while (off + static_cast<long long>(sizeof(uint32_t)) <= used) {
+        uint32_t nameBytes = *reinterpret_cast<uint32_t*>(data + off);
+        long long recEnd = off + static_cast<long long>(sizeof(uint32_t)) + nameBytes;
+        if (recEnd > used) break;
+        const wchar_t* chars = reinterpret_cast<const wchar_t*>(data + off + sizeof(uint32_t));
+        paths.emplace_back(chars, nameBytes / sizeof(wchar_t));
+        long long rec = static_cast<long long>(sizeof(uint32_t)) + nameBytes;
+        rec = (rec + 3) & ~3ll;  // records are 4-byte aligned
+        off += rec;
+    }
+    UnmapViewOfFile(view);
+    // Deepest paths first so children are gone before we remove their parent dir.
+    std::sort(paths.begin(), paths.end(),
+              [](const std::wstring& a, const std::wstring& b) { return a.size() > b.size(); });
+    for (const auto& p : paths) {
+        if (!DeleteFileW(p.c_str())) {
+            RemoveDirectoryW(p.c_str());
+        }
+    }
 }
 
 // Encode a uint64 as a protobuf base-128 varint.
@@ -642,6 +813,17 @@ int wmain(int argc, wchar_t** argv) {
         dbg(L"od", p);
     }
 
+    // Set up the cross-process created-files shared-memory region BEFORE building
+    // the manifest so its name can be embedded in the payload (which is re-copied
+    // to every child on injection). Only needed under --execroot-writable, the
+    // sole mode that consults the created-files tracker. The handles are kept open
+    // until the tree exits (region lifetime == action).
+    CreatedShmHandles createdShm;
+    if (o.execrootWritable) {
+        createdShm = SetupCreatedFilesShm();
+        mb.SetCreatedShmName(createdShm.name);
+    }
+
     std::vector<uint8_t> manifest = mb.Build(/*injectionTimeoutMins*/ 10);
     dline(L"manifest bytes: " + std::to_wstring(manifest.size()));
 
@@ -690,6 +872,12 @@ int wmain(int argc, wchar_t** argv) {
         SetEnvironmentVariableW(L"BAZEL_SANDBOX_NETWORK", L"block");
     }
 
+    // cmd.exe's builtins resolve DRIVE-RELATIVE source paths (e.g. copy's
+    // "external\foo\bar.h") via the child's own current directory, which we set
+    // below through lpCurrentDirectory / SetCurrentDirectoryW - no environment
+    // manipulation is needed.
+    SetCurrentDirectoryW(o.workingDir.c_str());
+
     // Standard handles (with optional redirection).
     HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
     HANDLE hStdErr = GetStdHandle(STD_ERROR_HANDLE);
@@ -722,7 +910,10 @@ int wmain(int argc, wchar_t** argv) {
                                 sizeof(jeli));
     }
 
-    std::wstring cmdLine = BuildCommandLine(o.args);
+    // Reconstruct the child command line from the parsed argv. Handles the
+    // cmd.exe "/c <command>" shape specially so cmd receives literal quotes (see
+    // BuildChildCommandLine); other tools get standard CommandLineToArgvW escaping.
+    std::wstring cmdLine = BuildChildCommandLine(o.args);
     std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
     cmdBuf.push_back(L'\0');
 
@@ -744,7 +935,8 @@ int wmain(int argc, wchar_t** argv) {
     BOOL created = DetourCreateProcessWithDllExW(
         /*lpApplicationName*/ nullptr, cmdBuf.data(),
         /*lpProcessAttributes*/ nullptr, /*lpThreadAttributes*/ nullptr,
-        /*bInheritHandles*/ TRUE, CREATE_SUSPENDED, /*lpEnvironment*/ nullptr,
+        /*bInheritHandles*/ TRUE, CREATE_SUSPENDED,
+        /*lpEnvironment*/ nullptr,
         o.workingDir.c_str(), &si, &pi, dllAnsi.c_str(),
         /*pfCreateProcessW*/ nullptr);
 
@@ -809,6 +1001,13 @@ int wmain(int argc, wchar_t** argv) {
     // Collect resource-usage statistics from the job before we close it.
     WriteStats(o.statsPath, hJob);
 
+    // Discard undeclared scratch the tree created (linux-sandbox parity), unless
+    // --sandbox_debug (-D) asked us to keep it for inspection. Done before closing
+    // the SHM mapping (the created-set lives there) and after the tree has exited.
+    if (o.execrootWritable && o.debugPath.empty()) {
+        CleanupCreatedScratch(createdShm.mapping);
+    }
+
     if (hStdOutFile) CloseHandle(hStdOutFile);
     if (hStdErrFile) CloseHandle(hStdErrFile);
     if (nulIn) CloseHandle(nulIn);
@@ -817,6 +1016,8 @@ int wmain(int argc, wchar_t** argv) {
     if (hThread) CloseHandle(hThread);
     if (hProcess) CloseHandle(hProcess);
     if (hJob) CloseHandle(hJob);
+    if (createdShm.mutex) CloseHandle(createdShm.mutex);
+    if (createdShm.mapping) CloseHandle(createdShm.mapping);
 
     if (dbgFp) fclose(dbgFp);
     return static_cast<int>(exitCode);

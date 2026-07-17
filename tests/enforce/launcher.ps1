@@ -156,4 +156,48 @@ Assert-Exit 'nonexistent target exe fails spawn (exit 2)' 2 $rcMissing
 Assert-Exit 'no command after -- is a usage error (exit 1)' 1 $rcNoCmd
 Assert-Exit 'unknown flag rejected (exit 1)' 1 $rcBadFlag
 
+# --- BuildChildCommandLine: child argument round-trip (two Windows regimes) -----
+# The launcher rebuilds the child's command-line STRING from its parsed argv,
+# matching Bazel's WindowsSubprocessFactory.escapeArgvRest: every tool but cmd.exe
+# gets CommandLineToArgvW-style escaping (a space-bearing token stays ONE argument),
+# while cmd.exe gets its tail VERBATIM (real quotes preserved, since cmd does not
+# understand \"). A regression here corrupts quoted paths (the zlib "copy" bug).
+# Response files give byte-exact control of the parsed argv (one token per line),
+# so these assertions do not depend on the host shell's own quoting.
+$ws = New-Workspace
+
+# Escaped regime: a token containing a space must reach the child intact as a
+# single argument, so echoargs prints exactly two lines ("a b", then "c").
+$outEsc = Join-Path $ws 'echo_escaped.txt'
+$rspEsc = Join-Path $ws 'escaped.rsp'
+@('-W', $ws, '-l', $outEsc, '--', (Get-Probe), 'echoargs', 'a b', 'c') |
+    Set-Content -Encoding Ascii $rspEsc
+$ErrorActionPreference = 'Continue'
+& (Get-Sandbox) "@$rspEsc" *> $null
+$rcEsc = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-Exit 'escaped regime: echoargs child succeeded' 0 $rcEsc
+$escLines = @()
+if (Test-Path $outEsc) {
+    $escLines = (Get-Content $outEsc) | Where-Object { $_ -ne '' }
+}
+Assert-True 'escaped regime: space-bearing arg stays ONE token' `
+    ($escLines.Count -eq 2 -and $escLines[0] -eq 'a b' -and $escLines[1] -eq 'c')
+
+# Verbatim regime: cmd.exe receives its tail unescaped, so real quotes survive and
+# `echo "a b"` prints the quotes literally (no backslash escaping was injected).
+$outCmd = Join-Path $ws 'echo_cmd.txt'
+$rspCmd = Join-Path $ws 'cmd.rsp'
+@('-W', $ws, '-l', $outCmd, '--', 'cmd.exe', '/c', 'echo "a b"') |
+    Set-Content -Encoding Ascii $rspCmd
+$ErrorActionPreference = 'Continue'
+& (Get-Sandbox) "@$rspCmd" *> $null
+$rcCmd = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-Exit 'verbatim regime: cmd.exe child succeeded' 0 $rcCmd
+$cmdOut = ''
+if (Test-Path $outCmd) { $cmdOut = (Get-Content $outCmd -Raw).Trim() }
+Assert-True 'verbatim regime: cmd.exe quotes preserved (no re-escaping)' `
+    ($cmdOut -eq '"a b"')
+
 Complete-Harness

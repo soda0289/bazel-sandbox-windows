@@ -167,6 +167,57 @@ forest.
 * **Test:** covered by `enforce_reparse` (declared input reached through a
   junction/symlink is readable); the end-to-end proof is the `:pkg` build.
 
+### A6. JavaBuilder scratch created in one process, read/cleaned in another — FIXED (cross-process created-set)
+
+* **Symptom:** under `--execroot-writable` (Mode 2), Java compile actions produced
+  **corrupt/empty class jars** and hit `DirectoryNotEmptyException` /
+  "cannot clean `_javac/*_classes`" failures (e.g. `AddJarManifestEntry`,
+  `analysis_cache_clear_event`). A reduced→full classpath re-execution of the same
+  Java action could also inherit stale scratch.
+* **Root cause:** `JavaBuilder` (and other forking tools) **create scratch in one
+  process and read/clean it in another**. The "files created by the tree" set that
+  `--execroot-writable` consults (to allow re-write / read-back / delete of a path
+  the tree created, while still denying clobber of pre-existing undeclared inputs)
+  was originally **per-process**. So the second process could not see the first
+  process's creations: it read an empty/hidden `_classes` tree (empty jar) and its
+  recursive clean left non-empty dirs (`RemoveDirectory` → `ACCESS_DENIED`).
+* **Fix:** the created-set is a **cross-process** append-only log in a named
+  shared-memory region the launcher creates per invocation; every injected DLL in
+  the tree attaches to it. The region name is carried in the **manifest payload**
+  (`g_bazelCreatedShmName`, parsed in `ParseFileAccessManifest`), so it is
+  re-copied verbatim to every child on injection and propagates independent of the
+  child's environment block (a child spawned with a custom env can't drop it). Now
+  any process in the tree sees any path the tree created. Name-agnostic; no
+  JavaBuilder special-casing. See `PolicyResult.cpp` (`CreatedFilesTracker`) and
+  `docs/detours-input-filtering.md`.
+* **Status:** Fixed. Verified end to end: the previously-failing
+  `AddJarManifestEntry` / `analysis_cache_clear_event` Java actions build
+  successfully; a full `//src:bazel` build ran **1,264 windows-sandbox Javac
+  actions with zero sandbox-class failures** (green, matching the local baseline).
+* **Test:** `enforce_modes` — "cross-process read of tree-created file allowed" and
+  "cross-process delete of tree-created file allowed" (parent probe creates the
+  file, a separate spawned child probe reads/deletes it; a per-process-only set
+  would deny/hide it in the child).
+
+### A7. Undeclared scratch left in the in-place execroot between actions — FIXED (discard-on-exit)
+
+* **Symptom:** because the `windows-sandbox` runs **in place** in the real execroot
+  (not a throwaway copy), undeclared scratch a tool created could persist after the
+  action exited and be inherited by a later action or a reduced→full classpath
+  re-run of the same action — unlike `linux-sandbox`, which discards its writable
+  execroot overlay after every action.
+* **Root cause:** no post-action cleanup of the tree's undeclared creations.
+* **Fix:** the launcher discards on exit exactly the undeclared files/dirs recorded
+  in the cross-process created-set (A6), matching linux-sandbox's throwaway
+  execroot. Declared `-w` outputs and pre-existing undeclared files are **not** in
+  the created-set and survive. Skipped under `-D` (`--sandbox_debug`), which keeps
+  scratch for inspection. See `src/main.cpp` (`CleanupCreatedScratch`).
+* **Status:** Fixed.
+* **Test:** `enforce_modes` cleanup section — scratch file/dir removed after exit,
+  child-process-created scratch removed after exit (cross-process cleanup), declared
+  `-w` output preserved, pre-existing undeclared file preserved, scratch preserved
+  under `-D`.
+
 ---
 
 ## Category B - over-exposure (Goal 2)
@@ -179,15 +230,19 @@ reads are intentionally exposed, so Category B is only meaningful under
 `enforce_limitations` / `enforce_reparse` so a future tightening pass will notice
 if behavior changes.
 
-### B1. Directory enumeration not enforced *without* `--filter-inputs` — KNOWN-GAP
+### B1. Directory enumeration — FIXED under `--filter-inputs` (default); leaks only in the bare permissive fallback
 
-* In the bare permissive fallback, `FindFirstFile`/`FindNextFile` on a denied
-  directory succeeds and lists entries. File *opens* are still enforced; only the
-  listing leaks. **Under `--filter-inputs`** (the `windows-sandbox` default) this
-  is closed: undeclared entries are removed from enumeration results, so listings
-  show only declared inputs.
-* **Test:** `enforce_limitations` (enumeration case); `enforce_modes` /
-  `enforce_reparse` cover the filtered behavior.
+* **Under `--filter-inputs`** (the `windows-sandbox` strategy default) this is
+  **closed**: undeclared entries are filtered out of `FindFirstFile`/`FindNextFile`
+  and `NtQueryDirectoryFile`/`ZwQueryDirectoryFile` results, so a listing shows
+  only declared inputs (matching hermetic linux-sandbox).
+* **Residual (bare permissive fallback only, not how Bazel drives it):** with no
+  `--filter-inputs`/`-H`, `FindFirstFile`/`FindNextFile` on a denied directory
+  succeeds and lists entries (file *opens* are still enforced; only the listing
+  leaks). Reads are intentionally exposed in that mode, so there is nothing to
+  leak relative to its contract.
+* **Test:** `enforce_modes` / `enforce_reparse` cover the filtered (default)
+  behavior; `enforce_limitations` pins the permissive-fallback listing leak.
 
 ### B2. Junction-in-`-w` escape — KNOWN-GAP
 
@@ -220,6 +275,35 @@ if behavior changes.
 * **Test:** `enforce_reparse` — declared-vs-undeclared junction-target cases
   (declared allowed, undeclared-to-baseline hidden under filtering).
 
+### B5. Native `NtQueryAttributesFile` / `NtQueryFullAttributesFile` are not detoured — KNOWN-GAP
+
+* **What:** the sandbox masks *stat/attribute* probes of undeclared inputs across
+  every hooked variant — `GetFileAttributesW`/`GetFileAttributesExW`,
+  `GetFileInformationByName`, `FindFirstFileEx`, and the `CreateFile`/`NtCreateFile`
+  read-open paths — so an undeclared file reports `NOT_FOUND` rather than
+  `ACCESS_DENIED` (matching linux-sandbox; see the consistency matrix in
+  `tests/enforce/modes.ps1`). However the two *handle-less* NT attribute syscalls,
+  `NtQueryAttributesFile` and `NtQueryFullAttributesFile` (`ntdll`), are **not
+  hooked**. A process that calls them directly — bypassing the Win32 and
+  `NtCreateFile` layers — can therefore learn the existence/attributes of an
+  undeclared file that the hooked paths would hide. This is an *over-exposure*
+  (Goal-2) gap: it leaks presence, not content.
+* **Why it is low-risk in practice:** these are not the paths the Win32 stat
+  surface uses. `GetFileAttributesEx`, `stat`/`_wstat`, .NET `File.Exists`,
+  Node/libuv `fs.stat` (via `GetFileInformationByName` / `NtCreateFile`), and the
+  Java `WindowsFileSystemProvider` all route through hooked functions. Only code
+  that deliberately issues the raw `Nt*` attribute syscalls (rare outside
+  low-level tooling) bypasses the mask, and even then it obtains only metadata,
+  never file contents (a content read still goes through a hooked open).
+* **Fix if needed:** add `Detoured_NtQueryAttributesFile` /
+  `Detoured_NtQueryFullAttributesFile` mirroring the `GetFileAttributesExW` denial
+  handling (resolve the `OBJECT_ATTRIBUTES` path, run the policy check, and return
+  `STATUS_OBJECT_NAME_NOT_FOUND` when the read denial should be masked). This is
+  the same divergence class as the `GetFileAttributesEx` masking regression — a
+  hook-variant that was never exercised — so any implementation should also gain a
+  probe op + a row in the `tests/enforce/modes.ps1` consistency matrix.
+* **Test:** none yet (no probe op exercises the raw `Nt*` attribute syscalls).
+
 ---
 
 ## Test-infrastructure fix (not a sandbox behavior)
@@ -243,37 +327,52 @@ if behavior changes.
 ## Prioritized gap TODO
 
 Ordered by impact on the two goals. **P0** = blocks real builds (Goal 1); **P1**
-= hermeticity tightening (Goal 2); **P2** = polish/robustness.
+= hermeticity tightening (Goal 2); **P2** = polish/robustness. There are no open
+P0 items — Goal-1 (nothing that reads under default linux-sandbox is wrongly
+denied) is met on every repo smoke-tested to date.
 
-1. **P1 - Bazel-side hermetic wiring.** The sandbox now defaults to permissive
-   reads (matches default linux-sandbox) and takes `-H` for hermetic. Bazel's
-   `WindowsSandboxedSpawnRunner` does not yet pass `-H`, so there is no way to
-   request Goal-2 hermetic reads per build. Add a Bazel flag (mirroring
-   `--experimental_use_hermetic_linux_sandbox`) that makes the runner pass `-H`.
-   Until then the `-r` grants Bazel emits are redundant-but-harmless in permissive
-   mode.
-2. **P1 - B4: tighten handle-resolution to explicit allow scopes (hermetic mode).**
-   Change the fallback to require an `-r`/`-w` match on the resolved target rather
-   than "not denied". Gate behind e2e re-validation (pnpm, runfiles, cygwin) to
-   avoid Goal-1 regressions. Flip the `enforce_reparse` allow-root `Note-Exit`
-   into a gating `Assert-Exit 10` once done.
-3. **P1 - B1: enforce directory enumeration (hermetic mode).** Filter
-   `FindFirstFile`/`FindNextFile` results through the policy so denied entries are
-   not listed. Highest-value Goal-2 item (broad info-leak surface).
-4. **P1 - B2: junction-in-`-w` write escape.** Resolve write targets through
+1. **P1 - B2: junction-in-`-w` write escape.** Resolve write targets through
    reparse points before allowing, or refuse writes that traverse an untrusted
-   junction inside a writable scope. Applies in both modes (writes are always
-   confined).
-5. **P2 - B3: 8.3 short-name / non-ASCII case `-b` bypass.** Canonicalize paths
+   junction inside a writable scope. Applies in **all** modes (writes are always
+   confined, independent of the read mode), which is why it is the highest-value
+   open item. **Test:** `enforce_limitations` (reparse-escape case).
+2. **P2 - B3: 8.3 short-name / non-ASCII case `-b` bypass.** Canonicalize paths
    (expand short names, normalize case-fold) before matching block entries.
-6. **P2 - >260 raw-path child truncation.** Child-side (CRT truncates the raw
+   **Test:** `enforce_limitations` (short-name / non-ASCII cases).
+3. **P2 - B5: detour the raw NT attribute syscalls.** Add
+   `Detoured_NtQueryAttributesFile` / `Detoured_NtQueryFullAttributesFile` so a
+   direct `ntdll` caller cannot probe an undeclared file's existence past the
+   masked Win32/`NtCreateFile` surface. Low-risk (leaks presence, not content;
+   normal stat surfaces are already hooked). Mirror the `GetFileAttributesExW`
+   denial masking and add a probe op + consistency-matrix row.
+4. **P2 - >260 raw-path child truncation.** Child-side (CRT truncates the raw
    path before the engine sees it); not an engine bug. Kept as a `Note-Exit`.
    Only actionable by encouraging long-path-aware manifests in child tools.
 
-Recently resolved (were P0 Goal-1 blockers): **A4** (`ng_package` rollup reading
-an undeclared split-config `package.json`) and **A5** (`ng_package` packager
-`exports is not defined`) — both fixed by the permissive-read default, no
-`rules_angular` patch. See A4/A5 above.
+Recently resolved (moved off this list):
+
+* **A6/A7 - execroot-writable created-set is now cross-process + discarded on
+  exit.** The "files created by the tree" set lives in a manifest-payload-carried
+  shared-memory region (not a per-process set), so a file created in one process is
+  visible/writable/deletable in any other process of the tree (fixes JavaBuilder
+  empty-jar / `DirectoryNotEmptyException`), and the launcher discards those
+  undeclared creations on exit (matches linux-sandbox's throwaway execroot). See
+  A6/A7. Validated by a full `//src:bazel` build: 1,264 windows-sandbox Javac
+  actions, zero sandbox-class failures, green (matching the local baseline).
+* **Hermetic wiring is now the default, not a flag.** The design shipped as
+  **Mode 2 (`--filter-inputs`) by default**: `WindowsSandboxedSpawnRunner` calls
+  `setFilterInputs(true).setExecrootWritable(true)`, so Goal-2 hermetic reads are
+  on for every action without a per-build flag. (The earlier plan to add a `-H`
+  opt-in flag is obsolete.)
+* **B1 - directory enumeration** — closed under the `--filter-inputs` default
+  (undeclared entries filtered from `FindFirstFile`/`FindNextFile` and
+  `Nt/ZwQueryDirectoryFile`). See B1.
+* **B4 - handle-resolution tightened to declared inputs** — the `DeclaredInput`
+  marker bit makes the read fallback adopt a resolved target only if it is a
+  declared input, not merely "not denied". See B4.
+* **A4** (`ng_package` rollup reading an undeclared split-config `package.json`)
+  and **A5** (`ng_package` packager `exports is not defined`) — both fixed by the
+  Mode 2 + marker-bit design, no `rules_angular` patch. See A4/A5 above.
 
 ---
 

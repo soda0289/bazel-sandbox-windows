@@ -1,0 +1,509 @@
+diff --git a/src/main/java/com/google/devtools/build/lib/exec/local/WindowsLocalEnvProvider.java b/src/main/java/com/google/devtools/build/lib/exec/local/WindowsLocalEnvProvider.java
+index 9a352983da..d2783faea3 100644
+--- a/src/main/java/com/google/devtools/build/lib/exec/local/WindowsLocalEnvProvider.java
++++ b/src/main/java/com/google/devtools/build/lib/exec/local/WindowsLocalEnvProvider.java
+@@ -47,12 +47,20 @@ public final class WindowsLocalEnvProvider implements LocalEnvProvider {
+    * </ul>
+    *
+    * <p>The values for TMP and TEMP will use backslashes as directory separators.
++   *
++   * <p>TMPDIR is also set to the same value. Windows-native tools read TMP/TEMP, but tools that run
++   * through an msys/Cygwin bash wrapper (e.g. the aspect_rules_js js_binary launcher) invoke GNU
++   * coreutils {@code mktemp}, which honors only TMPDIR and otherwise falls back to the literal Unix
++   * path {@code /tmp} (= the msys installation's tmp dir, a shared location the windows-sandbox
++   * denies writing to). Pointing TMPDIR at the same already-writable temp keeps those tools working
++   * and consistent with native tools. GNU mktemp accepts the backslash Windows path.
+    */
+   @Override
+   public ImmutableMap<String, String> rewriteLocalEnv(
+       Map<String, String> env, BinTools binTools, String fallbackTmpDir) {
+     ImmutableMap.Builder<String, String> result = ImmutableMap.builder();
+-    result.putAll(Maps.filterKeys(env, k -> !k.equals("TMP") && !k.equals("TEMP")));
++    result.putAll(
++        Maps.filterKeys(env, k -> !k.equals("TMP") && !k.equals("TEMP") && !k.equals("TMPDIR")));
+     String p = clientEnv.get("TMP");
+     if (Strings.isNullOrEmpty(p)) {
+       p = clientEnv.get("TEMP");
+@@ -63,6 +71,7 @@ public final class WindowsLocalEnvProvider implements LocalEnvProvider {
+     p = p.replace('/', '\\');
+     result.put("TMP", p);
+     result.put("TEMP", p);
++    result.put("TMPDIR", p);
+     return result.buildOrThrow();
+   }
+ }
+diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/BUILD b/src/main/java/com/google/devtools/build/lib/sandbox/BUILD
+index 4f73e1b943..b8eaa15c75 100644
+--- a/src/main/java/com/google/devtools/build/lib/sandbox/BUILD
++++ b/src/main/java/com/google/devtools/build/lib/sandbox/BUILD
+@@ -294,8 +294,11 @@ java_library(
+         ":sandboxed_spawns",
+         "//src/main/java/com/google/devtools/build/lib/actions",
+         "//src/main/java/com/google/devtools/build/lib/actions:action_input",
++        "//src/main/java/com/google/devtools/build/lib/actions:artifacts",
++        "//src/main/java/com/google/devtools/build/lib/actions:runfiles_tree",
+         "//src/main/java/com/google/devtools/build/lib/exec:abstract_spawn_strategy",
+         "//src/main/java/com/google/devtools/build/lib/exec:execution_options",
++        "//src/main/java/com/google/devtools/build/lib/exec:runfiles_tree_updater",
+         "//src/main/java/com/google/devtools/build/lib/exec:spawn_runner",
+         "//src/main/java/com/google/devtools/build/lib/exec/local",
+         "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
+diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
+index 3147b3d253..dde3030470 100644
+--- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
++++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
+@@ -109,7 +109,13 @@ public final class WindowsSandboxUtil {
+     private Set<Path> writableFilesAndDirectories = ImmutableSet.of();
+     private Map<PathFragment, Path> readableFilesAndDirectories = new TreeMap<>();
+     private Set<Path> inaccessiblePaths = ImmutableSet.of();
+-    private boolean useDebugMode = false;
++    private Set<Path> outputDirectories = ImmutableSet.of();
++    private String sandboxDebugPath = null;
++    private String statisticsPath = null;
++    private boolean blockNetwork = false;
++    private boolean useLoopbackOnly = false;
++    private boolean filterInputs = false;
++    private boolean execrootWritable = false;
+     private List<String> commandArguments = ImmutableList.of();
+ 
+     private CommandLineBuilder(PathFragment windowsSandboxPath, List<String> commandArguments) {
+@@ -178,10 +184,83 @@ public final class WindowsSandboxUtil {
+       return this;
+     }
+ 
+-    /** Sets whether to enable debug mode (e.g. to print debugging messages). */
++    /**
++     * Sets the declared outputs' parent directories, if any.
++     *
++     * <p>Each is passed as {@code -d} to {@code BazelSandbox.exe}, which grants a NODE-only policy
++     * (reveal + create-directory + write) on that exact directory without opening its subtree. This
++     * mirrors {@code linux-sandbox}, which pre-creates the parent directory of every declared output
++     * inside its (writable) sandbox execroot, so a tool's recursive {@code mkdir} of its output
++     * directory is a no-op and the output write succeeds. Because the grant is node-only, undeclared
++     * files inside the output directory stay hidden (reads report NOT_FOUND) and unwritable, so a
++     * hidden/undeclared file can never be overwritten.
++     */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setOutputDirectories(Set<Path> outputDirectories) {
++      this.outputDirectories = outputDirectories;
++      return this;
++    }
++
++    /** Sets the path for writing sandbox debug output, if any. */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setSandboxDebugPath(String sandboxDebugPath) {
++      this.sandboxDebugPath = sandboxDebugPath;
++      return this;
++    }
++
++    /** Sets the path for writing execution statistics (e.g. resource usage), if any. */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setStatisticsPath(String statisticsPath) {
++      this.statisticsPath = statisticsPath;
++      return this;
++    }
++
++    /** Sets whether to block all network access (including loopback). */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setBlockNetwork(boolean blockNetwork) {
++      this.blockNetwork = blockNetwork;
++      return this;
++    }
++
++    /** Sets whether to restrict network access to loopback only. */
+     @CanIgnoreReturnValue
+-    public CommandLineBuilder setUseDebugMode(boolean useDebugMode) {
+-      this.useDebugMode = useDebugMode;
++    public CommandLineBuilder setUseLoopbackOnly(boolean useLoopbackOnly) {
++      this.useLoopbackOnly = useLoopbackOnly;
++      return this;
++    }
++
++    /**
++     * Sets whether to filter undeclared inputs so they are invisible to the sandboxed process.
++     *
++     * <p>When true, {@code --filter-inputs} is passed to {@code BazelSandbox.exe}. This makes the
++     * sandbox reproduce the observable read semantics of a {@code linux-sandbox} symlink forest:
++     * undeclared paths inside the execroot are absent (reads report NOT_FOUND and directory
++     * enumerations omit them) rather than merely denied. Only the granted {@code -r}/{@code -w}
++     * inputs are visible. This is the default ("mode 2") for the {@code windows-sandbox} strategy.
++     */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setFilterInputs(boolean filterInputs) {
++      this.filterInputs = filterInputs;
++      return this;
++    }
++
++    /**
++     * Sets whether the execroot (working directory) is writable for undeclared, newly-created
++     * paths.
++     *
++     * <p>When true, {@code --execroot-writable} is passed to {@code BazelSandbox.exe}. This lets the
++     * sandboxed process create new files/directories anywhere in the execroot (and re-write files
++     * it created during this run) while still denying overwrites of pre-existing undeclared or
++     * input files. It reproduces the observable write semantics of a {@code linux-sandbox} throwaway
++     * execroot (which is fully writable and discarded) for undeclared scratch (e.g. a bundler's
++     * {@code node_modules/.vite-temp}) without opening a hole to clobber real source/input files.
++     * Declared outputs ({@code -w}) stay freely overwritable; declared inputs ({@code -r}) stay
++     * read-only. Used together with {@link #setFilterInputs} for the {@code windows-sandbox}
++     * strategy.
++     */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setExecrootWritable(boolean execrootWritable) {
++      this.execrootWritable = execrootWritable;
+       return this;
+     }
+ 
+@@ -219,8 +298,25 @@ public final class WindowsSandboxUtil {
+       for (Path writablePath : inaccessiblePaths) {
+         commandLineBuilder.add("-b", writablePath.getPathString());
+       }
+-      if (useDebugMode) {
+-        commandLineBuilder.add("-D");
++      for (Path outputDir : outputDirectories) {
++        commandLineBuilder.add("-d", outputDir.getPathString());
++      }
++      if (useLoopbackOnly) {
++        commandLineBuilder.add("-N");
++      } else if (blockNetwork) {
++        commandLineBuilder.add("-n");
++      }
++      if (filterInputs) {
++        commandLineBuilder.add("--filter-inputs");
++      }
++      if (execrootWritable) {
++        commandLineBuilder.add("--execroot-writable");
++      }
++      if (sandboxDebugPath != null) {
++        commandLineBuilder.add("-D", sandboxDebugPath);
++      }
++      if (statisticsPath != null) {
++        commandLineBuilder.add("-S", statisticsPath);
+       }
+       commandLineBuilder.add("--");
+       commandLineBuilder.addAll(commandArguments);
+diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawn.java b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawn.java
+index cb67b70886..1c19752a1d 100644
+--- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawn.java
++++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawn.java
+@@ -27,16 +27,22 @@ public class WindowsSandboxedSpawn implements SandboxedSpawn {
+   private final ImmutableMap<String, String> environment;
+   private final ImmutableList<String> arguments;
+   private final String mnemonic;
++  @Nullable private final Path sandboxDebugPath;
++  @Nullable private final Path statisticsPath;
+ 
+   public WindowsSandboxedSpawn(
+       Path execRoot,
+       ImmutableMap<String, String> environment,
+       ImmutableList<String> arguments,
+-      String mnemonic) {
++      String mnemonic,
++      @Nullable Path sandboxDebugPath,
++      @Nullable Path statisticsPath) {
+     this.execRoot = execRoot;
+     this.environment = environment;
+     this.arguments = arguments;
+     this.mnemonic = mnemonic;
++    this.sandboxDebugPath = sandboxDebugPath;
++    this.statisticsPath = statisticsPath;
+   }
+ 
+   @Override
+@@ -57,15 +63,13 @@ public class WindowsSandboxedSpawn implements SandboxedSpawn {
+   @Override
+   @Nullable
+   public Path getSandboxDebugPath() {
+-    // On Windows, sandbox debugging output is written to stderr rather than a separate file.
+-    return null;
++    return sandboxDebugPath;
+   }
+ 
+   @Override
+   @Nullable
+   public Path getStatisticsPath() {
+-    // On Windows, Bazel currently does not support per-process statistics.
+-    return null;
++    return statisticsPath;
+   }
+ 
+   @Override
+diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
+index 9e65f743ea..80a4759833 100644
+--- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
++++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
+@@ -14,27 +14,46 @@
+ 
+ package com.google.devtools.build.lib.sandbox;
+ 
+-import com.google.common.base.Joiner;
++import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableMap;
+ import com.google.common.collect.ImmutableSet;
+ import com.google.devtools.build.lib.actions.ActionInput;
++import com.google.devtools.build.lib.actions.Artifact;
++import com.google.devtools.build.lib.actions.ExecException;
++import com.google.devtools.build.lib.actions.RunfilesTree;
+ import com.google.devtools.build.lib.actions.Spawn;
++import com.google.devtools.build.lib.actions.Spawns;
++import com.google.devtools.build.lib.exec.RunfilesTreeUpdater;
+ import com.google.devtools.build.lib.exec.local.LocalEnvProvider;
+ import com.google.devtools.build.lib.exec.local.WindowsLocalEnvProvider;
+ import com.google.devtools.build.lib.runtime.CommandEnvironment;
+ import com.google.devtools.build.lib.sandbox.SandboxHelpers.SandboxInputs;
++import com.google.devtools.build.lib.vfs.FileSystemUtils;
+ import com.google.devtools.build.lib.vfs.Path;
+ import com.google.devtools.build.lib.vfs.PathFragment;
+ import java.io.IOException;
++import java.nio.charset.StandardCharsets;
+ import java.time.Duration;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.TreeMap;
+ 
+ /** Spawn runner that uses BuildXL Sandbox APIs to execute a local subprocess. */
+ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+ 
++  // Leave headroom below CreateProcessW's 32767-character command-line limit for the estimation
++  // slack and the "BazelSandbox.exe @file" wrapper itself.
++  private static final int MAX_INLINE_COMMAND_LINE_LENGTH = 30000;
++
+   private final Path execRoot;
+   private final PathFragment windowsSandbox;
+   private final LocalEnvProvider localEnvProvider;
+   private final Duration timeoutKillDelay;
++  private final boolean allowNetwork;
++  private final RunfilesTreeUpdater runfilesTreeUpdater;
+ 
+   /**
+    * Creates a sandboxed spawn runner that uses the {@code windows-sandbox} tool.
+@@ -50,11 +69,13 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+     this.windowsSandbox = windowsSandboxPath;
+     this.timeoutKillDelay = timeoutKillDelay;
+     this.localEnvProvider = new WindowsLocalEnvProvider(cmdEnv.getClientEnv());
++    this.allowNetwork = SandboxHelpers.shouldAllowNetwork(cmdEnv.getOptions());
++    this.runfilesTreeUpdater = cmdEnv.getRunfilesTreeUpdater();
+   }
+ 
+   @Override
+   protected SandboxedSpawn prepareSpawn(Spawn spawn, SpawnExecutionContext context)
+-      throws IOException, InterruptedException {
++      throws IOException, ExecException, InterruptedException {
+     Path tmpDir = createActionTemp(execRoot);
+     Path commandTmpDir = tmpDir.getRelative("work");
+     commandTmpDir.createDirectory();
+@@ -62,6 +83,21 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+         localEnvProvider.rewriteLocalEnv(
+             spawn.getEnvironment(), binTools, commandTmpDir.getPathString());
+ 
++    // The windows-sandbox executes in place in the execroot, so it relies on Bazel having already
++    // materialized every input on disk. Runfiles symlink trees are the exception: for local
++    // execution LocalSpawnRunner materializes them via RunfilesTreeUpdater, but no sandbox runner
++    // does, so a runfiles-based tool (e.g. an aspect_rules_js node launcher) would find its
++    // .runfiles/ tree missing and fail to resolve its entry point. Materialize the trees here, just
++    // as local execution does; this is a no-op when the links are already built by a graph action.
++    List<RunfilesTree> runfilesTrees = new ArrayList<>();
++    for (ActionInput input : spawn.getInputFiles().flatten()) {
++      if (input instanceof Artifact artifact && artifact.isRunfilesTree()) {
++        runfilesTrees.add(
++            context.getInputMetadataProvider().getRunfilesMetadata(input).getRunfilesTree());
++      }
++    }
++    runfilesTreeUpdater.updateRunfiles(runfilesTrees);
++
+     SandboxInputs readablePaths =
+         SandboxHelpers.processInputFiles(
+             context.getInputMapping(PathFragment.EMPTY_FRAGMENT, /* willAccessRepeatedly= */ true),
+@@ -69,33 +105,180 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+ 
+     ImmutableSet.Builder<Path> writablePaths = ImmutableSet.builder();
+     writablePaths.addAll(getWritableDirs(execRoot, environment));
++    // Each declared output file's parent-directory chain (strictly below the execroot) is granted
++    // as an output directory (-d): a node-only reveal + create/write so a tool's recursive mkdir of
++    // its output directory succeeds and the directory is enumerable, mirroring how linux-sandbox
++    // pre-creates output parent dirs in its writable sandbox execroot. The grant is node-only, so
++    // undeclared files inside those directories stay hidden and unwritable (no hidden-file clobber).
++    ImmutableSet.Builder<Path> outputDirs = ImmutableSet.builder();
+     for (ActionInput output : spawn.getOutputFiles()) {
+-      writablePaths.add(execRoot.getRelative(output.getExecPath()));
++      Path outputPath = execRoot.getRelative(output.getExecPath());
++      writablePaths.add(outputPath);
++      for (Path dir = outputPath.getParentDirectory();
++          dir != null && dir.startsWith(execRoot) && !dir.equals(execRoot);
++          dir = dir.getParentDirectory()) {
++        outputDirs.add(dir);
++      }
+     }
+ 
+     Duration timeout = context.getTimeout();
+ 
+-    if (!readablePaths.getSymlinks().isEmpty()) {
+-      throw new IOException(
+-          "Windows sandbox does not support unresolved symlinks yet ("
+-              + Joiner.on(", ").join(readablePaths.getSymlinks().keySet())
+-              + ")");
++    // The windows-sandbox runs in place in the execroot, which is denied by default; each input is
++    // then re-granted readable. Bazel's input mapping pairs a logical execroot path (the KEY, e.g. a
++    // runfiles symlink <exe>.runfiles/<repo>/pkg/tool, or a node_modules store entry) with the
++    // artifact's real on-disk location (the VALUE). For ordinary inputs KEY and VALUE denote the same
++    // file; for the symlink/junction trees Bazel and rulesets build (runfiles forests, the
++    // aspect_rules_js pnpm node_modules store) they differ: the KEY is the in-place link a tool
++    // actually opens, the VALUE is the link's target.
++    //
++    // Grant BOTH:
++    //   * the KEY's in-place location (execRoot/key) - the literal path the tool opens. The sandbox
++    //     enforces policy on the path as opened, so without this a tree link would be denied even
++    //     though its target is readable (reparse points cannot be re-allowed by resolution alone;
++    //     resolution only adds enforcement on the target, it never turns a denied literal path into
++    //     an allowed one).
++    //   * the VALUE (the real target) - so that, with reparse-point resolution enabled, following the
++    //     link to its target also passes the target's own policy check.
++    // This is driven purely by the declared inputs (no path-name heuristics): it grants exactly the
++    // in-place link locations and their targets, whatever the tree is named.
++    // The windows-sandbox runs in place in the execroot (denied by default); each declared input is
++    // re-granted readable. Two grants, together name-agnostic (no node_modules/.runfiles heuristics):
++    //
++    //  1. Grant each input's in-place KEY location AND its real target VALUE. Bazel's input mapping
++    //     pairs a logical execroot path (KEY, e.g. a runfiles symlink) with the artifact's canonical
++    //     on-disk location (VALUE). For ordinary inputs they coincide; for the symlink/junction trees
++    //     rulesets build (runfiles forests, the aspect_rules_js pnpm store) they differ. Granting the
++    //     KEY (the literal link path) is required because tools frequently open the link path itself
++    //     for ALL access types - including cygwin/msys, which resolves symlinks in userspace by opening
++    //     the reparse point (FILE_OPEN_REPARSE_POINT), and CreateProcess of launcher .bat scripts.
++    //     Those never yield a handle to the link's target, so the sandbox cannot resolve them; only a
++    //     direct grant of the link path covers them.
++    //  2. The sandbox additionally has a handle-resolution read fallback: when a tool opens (and the OS
++    //     follows) a link to a real target that is a granted VALUE, the read is allowed even if the
++    //     opened path is not itself a declared input. That covers the pnpm store's intra-store package
++    //     junctions (e.g. @a+cli@v/node_modules/@scope/b -> @scope+b@v/...), which the node_modules
++    //     linker materializes on disk but does NOT declare as inputs of the consuming action - so no
++    //     input-driven grant here can reach them. This replaces the former name-matched node_modules
++    //     read cone.
++    Map<PathFragment, Path> readableFiles = new TreeMap<>();
++    for (Map.Entry<PathFragment, Path> entry : readablePaths.getFiles().entrySet()) {
++      PathFragment key = entry.getKey();
++      // SandboxHelpers maps an EmptyActionInput to a null value; the in-place location is well-defined.
++      readableFiles.put(key, execRoot.getRelative(key));
++      Path value = entry.getValue();
++      if (value != null && value.startsWith(execRoot)) {
++        readableFiles.putIfAbsent(value.relativeTo(execRoot), value);
++      }
++    }
++    for (PathFragment symlink : readablePaths.getSymlinks().keySet()) {
++      readableFiles.putIfAbsent(symlink, execRoot.getRelative(symlink));
+     }
+ 
++    // The Windows runfiles manifest (<exe>.runfiles_manifest) is a real sibling file (not a symlink)
++    // that a launcher reads to locate its runfiles, but Bazel does not list it among the flattened
++    // tree inputs. Without an explicit grant it falls under the execroot deny scope and reads return
++    // "not found", so grant it read. Derive it from each .runfiles root seen among the inputs.
++    Set<PathFragment> runfilesRoots = new HashSet<>();
++    for (PathFragment key : readableFiles.keySet()) {
++      for (PathFragment p = key; p != null; p = p.getParentDirectory()) {
++        if (p.getBaseName().endsWith(".runfiles")) {
++          runfilesRoots.add(p);
++          break;
++        }
++      }
++    }
++    for (PathFragment root : runfilesRoots) {
++      PathFragment parent = root.getParentDirectory();
++      String manifestName = root.getBaseName() + "_manifest";
++      PathFragment manifest =
++          parent == null ? PathFragment.create(manifestName) : parent.getRelative(manifestName);
++      readableFiles.putIfAbsent(manifest, execRoot.getRelative(manifest));
++    }
++
++    Path sandboxDebugPath = null;
++    if (getSandboxOptions().getSandboxDebug()) {
++      sandboxDebugPath = tmpDir.getRelative("debug.out");
++    }
++
++    Path statisticsPath = tmpDir.getRelative("stats.out");
++
++    // Mode 2 (default, matches default linux-sandbox reads): filter undeclared inputs so they are
++    // invisible (reads report NOT_FOUND; enumerations omit them), reproducing the symlink-forest
++    // semantics in place. Outside-execroot reads remain allowed and writes stay confined to -w.
++    // (Mode 3 / --experimental_use_hermetic_windows_sandbox, which additionally denies
++    // outside-execroot reads, is not yet wired here.)
+     WindowsSandboxUtil.CommandLineBuilder commandLineBuilder =
+         WindowsSandboxUtil.commandLineBuilder(windowsSandbox, spawn.getArguments())
+             .setWritableFilesAndDirectories(writablePaths.build())
+-            .setReadableFilesAndDirectories(readablePaths.getFiles())
++            .setReadableFilesAndDirectories(ImmutableMap.copyOf(readableFiles))
+             .setInaccessiblePaths(getInaccessiblePaths())
+-            .setUseDebugMode(getSandboxOptions().getSandboxDebug())
++            .setOutputDirectories(outputDirs.build())
++            .setStatisticsPath(statisticsPath.getPathString())
++            .setFilterInputs(true)
++            .setExecrootWritable(true)
+             .setKillDelay(timeoutKillDelay);
+ 
++    if (sandboxDebugPath != null) {
++      commandLineBuilder.setSandboxDebugPath(sandboxDebugPath.getPathString());
++    }
++
++    // Match linux-sandbox: block the network unless the spawn is allowed to or requires it.
++    // Restrict to loopback (-N) when the loopback device is enabled, otherwise block all (-n).
++    boolean blockNetwork =
++        !(allowNetwork
++            || Spawns.requiresNetwork(spawn, getSandboxOptions().getDefaultSandboxAllowNetwork()));
++    if (blockNetwork) {
++      if (getSandboxOptions().getSandboxEnableLoopbackDevice()) {
++        commandLineBuilder.setUseLoopbackOnly(true);
++      } else {
++        commandLineBuilder.setBlockNetwork(true);
++      }
++    }
++
+     if (!timeout.isZero()) {
+       commandLineBuilder.setTimeout(timeout);
+     }
+ 
+     return new WindowsSandboxedSpawn(
+-        execRoot, environment, commandLineBuilder.build(), spawn.getMnemonic());
++        execRoot,
++        environment,
++        maybeUseArgumentFile(commandLineBuilder.build(), tmpDir),
++        spawn.getMnemonic(),
++        sandboxDebugPath,
++        statisticsPath);
++  }
++
++  /**
++   * Windows caps a process command line at {@code CreateProcessW}'s 32767-character limit. Actions
++   * with many inputs (e.g. {@code CopyToDirectory}) can blow past this because every readable,
++   * writable and inaccessible path is passed to {@code BazelSandbox.exe} inline as {@code -r}/{@code
++   * -w}/{@code -b} arguments. When the estimated command line approaches the limit, spill every
++   * argument after the binary into a response file and invoke the sandbox as {@code
++   * BazelSandbox.exe @responseFile} instead. {@code BazelSandbox.exe} reads newline-separated
++   * arguments from an {@code @FILE} token, so the effective command line stays tiny.
++   */
++  private static ImmutableList<String> maybeUseArgumentFile(
++      ImmutableList<String> arguments, Path tmpDir) throws IOException {
++    int estimatedLength = 0;
++    for (String arg : arguments) {
++      // Each argument costs its length plus a separating space and, conservatively, two surrounding
++      // quotes. This is an over-estimate of the rendered command line, so we always switch to a
++      // response file before the real limit is reached.
++      estimatedLength += arg.length() + 3;
++    }
++    if (estimatedLength <= MAX_INLINE_COMMAND_LINE_LENGTH) {
++      return arguments;
++    }
++
++    Path argumentFile = tmpDir.getRelative("sandbox_args.txt");
++    StringBuilder content = new StringBuilder();
++    for (String arg : arguments.subList(1, arguments.size())) {
++      // One argument per line, each terminated with '\n'. BazelSandbox reads each line verbatim
++      // (no quoting/splitting) and strips a trailing '\r', so paths with spaces need no escaping.
++      content.append(arg).append('\n');
++    }
++    FileSystemUtils.writeContent(argumentFile, StandardCharsets.UTF_8, content.toString());
++    return ImmutableList.of(arguments.get(0), "@" + argumentFile.getPathString());
+   }
+ 
+   private static Path createActionTemp(Path execRoot) throws IOException {

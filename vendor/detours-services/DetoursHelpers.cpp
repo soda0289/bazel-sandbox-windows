@@ -1000,6 +1000,22 @@ bool ParseFileAccessManifest(
         LoadSubstituteProcessExecutionPluginDll();
     }
 
+    // Bazel fork: created-files SHM region name. A padded WCHAR block (same
+    // layout as the report block) written by ManifestBuilder immediately before
+    // the manifest tree, so the tree stays 4-byte aligned. The length word is the
+    // padded byte count of the name region; 0 means no created-files tracking.
+    // Parsing here (rather than reading an environment variable) means the name
+    // propagates through the payload that is re-copied verbatim to every child,
+    // so a child spawned with a custom environment block still attaches to the
+    // same region. CODESYNC: ManifestBuilder::Build created-files SHM block.
+    {
+        uint32_t shmNameBytes = ParseUint32(payloadBytes, offset);
+        if (shmNameBytes != 0) {
+            g_bazelCreatedShmName = _wcsdup(reinterpret_cast<const wchar_t*>(&payloadBytes[offset]));
+            offset += shmNameBytes;
+        }
+    }
+
     g_manifestTreeRoot = reinterpret_cast<PCManifestRecord>(&payloadBytes[offset]);
     VerifyManifestRoot(g_manifestTreeRoot);
 

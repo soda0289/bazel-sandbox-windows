@@ -62,3 +62,60 @@ sandboxed failure is genuinely the input filter hiding it and not a missing file
 is a separate target from `bad` on purpose: a successful build of the identical
 action would populate the action cache and the sandboxed run would get a cache hit
 instead of re-executing.
+
+## `smoke.ps1` — differential testing against real repos
+
+`mode2.ps1` proves the wiring with a synthetic action. `smoke.ps1` goes wider: it
+builds a target set in a **real, large open-source Bazel repo** and checks that the
+sandbox result **matches** the non-sandbox result. The project's goal is parity with
+hermetic linux-sandbox / RBE, so the signal we care about is not "did it build" but
+"does `windows-sandbox` agree with `local`":
+
+| local | sandbox | meaning |
+| --- | --- | --- |
+| pass | **fail** | **sandbox regression** — actionable, this is our bug |
+| fail | fail | pre-existing Windows/toolchain breakage — not ours |
+| pass | pass | good |
+| fail | pass | unexpected — reported for inspection |
+
+Per-target status is read from Bazel's Build Event Protocol
+(`--build_event_json_file`), so a whole `//...` build with `--keep_going` is diffed
+target-by-target. The script exits non-zero only when there is at least one
+**pass-local / fail-sandbox** regression.
+
+**Separate output bases.** The two runs use *different* `--output_user_root`s.
+Spawn strategy is not part of Bazel's action-cache key, so a shared base would let
+the sandbox run pick up cache hits from the local run and never actually execute
+under the sandbox. The two bases share one `--repository_cache` so module/repo
+fetches are paid once.
+
+### Running
+
+```powershell
+# Curated preset (see smoke-repos.psd1):
+pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe -Preset rules_js
+
+# An arbitrary repo (clone) or an existing checkout:
+pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
+    -RepoUrl https://github.com/aspect-build/rules_js -Subdir examples
+
+pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
+    -RepoPath C:\src\some-repo -Subdir packages/foo -Targets //foo/... -KeepArtifacts
+```
+
+Key flags: `-Preset <name>`, `-RepoUrl`/`-Ref`/`-RepoPath`, `-Subdir` (workspace is
+a sub-dir of the repo), `-Targets` (default `//...`), `-Sandbox`,
+`-RepositoryCache`, `-ExtraBuildArgs`, `-HostJvmArgs`, `-KeepArtifacts`.
+
+Exit codes: `0` no sandbox regressions, `1` one or more regressions, `2` missing
+prerequisite, `3` environment could not resolve modules / clone.
+
+### Presets (`smoke-repos.psd1`)
+
+Curated entries, highest-signal first: `rules_js`, `rules_js_webpack_devserver`,
+`rules_ts` (JS/TS ecosystem — pnpm junctions, node package.json walk-up, symlink
+forests, where the hard sandbox bugs live), `angular` / `angular_material` (scoped
+ng_package / ngc packages), `rules_dotnet` (.NET SDK toolchain — C#/F# compile,
+publish, runfiles), `bazel_self` (native-toolchain dogfood), and `distroless`
+(optional, heavyweight, Linux-centric — expect both-fail noise, low sandbox signal).
+Any preset field can be overridden on the command line.

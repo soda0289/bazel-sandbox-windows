@@ -3740,7 +3740,14 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
     // then GetFileAttributes returns attributes for the symbolic link.
     if (accessCheck.ShouldDenyAccess())
     {
-        error = accessCheck.DenialError();
+        // Mask denied read/probes as NOT_FOUND under --filter-inputs, matching
+        // Detoured_GetFileAttributesW / Detoured_GetFileInformationByName. Without this
+        // an undeclared/hidden probe returns ACCESS_DENIED, which breaks tools that
+        // treat access-denied (but not not-found) as fatal - e.g. Java's
+        // Files.createDirectories -> WindowsFileSystemProvider.checkAccess (which uses
+        // GetFileAttributesEx) throws AccessDeniedException instead of catching
+        // NoSuchFileException when probing a not-yet-existent scratch dir (_javac/...).
+        error = accessCheck.DenialError(ShouldDeniedReadsAsNotFound());
         reportedError = error;
         querySucceeded = FALSE;
     }
@@ -3985,7 +3992,10 @@ static BOOL WINAPI DetoursCopyFileEx(
     if (sourceAccessCheck.ShouldDenyAccess())
     {
         result = FALSE;
-        error = sourceAccessCheck.DenialError();
+        // Mask a denied source read as NOT_FOUND under --filter-inputs, consistent with
+        // the probe hooks (GetFileAttributes[Ex]W etc.): an undeclared/hidden source is
+        // absent, not permission-denied. DenialError() only masks read-only Valid denials.
+        error = sourceAccessCheck.DenialError(ShouldDeniedReadsAsNotFound());
     }
 
     SetLastError(error);
@@ -4795,7 +4805,10 @@ BOOL WINAPI Detoured_CreateHardLinkW(
     if (sourceAccessCheck.ShouldDenyAccess())
     {
         result = FALSE;
-        error = sourceAccessCheck.DenialError();
+        // Mask a denied source read as NOT_FOUND under --filter-inputs, consistent with
+        // the probe hooks: an undeclared/hidden hardlink source is absent, not
+        // permission-denied. DenialError() only masks read-only Valid denials.
+        error = sourceAccessCheck.DenialError(ShouldDeniedReadsAsNotFound());
         reportedError = error;
     }
 
@@ -5000,7 +5013,21 @@ static bool IsEnumChildVisible(const PolicyResult& directoryPolicyResult, const 
         return true;
     }
 
-    return childPolicy.AllowRead() || childPolicy.IsExactManifestNode();
+    return childPolicy.AllowRead() || childPolicy.IsExactManifestNode()
+#if _WIN32
+        // Reveal entries this process created in an execroot-writable scratch scope
+        // (OverrideAllowWriteForExistingFiles), matching linux-sandbox's readable+
+        // writable throwaway execroot. Without this a tool cannot see (jar, clean,
+        // or re-open) the outputs it just wrote under an undeclared scratch subtree:
+        // e.g. JavaBuilder writes .class files into _javac/<lib>_classes then walks
+        // that tree to build the class jar and to clean it up - if the enumeration
+        // hides the process's own files the jar comes out empty and the recursive
+        // delete leaves a non-empty directory (RemoveDirectory -> ACCESS_DENIED).
+        // Undeclared PRE-EXISTING inputs are not created by this process and stay
+        // hidden, preserving hermeticity. Mirrors the CheckReadAccess carve-out.
+        || (childPolicy.OverrideAllowWriteForExistingFiles() && childPolicy.WasCreatedInThisProcess())
+#endif
+        ;
 }
 
 // Convenience overload for null-terminated Win32 names (WIN32_FIND_DATAW.cFileName).
@@ -6224,6 +6251,18 @@ BOOL WINAPI Detoured_CreateDirectoryW(
 
     BOOL result = Real_CreateDirectoryW(lpPathName, lpSecurityAttributes);
     error = GetLastError();
+
+    // Track directories this process freshly creates in an execroot-writable scratch
+    // scope so the process's own later enumerations (IsEnumChildVisible) can see them.
+    // AllowWrite only tracks file writes; without this, the intermediate scratch
+    // directories (e.g. JavaBuilder's _javac/<lib>_classes/<pkg> tree) stay hidden and
+    // the tool cannot walk into them to jar or clean up its outputs. Only mark on a
+    // real creation (result == TRUE); a pre-existing undeclared directory returns
+    // ERROR_ALREADY_EXISTS and must stay hidden to preserve hermeticity.
+    if (result && policyResult.OverrideAllowWriteForExistingFiles())
+    {
+        policyResult.MarkCreatedInThisProcess();
+    }
 
     if (!result && accessCheck.Result != ResultAction::Allow)
     {

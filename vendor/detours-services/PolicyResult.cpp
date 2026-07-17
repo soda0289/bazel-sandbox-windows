@@ -7,21 +7,43 @@
 #include "FilesCheckedForAccess.h"
 
 #include "UtilityHelpers.h"
+#include <cstdint>
 #include <shared_mutex>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace {
-    // Per-process set of file paths that THIS process created via a write to a path
-    // that did not exist at the time of its first write. Used by AllowWrite when the
-    // scope carries FileAccessPolicy_OverrideAllowWriteForExistingFiles (the Bazel
-    // windows-sandbox "execroot-writable" mode) so that:
-    //   * writing a brand-new file (fresh scratch / undeclared output) is allowed, and
-    //   * the tool may freely RE-write a file it just created, while
-    //   * writing over a file that already existed before the process touched it (an
+    // Cross-process set of file/dir paths CREATED by the sandboxed process tree
+    // during this run (a path first written/created when it did not already exist).
+    // Used by AllowWrite / read-back / enumeration under FileAccessPolicy_Override
+    // AllowWriteForExistingFiles (the Bazel windows-sandbox "execroot-writable" mode)
+    // so that, matching linux-sandbox's shared writable execroot:
+    //   * writing a brand-new file (fresh scratch / undeclared output) is allowed,
+    //   * any process in the tree may RE-write / read back / delete a path the tree
+    //     created, while
+    //   * writing over a file that already existed before the tree touched it (an
     //     undeclared input / source file) is denied - preserving the no-clobber
     //     guarantee even though the whole execroot cone is nominally writable.
-    // Lifetime is the process; it is intentionally NOT shared with child processes.
+    //
+    // The set is backed by a named shared-memory region the launcher creates per
+    // invocation and every injected DLL - in the whole process tree - attaches to.
+    // The region name is carried in the manifest payload (g_bazelCreatedShmName,
+    // parsed in ParseFileAccessManifest) so it propagates to every child via the
+    // payload that is re-copied verbatim on injection, independent of the child's
+    // environment block. This is required because tools fork: e.g.
+    // JavaBuilder creates _javac/*_tmp/native_headers in one process and cleans it up
+    // in another; a per-process set would hide the first process's creations from the
+    // second (empty class jars, "directory not empty" cleanup failures). The region
+    // is per-launcher-invocation, so there is no leakage between concurrent actions.
+    // Each process also keeps a local cache (mirrors the shared log, so lookups do not
+    // rescan). When the region is absent (no --execroot-writable, or the standalone
+    // enforcement tests), the tracker degrades to a purely per-process set.
+    struct CreatedShmHeader {
+        volatile long long usedBytes;  // bytes of records written into the data region
+        long long capacity;            // usable data-region size in bytes
+    };
+
     class CreatedFilesTracker {
     public:
         static CreatedFilesTracker& GetInstance() {
@@ -30,22 +52,109 @@ namespace {
         }
 
         bool WasCreated(const std::wstring& path) {
+            SyncFromShared();
             std::shared_lock<std::shared_mutex> lock(m_lock);
             return m_set.find(path) != m_set.end();
         }
 
         void MarkCreated(const std::wstring& path) {
-            std::unique_lock<std::shared_mutex> lock(m_lock);
-            m_set.insert(path);
+            {
+                std::unique_lock<std::shared_mutex> lock(m_lock);
+                if (!m_set.insert(path).second) {
+                    return;  // already recorded locally (and thus in shared, if any)
+                }
+            }
+            AppendToShared(path);
         }
 
     private:
-        CreatedFilesTracker() = default;
+        CreatedFilesTracker() { InitShared(); }
         CreatedFilesTracker(const CreatedFilesTracker&) = delete;
         CreatedFilesTracker& operator=(const CreatedFilesTracker&) = delete;
 
+        void InitShared() {
+            const wchar_t* name = g_bazelCreatedShmName;
+            if (name == nullptr || name[0] == L'\0') {
+                return;  // no shared region -> per-process fallback
+            }
+            m_mutex = OpenMutexW(SYNCHRONIZE, FALSE, (std::wstring(name) + L".mtx").c_str());
+            m_mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
+            if (m_mapping == nullptr) {
+                return;
+            }
+            m_view = static_cast<BYTE*>(MapViewOfFile(m_mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+            if (m_view == nullptr) {
+                CloseHandle(m_mapping);
+                m_mapping = nullptr;
+            }
+        }
+
+        CreatedShmHeader* Header() const { return reinterpret_cast<CreatedShmHeader*>(m_view); }
+        BYTE* Data() const { return m_view + sizeof(CreatedShmHeader); }
+
+        // Pull any records appended by other processes since our last sync into the
+        // local cache. Records are [uint32 nameBytes][wchar_t name...] padded to 4.
+        void SyncFromShared() {
+            if (m_view == nullptr) {
+                return;
+            }
+            long long used = Header()->usedBytes;  // publish-after-write => safe to read
+            if (m_localOffset >= used) {
+                return;
+            }
+            std::vector<std::wstring> fresh;
+            if (m_mutex != nullptr) WaitForSingleObject(m_mutex, INFINITE);
+            used = Header()->usedBytes;
+            BYTE* data = Data();
+            while (m_localOffset + static_cast<long long>(sizeof(uint32_t)) <= used) {
+                uint32_t nameBytes = *reinterpret_cast<uint32_t*>(data + m_localOffset);
+                long long recEnd = m_localOffset + static_cast<long long>(sizeof(uint32_t)) + nameBytes;
+                if (recEnd > used) {
+                    break;  // partial record (should not happen under the mutex)
+                }
+                const wchar_t* chars =
+                    reinterpret_cast<const wchar_t*>(data + m_localOffset + sizeof(uint32_t));
+                fresh.emplace_back(chars, nameBytes / sizeof(wchar_t));
+                long long rec = static_cast<long long>(sizeof(uint32_t)) + nameBytes;
+                rec = (rec + 3) & ~3ll;  // 4-byte align next record
+                m_localOffset += rec;
+            }
+            if (m_mutex != nullptr) ReleaseMutex(m_mutex);
+
+            if (!fresh.empty()) {
+                std::unique_lock<std::shared_mutex> lock(m_lock);
+                for (auto& p : fresh) m_set.insert(std::move(p));
+            }
+        }
+
+        // Append a path record to the shared region so other processes in the tree
+        // observe it. No-op (per-process only) when there is no shared region.
+        void AppendToShared(const std::wstring& path) {
+            if (m_view == nullptr) {
+                return;
+            }
+            uint32_t nameBytes = static_cast<uint32_t>(path.size() * sizeof(wchar_t));
+            long long rec = static_cast<long long>(sizeof(uint32_t)) + nameBytes;
+            rec = (rec + 3) & ~3ll;
+            if (m_mutex != nullptr) WaitForSingleObject(m_mutex, INFINITE);
+            CreatedShmHeader* h = Header();
+            long long used = h->usedBytes;
+            if (used + rec <= h->capacity) {
+                BYTE* p = Data() + used;
+                *reinterpret_cast<uint32_t*>(p) = nameBytes;
+                memcpy(p + sizeof(uint32_t), path.data(), nameBytes);
+                // Publish the record only after its bytes are fully written.
+                h->usedBytes = used + rec;
+            }
+            if (m_mutex != nullptr) ReleaseMutex(m_mutex);
+        }
+
         std::unordered_set<std::wstring, CaseInsensitiveStringHasher, CaseInsensitiveStringComparer> m_set;
         std::shared_mutex m_lock;
+        HANDLE m_mapping = nullptr;
+        HANDLE m_mutex = nullptr;
+        BYTE* m_view = nullptr;
+        long long m_localOffset = 0;  // bytes of the shared log already merged locally
     };
 }
 
@@ -178,7 +287,17 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
     // bypass this check and stay freely overwritable. basedOnlyOnPolicy callers (static
     // policy probes) also bypass it.
     if (!basedOnlyOnPolicy && !IndicateUntracked() && isWriteAllowedByPolicy && OverrideAllowWriteForExistingFiles()) {
-        const std::wstring path(m_canonicalizedPath.GetPathString());
+        // Key the tracker on the type-prefix-stripped path (plain "C:\...") rather than the
+        // raw canonicalized string. The same on-disk file reaches AllowWrite under different
+        // path-type prefixes depending on which syscall produced the name: a create via
+        // NtCreateFile carries "\??\C:\..." while a later delete/rename resolves the handle via
+        // DetourGetFinalPathByHandle to "\\?\C:\...". Both are classified Win32Nt but keep their
+        // (differing) 4-char prefix in GetPathString(), so keying on that string caused a file a
+        // process had just created to miss the "created this run" lookup and be wrongly denied as
+        // a clobber of a pre-existing file (e.g. zip/cygwin's create-temp-then-rename-over-output,
+        // which failed to delete its own temp). GetTranslatedPathWithoutTypePrefix() normalizes
+        // \??\, \\?\ and plain C:\ to the same key.
+        const std::wstring path(GetTranslatedPathWithoutTypePrefix());
         CreatedFilesTracker& tracker = CreatedFilesTracker::GetInstance();
 
         if (tracker.WasCreated(path)) {
@@ -206,5 +325,10 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
 
 bool PolicyResult::WasCreatedInThisProcess() const {
     return CreatedFilesTracker::GetInstance().WasCreated(
-        std::wstring(m_canonicalizedPath.GetPathString()));
+        std::wstring(GetTranslatedPathWithoutTypePrefix()));
+}
+
+void PolicyResult::MarkCreatedInThisProcess() const {
+    CreatedFilesTracker::GetInstance().MarkCreated(
+        std::wstring(GetTranslatedPathWithoutTypePrefix()));
 }

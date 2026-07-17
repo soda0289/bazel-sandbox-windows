@@ -102,6 +102,15 @@ public:
     // for lines to actually be emitted.
     void SetReportPath(std::wstring reportPath);
 
+    // Sets the name of the launcher-created shared-memory region that backs the
+    // cross-process "files created by this tree" set (execroot-writable mode).
+    // The name is serialized into the manifest payload (a padded WCHAR block
+    // right before the manifest tree) so it reaches every child through the
+    // payload rather than the environment. An empty name (the default) emits a
+    // size-0 block (no created-files tracking). CODESYNC: g_bazelCreatedShmName /
+    // ParseFileAccessManifest in the DLL.
+    void SetCreatedShmName(std::wstring name);
+
     // Applies a cone scope policy at the given absolute path (and its subtree).
     // The path is canonicalized with GetFullPathNameW to match the DLL's runtime
     // canonicalization, then split into fragments the same way the DLL does.
@@ -152,6 +161,7 @@ private:
     std::string dllX86_;
     std::string dllX64_;
     std::wstring reportPath_;
+    std::wstring createdShmName_;
     Node root_;
 };
 

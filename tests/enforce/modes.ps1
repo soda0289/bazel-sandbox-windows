@@ -97,23 +97,45 @@ Assert-Exit 'filter-inputs: undeclared read reports not-found (masked)' 11 `
 # Same via the native NtCreateFile path (STATUS_OBJECT_NAME_NOT_FOUND).
 Assert-Exit 'filter-inputs: undeclared ntread reports not-found (masked)' 11 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('ntread', $hidden))
-# GetFileAttributes (stat) of an undeclared file is likewise masked.
-Assert-Exit 'filter-inputs: undeclared stat reports not-found (masked)' 11 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('stat', $hidden))
-# GetFileInformationByName (the handle-less fast stat path modern libuv/Node use) is masked
-# too. This is the path that leaked before: GetFileAttributes was already masked, but Node's
-# fs.stat went through GetFileInformationByName, so an undeclared file stayed visible to stat()
-# while read() was masked -- breaking parity with linux-sandbox. Declared inputs stay visible.
-Assert-Exit 'filter-inputs: undeclared statbyname reports not-found (masked)' 11 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('statbyname', $hidden))
-Assert-Exit 'filter-inputs: declared statbyname visible' 0 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('statbyname', $vis))
-# FindFirstFileEx on an exact undeclared file path (the probe cmd.exe `type` uses)
-# is masked too: NOT_FOUND (11), not ACCESS_DENIED (10). A declared input stays visible.
-Assert-Exit 'filter-inputs: undeclared findfile reports not-found (masked)' 11 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('findfile', $hidden))
-Assert-Exit 'filter-inputs: declared findfile visible' 0 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('findfile', $vis))
+# --- Consistency matrix: EVERY read/probe hook variant must mask IDENTICALLY ---
+# Each op below exercises a DIFFERENT detoured hook that resolves a single path:
+#   read       -> CreateFileW (GENERIC_READ)      ntread     -> NtCreateFile (read)
+#   reada      -> CreateFileA (GENERIC_READ)      stat       -> GetFileAttributesW
+#   stata      -> GetFileAttributesA              statex     -> GetFileAttributesExW
+#   statbyname -> GetFileInformationByName        findfile   -> FindFirstFileEx (exact path)
+# These hooks are near-duplicates, so a copy-paste divergence in ANY one is easy to miss and
+# invisible unless a test exercises that exact API. Two such leaks have bitten us:
+#   * GetFileInformationByName (Node/libuv fs.stat) once stayed VISIBLE while read() was masked.
+#   * GetFileAttributesExW once returned ACCESS_DENIED instead of NOT_FOUND, breaking Java's
+#     Files.createDirectories/checkAccess on its _javac scratch dir -- every Javac action failed.
+# Under --filter-inputs, ALL of them MUST report NOT_FOUND (11) for (a) an undeclared existing
+# file, (b) a genuinely absent path, and (c) an absent NESTED path (the mkdir -p /
+# createDirectories ancestor probe), and MUST keep a declared -r input VISIBLE (0). Add a row to
+# $readProbeOps whenever a new read/probe op or hook is introduced.
+$absent = Join-Path $fi 'absent.txt'            # never created
+$absentNested = Join-Path $fi 'no\such\deep\path'  # absent, with missing parents
+$readProbeStates = @(
+    @{ name = 'undeclared-existing'; path = $hidden;       want = 11 },
+    @{ name = 'absent';              path = $absent;        want = 11 },
+    @{ name = 'absent-nested';       path = $absentNested;  want = 11 },
+    @{ name = 'declared-r-visible';  path = $vis;           want = 0  }
+)
+$readProbeOps = @('read', 'ntread', 'reada', 'stat', 'stata', 'statex', 'statbyname', 'findfile')
+foreach ($op in $readProbeOps) {
+    foreach ($st in $readProbeStates) {
+        Assert-Exit "filter-inputs matrix[$op]: $($st.name)" $st.want `
+            (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @($op, $st.path))
+    }
+}
+# Compound ops that perform a SOURCE READ (CopyFile source, CreateHardLink source) must mask
+# their source-read denial too -- same DenialError() divergence class as the probe hooks (they
+# carried no mask flag until this sweep). The write side stays confined: link/dest is a declared
+# -w output, only the undeclared SOURCE is probed, so an undeclared source reports NOT_FOUND (11).
+$cpdst = Join-Path $fi 'copydst'; New-Item -ItemType Directory -Force $cpdst | Out-Null
+Assert-Exit 'filter-inputs matrix[copy]: undeclared source -> not-found' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis, '-w', $cpdst) @('copy', $hidden, (Join-Path $cpdst 'o.txt')))
+Assert-Exit 'filter-inputs matrix[hardlink]: undeclared source -> not-found' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis, '-w', $cpdst) @('hardlink', (Join-Path $cpdst 'lnk.txt'), $hidden))
 # Writes are NOT masked: an undeclared write is still ACCESS_DENIED (10).
 Assert-Exit 'filter-inputs: undeclared write still denied (not masked)' 10 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('write', (Join-Path $fi 'wx.txt')))
@@ -138,6 +160,8 @@ Assert-Exit 'filter-inputs: colocated undeclared package.json stat masked' 11 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('stat', $pkg))
 Assert-Exit 'filter-inputs: colocated undeclared package.json statbyname masked' 11 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('statbyname', $pkg))
+Assert-Exit 'filter-inputs: colocated undeclared package.json statex masked' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('statex', $pkg))
 Assert-Exit 'filter-inputs: colocated undeclared package.json hidden from enumeration' 11 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $fi, '-r', $vis) @('enumfind', $fi, 'package.json'))
 
@@ -251,6 +275,7 @@ $ew = New-Workspace
 $ewNew = Join-Path $ew 'scratch.tmp'                # does NOT exist on disk
 $ewRewrite = Join-Path $ew 'rescratch.tmp'          # fresh path, only used by rewrite
 $ewWriteRead = Join-Path $ew 'wrscratch.tmp'        # fresh path, only used by writeread
+$ewWriteDelete = Join-Path $ew 'wdscratch.tmp'      # fresh path, only used by writedelete
 $ewNewDir = Join-Path $ew 'scratchdir'              # does NOT exist on disk
 $ewExisting = Join-Path $ew 'a.txt'                 # seeded by New-Workspace (undeclared)
 $ewOut = Join-Path $ew 'out.txt'                    # a declared -w output (may exist)
@@ -271,6 +296,12 @@ Assert-Exit 'execroot-writable: re-write of self-created file allowed' 0 `
 # filter hides undeclared paths (matches linux; needed for vite's .vite-temp module).
 Assert-Exit 'execroot-writable: read-back of self-created file allowed' 0 `
     (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) @('writeread', $ewWriteRead))
+# Deleting a file created THIS run is allowed. The delete resolves the name via the
+# file handle (DetourGetFinalPathByHandle -> "\\?\C:\...") while the create used the
+# literal path, so this guards the created-files tracker against keying on the path-type
+# prefix (the bug that made zip/cygwin's create-temp-then-rename fail to delete its temp).
+Assert-Exit 'execroot-writable: delete of self-created file allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) @('writedelete', $ewWriteDelete))
 # Overwriting a pre-existing undeclared file is DENIED (no clobber of real inputs).
 Assert-Exit 'execroot-writable: overwrite existing undeclared file denied' 10 `
     (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) @('write', $ewExisting))
@@ -281,9 +312,90 @@ Assert-Exit 'execroot-writable: overwrite declared -r input denied' 10 `
 # (AllowAll scope => IndicateUntracked => override bypassed).
 Assert-Exit 'execroot-writable: declared -w output overwrite allowed' 0 `
     (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew, '-w', $ewOut) @('write', $ewOut))
+# A tool that creates its own nested scratch tree (subdir + file) must be able to
+# SEE those entries in its own directory enumerations and then recursively delete
+# them - matching linux-sandbox's readable+writable execroot. Without revealing the
+# process's own created scratch, the enumeration hides it: an archiver walking the
+# tree produces an empty output and a recursive clean leaves a non-empty directory
+# (RemoveDirectory -> ACCESS_DENIED). This is exactly JavaBuilder's _javac/*_classes
+# compile -> jar -> clean flow (regression: sandbox-built jars came out corrupt).
+$ewTree = Join-Path $ew 'treebase'
+New-Item -ItemType Directory -Path $ewTree -Force | Out-Null
+Assert-Exit 'execroot-writable: self-created scratch tree visible + deletable' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) @('scratchtree', $ewTree))
+
+# CROSS-PROCESS created-set: a file created in ONE process of the tree must be
+# readable / deletable by a DIFFERENT process in the same tree. This is the reason
+# the created-set lives in a manifest-carried shared-memory region (not a per-process
+# set): tools fork (JavaBuilder writes _javac scratch in one process and reads/cleans
+# it in another). The parent probe creates the file, then spawns a separate child
+# probe that reads (resp. deletes) it. Both must succeed (0); a per-process-only set
+# would leave the child seeing an undeclared path -> denied (10) or hidden (11).
+$ewXproc = Join-Path $ew 'xproc.tmp'          # fresh path, only used by writespawnread
+Assert-Exit 'execroot-writable: cross-process read of tree-created file allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) `
+        @('writespawnread', $ewXproc, (Get-Probe)))
+$ewXprocDel = Join-Path $ew 'xprocdel.tmp'    # fresh path, only used by writespawndelete
+Assert-Exit 'execroot-writable: cross-process delete of tree-created file allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) `
+        @('writespawndelete', $ewXprocDel, (Get-Probe)))
+
+# Sanity: an UNDECLARED pre-existing sibling stays hidden from enumeration even under
+# --execroot-writable (only the process's OWN created entries are revealed; real
+# undeclared inputs remain invisible, preserving hermeticity).
+Assert-Exit 'execroot-writable: pre-existing undeclared sibling still hidden from enumeration' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $ew) @('enumfind', $ew, 'a.txt'))
+
 # Sanity: WITHOUT --execroot-writable, creating a new file in a filter-inputs
 # execroot is still denied (baseline behavior unchanged).
 Assert-Exit 'no execroot-writable: create new file still denied' 10 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $ew) @('write', (Join-Path $ew 'nope.tmp')))
+
+# --- Cleanup-on-exit: undeclared scratch discarded after the tree exits --------
+# Matching linux-sandbox, which throws away its writable execroot after every
+# action, the launcher deletes the undeclared files/dirs the tree created once it
+# exits, so no later action (or a reduced->full classpath re-execution of the same
+# Java action) inherits stale scratch. Declared -w outputs and pre-existing
+# undeclared files are NOT in the created-set and must survive. Skipped under -D
+# (--sandbox_debug), which keeps scratch for inspection.
+$cw = New-Workspace
+$cwScratch = Join-Path $cw 'scratch.tmp'   # new undeclared file (tracked scratch)
+Assert-Exit 'cleanup: create undeclared scratch file allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $cw) @('write', $cwScratch))
+Assert-True 'cleanup: undeclared scratch file removed after exit' `
+    (-not (Test-Path $cwScratch))
+Assert-True 'cleanup: pre-existing undeclared file preserved' `
+    (Test-Path (Join-Path $cw 'a.txt'))
+
+$cwDir = Join-Path $cw 'scratchdir'        # new undeclared dir (tracked scratch)
+Assert-Exit 'cleanup: create undeclared scratch dir allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $cw) @('mkdir', $cwDir))
+Assert-True 'cleanup: undeclared scratch dir removed after exit' `
+    (-not (Test-Path $cwDir))
+
+# Cross-process cleanup: scratch created by a SPAWNED CHILD (not the launcher's
+# direct child) is recorded in the shared created-set and must be discarded on exit
+# too - the launcher's cleanup is driven by the cross-process SHM region, so a
+# grandchild's creations are cleaned up just like the top process's.
+$cwChild = Join-Path $cw 'childscratch.tmp'
+Assert-Exit 'cleanup: child-process-created scratch allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $cw) `
+        @('spawn', (Get-Probe), 'write', $cwChild))
+Assert-True 'cleanup: child-process-created scratch removed after exit' `
+    (-not (Test-Path $cwChild))
+
+$cwOut = Join-Path $cw 'out.declared'      # declared -w output (NOT in created-set)
+Assert-Exit 'cleanup: write declared -w output allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $cw, '-w', $cwOut) @('write', $cwOut))
+Assert-True 'cleanup: declared -w output preserved after exit' `
+    (Test-Path $cwOut)
+
+# Under -D (--sandbox_debug) the scratch is kept for inspection (cleanup skipped).
+$cwDbg = Join-Path $cw 'dbgscratch.tmp'
+$cwDbgLog = Join-Path $script:TempRoot 'cleanup-debug.out'
+Assert-Exit 'cleanup: create scratch under -D allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '--execroot-writable', '-W', $cw, '-D', $cwDbgLog) @('write', $cwDbg))
+Assert-True 'cleanup: scratch preserved under -D (sandbox-debug)' `
+    (Test-Path $cwDbg)
 
 Complete-Harness

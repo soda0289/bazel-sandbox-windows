@@ -122,7 +122,13 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   (enforced via the execroot cone's `OverrideAllowWriteForExistingFiles` bit).
   The runner passes it alongside `--filter-inputs`. It covers tools that write
   undeclared scratch inside the execroot (e.g. vite's `node_modules/.vite-temp`)
-  without opening a hole to overwrite declared inputs.
+  without opening a hole to overwrite declared inputs. The files it creates this
+  run are tracked in a cross-process **created-set** (shared memory, so a forked
+  child's creations are visible to the parent), and the launcher **discards them
+  when the process tree exits** — reproducing linux-sandbox's throwaway execroot
+  so no later action, or a reduced→full classpath re-execution of the same Java
+  action, inherits stale scratch. Declared `-w` outputs are never in the set and
+  are preserved. Cleanup is skipped under `--sandbox_debug`.
 - **`-d <path>`** — reveal a declared **output's parent directory**. linux-sandbox
   pre-creates output parent dirs in its writable execroot; here `-d` applies a
   node-only grant (read + create-directory + write on the exact dir) so the tool

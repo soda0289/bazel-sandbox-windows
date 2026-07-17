@@ -183,6 +183,12 @@ public:
     // the execroot read-filter otherwise hides undeclared paths. Windows-only
     // (backed by the per-process created-files tracker in PolicyResult.cpp).
     bool WasCreatedInThisProcess() const;
+    // Records this exact path in the per-process created-files tracker so that the
+    // current process's later reads / stats / directory enumerations treat it as
+    // its own writable scratch (see WasCreatedInThisProcess). Used for directories
+    // created under an execroot-writable scope, which are otherwise not tracked by
+    // AllowWrite (that only tracks file writes). Windows-only.
+    void MarkCreatedInThisProcess() const;
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool AllowRealInputTimestamps() const { return (m_policy & FileAccessPolicy_AllowRealInputTimestamps) != 0; }

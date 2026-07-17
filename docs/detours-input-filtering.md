@@ -386,7 +386,7 @@ via `--filter-inputs`.
 | Undeclared execroot in `readdir` | not present | **filtered out** (mechanism B) |
 | Declared input read | real file via symlink | real file in place (allowed by `-r`) |
 | Reads outside execroot | whole FS RO-bind-mounted (readable) | whole FS `AllowRead` (readable) — matches default Linux |
-| Writes inside execroot | allowed (whole execroot writable) | allowed only where `-w`; **refine to execroot-wide scratch (§7)** |
+| Writes inside execroot | allowed (whole execroot writable, discarded) | allowed as execroot-wide scratch via `--execroot-writable`; created scratch discarded on exit, declared `-w` outputs kept (§7) |
 | Writes outside execroot | denied (RO FS) | denied (no write bit) |
 | Declared output collection | copied out of throwaway execroot | already in place (in-place execution) |
 
@@ -400,14 +400,50 @@ virtual execroot (§4) is the path to close it if ever required.
 
 ---
 
-## 7. Write model (unchanged from current, noted for completeness)
+## 7. Write model: `--execroot-writable` + discard-on-exit
 
-Writes stay confined by granting the write bit only via `-w` (declared outputs +
-temp). To fully match Linux's "whole execroot is scratch-writable," a later
-refinement can grant execroot-wide write into a discard set and harvest only
-declared outputs; this doc does not change write handling. Mechanism A applies to
-**reads only** — write denials must keep returning `ACCESS_DENIED` so undeclared
-writes fail loudly rather than looking like a missing directory.
+By default writes stay confined to `-w` (declared outputs + temp), and Mechanism A
+applies to **reads only** — write denials keep returning `ACCESS_DENIED` so
+undeclared writes fail loudly rather than looking like a missing directory.
+
+To match Linux's "the whole execroot is scratch-writable and thrown away after the
+action," the Bazel `windows-sandbox` strategy additionally passes
+**`--execroot-writable`**. This grants the execroot cone
+`AllowWrite | AllowCreateDirectory | OverrideAllowWriteForExistingFiles`, which the
+DLL enforces inline (`PolicyResult::AllowWrite`) as:
+
+- a write/create of a path that did **not** exist is allowed (fresh scratch /
+  undeclared output), and the path is recorded in a **created-set**;
+- a re-write / read-back / enumerate / delete of a path the process tree created
+  this run is allowed (so a tool sees and cleans its own scratch); but
+- a write **over a pre-existing** undeclared file is still **denied** — the
+  no-clobber guarantee for source/input files survives even though the cone is
+  nominally writable. Declared `-w` outputs are `AllowAll`/untracked and stay
+  freely overwritable.
+
+**Cross-process created-set.** Tools fork (JavaBuilder creates
+`_javac/*_tmp/native_headers` in one process and cleans it up in another), so the
+created-set is backed by a named shared-memory region the launcher creates **per
+invocation** (env var `BAZEL_SANDBOX_CREATED_SHM`) and every injected DLL in the
+tree attaches to. A per-process set would hide one process's creations from a
+sibling (empty class jars, "directory not empty" cleanup failures).
+
+**Discard-on-exit (the "throwaway execroot" equivalent).** Because we run
+**in place**, the execroot persists between actions — and across Bazel's
+reduced→full classpath **re-execution of the same Java action** (two separate
+`BazelSandbox.exe` invocations sharing one execroot). A first attempt that fails
+mid-way leaves scratch (`_javac/*_tmp/native_headers`) that the second attempt's
+`JavaBuilder.cleanupDirectory` cannot remove — the input filter hides it, so
+`RemoveDirectory` fails with `DIRECTORY_NOT_EMPTY`. To reproduce Linux's fresh
+per-execution execroot, the launcher **deletes its own created-set on exit** (after
+the whole process tree has exited): undeclared scratch is discarded, while declared
+`-w` outputs (never in the set) are preserved for Bazel to harvest in place. This
+is skipped under `-D` (`--sandbox_debug`), matching linux-sandbox keeping its
+sandbox dir for inspection.
+
+This is the concrete realization of the "discard set" refinement this section
+previously deferred; the virtual execroot (§4) remains the option if fail-closed
+isolation is ever required.
 
 ---
 

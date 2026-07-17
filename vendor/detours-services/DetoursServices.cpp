@@ -286,6 +286,9 @@ volatile LONG64 g_detoursHandleHeapEntries = 0;
 //
 wchar_t* g_SubstituteProcessExecutionShimPath = nullptr;
 bool g_ProcessExecutionShimAllProcesses;
+
+// Bazel fork: created-files SHM region name (see globals.h).
+wchar_t* g_bazelCreatedShmName = nullptr;
 wchar_t* g_SubstituteProcessExecutionPluginDllPath = nullptr;
 HMODULE g_SubstituteProcessExecutionPluginDllHandle;
 SubstituteProcessExecutionPluginFunc g_SubstituteProcessExecutionPluginFunc;

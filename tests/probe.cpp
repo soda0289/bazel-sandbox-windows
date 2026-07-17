@@ -23,6 +23,14 @@
 //   probe rename <src> <dst>      move/rename <src> to <dst>
 //   probe spawn <exe> [args...]   run a child process, return its exit code
 //                                 (used to verify child-process propagation)
+//   probe writespawnread <path> <childExe>
+//                                 create <path> in this process, then spawn
+//                                 <childExe> read <path>; returns the child's code
+//                                 (verifies the created-set is shared cross-process)
+//   probe writespawndelete <path> <childExe>
+//                                 create <path> in this process, then spawn
+//                                 <childExe> delete <path>; returns the child's code
+//                                 (JavaBuilder create-here / clean-there parity)
 //   probe connect <host> <port>   attempt an outbound TCP connect
 //                                 (used to verify -N / -n network sandboxing)
 //   probe stdio                   verify all three std handles are usable
@@ -114,6 +122,19 @@ int DoDelete(const wchar_t* path) {
     return MapLastError();
 }
 
+// Create a NEW file, then delete it within the SAME process. Under execroot-writable
+// this must succeed: a file the process just created has to be deletable. This is the
+// create-temp-then-rename/delete idiom used by zip/cygwin (and many temp-file tools).
+// It is distinct from DoRewrite: the delete resolves the file name via the handle
+// (DetourGetFinalPathByHandle -> "\\?\C:\..."), while the create used the literal path
+// ("\??\C:\..." / "C:\..."), so it regression-guards the per-process created-files
+// tracker against keying on the (differing) path-type prefix.
+int DoWriteDelete(const wchar_t* path) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    return DoDelete(path);
+}
+
 int DoMkdir(const wchar_t* path) {
     if (CreateDirectoryW(path, nullptr)) return kOk;
     return MapLastError();
@@ -189,6 +210,15 @@ int DoReplace(const wchar_t* replaced, const wchar_t* replacement) {
 int DoStat(const wchar_t* path) {
     DWORD attrs = GetFileAttributesW(path);
     if (attrs == INVALID_FILE_ATTRIBUTES) return MapLastError();
+    return kOk;
+}
+// Stat via GetFileAttributesExW -- the API Java's WindowsFileSystemProvider.checkAccess /
+// Files.createDirectories uses. Regression coverage for the probe read-masking fix: the
+// ordinary "stat" op uses GetFileAttributesW (a sibling hook), so it could not catch the
+// GetFileAttributesExW denial-masking divergence that broke Java compilation.
+int DoStatEx(const wchar_t* path) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &data)) return MapLastError();
     return kOk;
 }
 int DoStatA(const wchar_t* path) {
@@ -388,6 +418,37 @@ int DoRmdir(const wchar_t* path) {
     return MapLastError();
 }
 
+// Reproduce JavaBuilder's scratch-tree flow inside a SINGLE process: create a
+// nested subdirectory + file under <base>, then walk the tree (enumerate) to find
+// the just-written entries, then recursively delete them. Under execroot-writable
+// input-filtering the process's OWN created directory and file must be VISIBLE to
+// its later enumerations (matching linux-sandbox's readable+writable execroot), and
+// the recursive delete must succeed (an enumeration that hid the scratch would
+// leave a non-empty directory -> RemoveDirectory ACCESS_DENIED, and would produce an
+// empty class jar). Returns kOk only if every step behaves as it must; otherwise the
+// mapped error of the first failing step (so a hidden entry surfaces as kNotFound).
+int DoScratchTree(const wchar_t* base) {
+    std::wstring dir = std::wstring(base) + L"\\d";
+    std::wstring file = dir + L"\\f.class";
+
+    int rc = DoMkdir(dir.c_str());
+    if (rc != kOk) return rc;
+    rc = DoWrite(file.c_str());
+    if (rc != kOk) return rc;
+
+    // The process must see the subdirectory it just created when enumerating <base>.
+    rc = DoEnumFind(base, L"d");
+    if (rc != kOk) return rc;
+    // ...and the file it just wrote when enumerating the subdirectory.
+    rc = DoEnumFind(dir.c_str(), L"f.class");
+    if (rc != kOk) return rc;
+
+    // Recursive cleanup: delete the file, then remove the (now-empty) directory.
+    rc = DoDelete(file.c_str());
+    if (rc != kOk) return rc;
+    return DoRmdir(dir.c_str());
+}
+
 int DoHardlink(const wchar_t* link, const wchar_t* target) {
     if (CreateHardLinkW(link, target, nullptr)) return kOk;
     return MapLastError();
@@ -469,6 +530,58 @@ int DoStdio() {
     return kOk;
 }
 
+// Run "<exe> <op> <path>" as a child process (same sandbox tree) and return the
+// child's mapped exit code. Shared by the cross-process created-set ops below.
+int RunChildOp(const wchar_t* exe, const wchar_t* op, const wchar_t* path) {
+    std::wstring cmd = L"\"";
+    cmd += exe;
+    cmd += L"\" ";
+    cmd += op;
+    cmd += L" \"";
+    cmd += path;
+    cmd += L"\"";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, nullptr, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// Create a NEW file in THIS (parent) process, then spawn a SEPARATE child process
+// that reads it back. Under --execroot-writable this must succeed only if the
+// "files created by the tree" set is shared ACROSS processes: the parent records
+// the creation, and the child - a distinct process attaching to the same manifest-
+// carried shared-memory region - must see it and be allowed to read the otherwise-
+// hidden undeclared path. With a per-process-only set the child would be denied
+// (10) or see the path as hidden (11). Returns the mapped result of the CHILD read.
+// This is the JavaBuilder pattern: one process writes _javac scratch, another reads
+// it. argv[2] = path to create, argv[3] = child probe exe.
+int DoWriteSpawnRead(const wchar_t* path, const wchar_t* childExe) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    return RunChildOp(childExe, L"read", path);
+}
+
+// Same as DoWriteSpawnRead but the child DELETES the parent-created file. This is
+// the JavaBuilder cleanup pattern: one process creates _javac/*_tmp scratch and a
+// DIFFERENT process removes it. It must succeed only if the created-set propagates
+// cross-process; otherwise the child's delete of an undeclared path is denied (10).
+// Returns the mapped result of the CHILD delete.
+int DoWriteSpawnDelete(const wchar_t* path, const wchar_t* childExe) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    return RunChildOp(childExe, L"delete", path);
+}
+
 int DoSpawn(int argc, wchar_t** argv) {
     // argv[2] = exe, argv[3..] = args. Rebuild a command line.
     std::wstring cmd;
@@ -496,6 +609,26 @@ int DoSpawn(int argc, wchar_t** argv) {
 
 int DoExit(const wchar_t* code) {
     return static_cast<int>(wcstol(code, nullptr, 10));
+}
+
+// Write each argument after the op (argv[2..]) to stdout, one per line (LF).
+// Used by the launcher suite to verify BuildChildCommandLine round-trips the
+// child's arguments intact - a space-containing token must arrive as ONE argv
+// element (escaped regime) and cmd.exe's tail must arrive VERBATIM (quotes
+// preserved). Writes via the stdout HANDLE so the launcher's -l capture sees it.
+int DoEchoArgs(int argc, wchar_t** argv) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    for (int i = 2; i < argc; ++i) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string s(n > 0 ? n - 1 : 0, '\0');
+        if (n > 1) {
+            WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, s.data(), n, nullptr, nullptr);
+        }
+        s.push_back('\n');
+        DWORD written = 0;
+        WriteFile(out, s.data(), static_cast<DWORD>(s.size()), &written, nullptr);
+    }
+    return kOk;
 }
 
 int DoSleep(const wchar_t* ms) {
@@ -584,6 +717,15 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"write") return DoWrite(argv[2]);
     if (op == L"rewrite") return DoRewrite(argv[2]);
     if (op == L"writeread") return DoWriteRead(argv[2]);
+    if (op == L"writedelete") return DoWriteDelete(argv[2]);
+    if (op == L"writespawnread") {
+        if (argc < 4) return kBadUsage;
+        return DoWriteSpawnRead(argv[2], argv[3]);
+    }
+    if (op == L"writespawndelete") {
+        if (argc < 4) return kBadUsage;
+        return DoWriteSpawnDelete(argv[2], argv[3]);
+    }
     if (op == L"delete") return DoDelete(argv[2]);
     if (op == L"deleteh") return DoDeleteByHandle(argv[2]);
     if (op == L"delonclose") return DoDeleteOnClose(argv[2]);
@@ -610,6 +752,7 @@ int wmain(int argc, wchar_t** argv) {
         return DoReplace(argv[2], argv[3]);
     }
     if (op == L"stat") return DoStat(argv[2]);
+    if (op == L"statex") return DoStatEx(argv[2]);
     if (op == L"statbyname") return DoStatByName(argv[2]);
     if (op == L"stata") return DoStatA(argv[2]);
     if (op == L"reada") return DoReadA(argv[2]);
@@ -637,6 +780,7 @@ int wmain(int argc, wchar_t** argv) {
         return DoEnumFindNtDirect(argv[2], argv[3]);
     }
     if (op == L"rmdir") return DoRmdir(argv[2]);
+    if (op == L"scratchtree") return DoScratchTree(argv[2]);
     if (op == L"copy") {
         if (argc < 4) {
             fwprintf(stderr, L"usage: probe copy <src> <dst>\n");
@@ -666,6 +810,7 @@ int wmain(int argc, wchar_t** argv) {
         return DoConnect(argv[2], argv[3]);
     }
     if (op == L"spawn") return DoSpawn(argc, argv);
+    if (op == L"echoargs") return DoEchoArgs(argc, argv);
     if (op == L"exit") return DoExit(argv[2]);
     if (op == L"sleep") return DoSleep(argv[2]);
     if (op == L"cwdis") return DoCwdIs(argv[2]);

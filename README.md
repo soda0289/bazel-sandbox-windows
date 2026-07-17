@@ -156,6 +156,46 @@ Two environment notes are baked into `.bazelrc`:
 > `_DEBUG` is undefined so the manifest blob format matches between the builder
 > and the DLL parser.
 
+## Integrating with Bazel
+
+`BazelSandbox.exe` is a standalone launcher — you can run it directly (see
+[Usage](#usage)) — but to drive it *from Bazel* as the `windows-sandbox` spawn
+strategy you currently need a **patched Bazel**. Upstream Bazel ships an
+incomplete `windows-sandbox` runner (it only passes `-r`/`-w`/`-b`/`-D`, rejects
+runfiles symlink trees, and never enables input-filtering / execroot-writable /
+output-dir / network flags), so it cannot reach parity with `linux-sandbox` /
+remote execution on its own.
+
+[`integration/bazel-windows-sandbox.patch`](integration/bazel-windows-sandbox.patch)
+completes that runner (Java host only, no filename special-cases). It targets a
+**recent Bazel `master`** (verified at commit `a987dfc`, 2026-07-16; it uses the
+post-9.x `SandboxOptions` getter API and does **not** apply to the `9.1.1`
+release tag). In short:
+
+```powershell
+# 1. Build this repo's launcher + DLL.
+bazel build //...
+
+# 2. Patch + build Bazel itself (recent master, not the 9.1.1 tag).
+git clone https://github.com/bazelbuild/bazel; cd bazel
+git checkout a987dfc9d1474455305b82c69ea04d4bb2fb49a2   # verified; or a nearby master
+git apply --3way C:\path\to\bazel-sandbox-windows\integration\bazel-windows-sandbox.patch
+bazel build //src:bazel
+Copy-Item bazel-bin\src\bazel.exe C:\tmp\bazel-dev.exe
+
+# 3. Build your workspace under the sandbox with the patched Bazel.
+C:\tmp\bazel-dev.exe build //... `
+  --spawn_strategy=windows-sandbox,local `
+  --experimental_use_windows_sandbox=yes `
+  --experimental_windows_sandbox_path=C:\path\to\bazel-sandbox-windows\bazel-bin\BazelSandbox.exe `
+  --enable_runfiles=yes
+```
+
+See [`integration/README.md`](integration/README.md) for the full patch
+breakdown, flag reference, and `--windows_enable_symlinks` guidance, and
+[`docs/e2e/smoke-testing.md`](docs/e2e/smoke-testing.md) for the differential
+test harness that exercises this against real repos.
+
 ## Usage
 
 ```
@@ -537,6 +577,10 @@ vendor/
   sandbox-common/         vendored BuildXL shared headers (ReportType.h, ...)
   PROVENANCE.md           upstream commit, file map, and divergence notes
   detours-services.patch  the exact diff vs upstream (applies to a BuildXL checkout)
+integration/
+  bazel-windows-sandbox.patch  Java-host patch completing Bazel's windows-sandbox
+                          runner (targets recent Bazel master); build a bazel-dev.exe with it
+  README.md               how to apply the patch, build Bazel, and run the strategy
 ```
 
 ## License

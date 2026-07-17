@@ -25,17 +25,64 @@ removed.)
 ## Divergence from upstream
 
 The vendored engine is kept as close to upstream as possible. As of the pinned
-commit, **every vendored file is byte-identical to upstream except two**, and the
-only functional change is additive wiring for this project's network-sandbox
-feature (`-N` / `-n`), whose implementation lives outside the vendored tree in
-`src/network_detours.{h,cpp}`:
+commit, **eleven vendored files diverge from upstream**; every other file is
+byte-identical. The changes are all additive parity work for this project (they
+extend behaviour, they do not rewrite BuildXL's enforcement) and fall into a few
+groups:
 
-- `detours-services/DetoursServices.cpp` — include `network_detours.h`; call
+**Network sandbox (`-N` / `-n`)** — the implementation lives outside the vendored
+tree in `src/network_detours.{h,cpp}`; the vendored edits are just the wiring:
+
+- `DetoursServices.cpp` — include `network_detours.h`; call
   `bazelsandbox::InitializeAndAttachNetworkDetours()` in `DllProcessAttach`.
-- `detours-services/DetouredFunctions.cpp` — include `network_detours.h`; add two
-  `\Device\Afd` deny blocks (the `-n` syscall-layer hardening) in
-  `Detoured_ZwCreateFile` and `Detoured_NtCreateFile`; strip a UTF-8 BOM from the
-  file header.
+- `DetouredFunctions.cpp` — include `network_detours.h`; add two `\Device\Afd`
+  deny blocks (the `-n` syscall-layer hardening) in `Detoured_ZwCreateFile` and
+  `Detoured_NtCreateFile`; strip a UTF-8 BOM from the file header.
+
+**linux-sandbox read/enumeration parity** — makes an undeclared existing input
+look *absent* (NOT_FOUND) rather than permission-denied, and hides it from
+directory listings, matching linux-sandbox's symlink forest (`--filter-inputs`):
+
+- `DataTypes.h` — two fork FAM extra-flags (`DeniedReadsAsNotFound` 0x400,
+  `FilterDirectoryEnumeration` 0x800) and a `FileAccessPolicy_DeclaredInput`
+  (0x2000) marker bit (inert for enforcement; used only by the read fallback).
+- `FileAccessHelpers.h`, `PolicyResult.{h,cpp}`, `PolicyResult_common.cpp` —
+  read-denial masking (`DenialError(maskReadsAsNotFound)`), the
+  `IsColocatedModuleMetadataRead` `package.json` carve-out, and the
+  `IsExactManifestNode` / `DeclaredInput` helpers.
+- `DetouredFunctions.cpp` — apply the NOT_FOUND masking uniformly across every
+  read/probe hook (`GetFileAttributesW`/`ExW`, `GetFileInformationByName`,
+  `FindFirstFileEx` single-file probe, `CreateFileW`/`NtCreateFile` read paths,
+  and the `CopyFileW`/`CreateHardLinkW` *source*-read paths); filter undeclared
+  children out of the `NtQueryDirectoryFile`/`ZwQueryDirectoryFile` enumerations;
+  add the symlink/junction handle-resolution read fallback used to rescue
+  reparse points whose real target is a declared input.
+
+**New hook** — `GetFileInformationByName` (the handle-less fast stat path modern
+libuv/Node use) was not detoured upstream:
+
+- `DetouredFunctionTypes.h`, `DetouredFunctions.h`, `globals.h` — typedef, enum,
+  declaration and global for the new detour.
+- `DetouredFunctions.cpp`, `DetoursServices.cpp` — `Detoured_GetFileInformationByName`
+  (dynamically resolved from `kernelbase.dll` so the DLL still loads on OS builds
+  that lack the API) and its dynamic attach.
+
+**`--execroot-writable` cross-process created-set** — lets a tool freely create
+undeclared scratch inside the in-place execroot (create-new / re-write-own / read-
+back / delete allowed; clobber of a pre-existing undeclared input denied), matching
+linux-sandbox's throwaway writable execroot, with the "files created by the tree"
+set shared across the whole process tree (JavaBuilder writes scratch in one process
+and reads/cleans it in another):
+
+- `globals.h`, `DetoursServices.cpp` — declaration/definition of
+  `g_bazelCreatedShmName` (the shared-memory region name that backs the created-set).
+- `DetoursHelpers.cpp` — `ParseFileAccessManifest` reads the created-set SHM region
+  name from a trailing block in the manifest payload (so it propagates to every
+  child on injection, independent of the child's environment block).
+- `PolicyResult.h`, `PolicyResult.cpp` — the cross-process `CreatedFilesTracker`
+  (append-only shared-memory log + per-process cache), the inline enforcement of
+  `OverrideAllowWriteForExistingFiles` in `AllowWrite` (create-new allowed,
+  clobber-existing denied), and the `WasCreated` / `MarkCreated` helpers.
 
 The exact diff is captured in [`detours-services.patch`](./detours-services.patch)
 (unified diff, paths relative to a BuildXL checkout root). It applies cleanly to
@@ -46,8 +93,8 @@ the pinned commit:
 git apply --check /path/to/vendor/detours-services.patch
 ```
 
-Note the patch documents *only* the in-place edits to the two vendored files. It
-does not include the new files this project adds (`src/network_detours.*`,
+Note the patch documents *only* the in-place edits to the vendored files. It does
+not include the new files this project adds (`src/network_detours.*`,
 `src/manifest_builder.cpp`, `src/main.cpp`, etc.), which are original to this
 repository, nor any files removed from the vendored copy (see below).
 
