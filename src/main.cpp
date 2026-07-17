@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,13 +38,6 @@ struct Options {
     std::vector<std::wstring> readonlyFiles;
     std::vector<std::wstring> writableFiles;
     std::vector<std::wstring> blockedFiles;
-    // -d <path>: a declared output's parent DIRECTORY. Applied as a node-only
-    // grant (read + create-directory + write on the exact dir) so the tool can
-    // stat/enumerate it and its recursive mkdir succeeds (ALREADY_EXISTS), while
-    // the dir's subtree stays Deny - undeclared files inside it remain hidden and
-    // unwritable. Mirrors linux-sandbox, which pre-creates output parent dirs in
-    // the (writable) sandbox execroot. See docs/detours-input-filtering.md.
-    std::vector<std::wstring> outputDirs;
     // -D <file>: write launcher diagnostics to this file (linux-sandbox parity).
     std::wstring debugPath;
     // --trace <file>: write a per-access report (from the injected DLL) here.
@@ -99,6 +93,27 @@ std::wstring ToAbsolute(const std::wstring& path) {
     return std::wstring(big.data(), n2);
 }
 
+// Case-insensitive test whether `path` is a strict descendant of `root`, both
+// normalized absolute paths (as returned by ToAbsolute, no trailing separator
+// except for a bare drive root like "C:\").
+static bool IsStrictlyUnder(const std::wstring& path, const std::wstring& root) {
+    if (root.empty()) return false;
+    size_t rlen = root.size();
+    if (root.back() == L'\\' || root.back() == L'/') rlen -= 1;  // ignore trailing sep
+    if (path.size() <= rlen) return false;
+    if (_wcsnicmp(path.c_str(), root.c_str(), rlen) != 0) return false;
+    wchar_t sep = path[rlen];
+    return sep == L'\\' || sep == L'/';
+}
+
+// Parent directory of an absolute path (everything before the last separator).
+// Returns "" when there is no separator.
+static std::wstring ParentDir(const std::wstring& path) {
+    size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) return std::wstring();
+    return path.substr(0, pos);
+}
+
 void PrintUsage(int exitCode) {
     fwprintf(stderr,
         L"\nUsage: BazelSandbox [option...] -- command [arg...]\n"
@@ -111,8 +126,6 @@ void PrintUsage(int exitCode) {
         L"  -w <path>  make a file/directory read/writable in the sandbox\n"
         L"  -r <path>  make a file/directory read-only in the sandbox\n"
         L"  -b <path>  make a file/directory inaccessible in the sandbox\n"
-        L"  -d <path>  reveal an output's parent dir (allow mkdir/write on the\n"
-        L"             dir itself; its undeclared contents stay hidden)\n"
         L"  -N         allow only loopback network access (block external)\n"
         L"  -n         block all network access (no loopback either)\n"
         L"  -H         hermetic reads: deny the working dir by default so only\n"
@@ -195,8 +208,6 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 o.readonlyFiles.push_back(ToAbsolute(next()));
             } else if (name == L"b") {
                 o.blockedFiles.push_back(ToAbsolute(next()));
-            } else if (name == L"d") {
-                o.outputDirs.push_back(ToAbsolute(next()));
             } else if (name == L"N") {
                 if (o.networkPolicy == 2) Die(L"-N and -n are mutually exclusive");
                 o.networkPolicy = 1;
@@ -800,16 +811,41 @@ int wmain(int argc, wchar_t** argv) {
         if (!mb.AddScope(p, Policy_MaskAll, Policy_Deny)) Die(L"bad -b: " + p);
         dbg(L"na", p);
     }
-    // Output parent directories: node-only grant so the exact dir is revealed
-    // (readable/enumerable) and mkdir/write on it is allowed, but its subtree
-    // policy is left as-is (Deny under a hermetic execroot) so undeclared files
-    // inside stay hidden. See Options::outputDirs.
-    for (const auto& p : o.outputDirs) {
+    // Output parent directories (linux-sandbox parity, no CLI flag). linux-sandbox
+    // PRE-CREATES each declared output's parent directories in its writable sandbox
+    // execroot before the action runs; its symlink forest then contains only those
+    // dirs plus declared inputs, so undeclared siblings simply do not exist. We run
+    // in-place in the real execroot, so we reproduce that by (1) deriving each
+    // writable (output) path's parent-directory chain, bounded strictly below the
+    // working dir, (2) creating those dirs on disk now, and (3) applying a node-only
+    // reveal (read + create-dir + write on the EXACT dir) so a tool can stat/
+    // enumerate the dir and its recursive mkdir succeeds, while the dir's subtree
+    // stays Deny - undeclared files inside remain hidden and unwritable. The dirs
+    // are created by the launcher (not the injected tree), so they are absent from
+    // the created-files set and are never discarded on exit.
+    std::vector<std::wstring> outputDirs;
+    {
+        std::set<std::wstring> seen;
+        for (const auto& p : o.writableFiles) {
+            for (std::wstring dir = ParentDir(p);
+                 IsStrictlyUnder(dir, o.workingDir);
+                 dir = ParentDir(dir)) {
+                if (seen.insert(dir).second) outputDirs.push_back(dir);
+            }
+        }
+    }
+    // Create shallowest-first so each dir's parent already exists.
+    std::sort(outputDirs.begin(), outputDirs.end(),
+              [](const std::wstring& a, const std::wstring& b) { return a.size() < b.size(); });
+    for (const auto& p : outputDirs) {
+        CreateDirectoryW(p.c_str(), nullptr);  // ok if it already exists
+    }
+    for (const auto& p : outputDirs) {
         if (!mb.AddNodeScope(p, Policy_MaskAll,
                              Policy_AllowRead | Policy_AllowReadIfNonExistent |
                                  Policy_AllowWrite | Policy_AllowCreateDirectory |
                                  Policy_DeclaredInput))
-            Die(L"bad -d: " + p);
+            Die(L"bad output dir: " + p);
         dbg(L"od", p);
     }
 

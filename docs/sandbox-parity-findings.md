@@ -130,7 +130,7 @@ forest.
   > because it broke hermetic/RBE parity (undeclared bazel-out files became
   > visible). No `rules_angular` patch and no filename special-casing were used.
 * **Fix:** the `DeclaredInput` **marker bit** (`0x2000`), OR'd only into
-  explicit `-r`/`-w`/`-d`/tool grants (never the root baseline). The
+  explicit `-r`/`-w`/output-dir/tool grants (never the root baseline). The
   handle-resolution read fallback now rescues a denied symlink/junction read
   **iff its resolved target carries the marker** (`IsDeclaredInput()`). The
   rolled-up package *is* a declared input, so it is allowed; undeclared workspace

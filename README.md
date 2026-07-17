@@ -209,8 +209,6 @@ BazelSandbox [option...] -- command [arg...]
   -w <path>  make a file/directory read/writable in the sandbox
   -r <path>  make a file/directory read-only in the sandbox
   -b <path>  make a file/directory inaccessible in the sandbox
-  -d <path>  reveal an output's parent dir (allow mkdir/write on the dir
-             itself; its undeclared contents stay hidden)
   -N         allow only loopback network access (block external)
   -n         block all network access (no loopback either)
   -H         hermetic reads: deny the working dir by default (default: reads
@@ -241,10 +239,13 @@ exactly the paths an action needs to **write**:
   `-H`/`--filter-inputs`.)
 * `-w <path>` grants read-write access.
 * `-b <path>` blocks a file or directory subtree (overrides read access too).
-* `-d <path>` reveals a declared **output's parent directory**: a node-only grant
-  so the tool can `stat`/enumerate it and its recursive `mkdir` succeeds, while
-  the directory's subtree stays denied (undeclared files inside it remain hidden
-  and unwritable). Mirrors `linux-sandbox` pre-creating output parent dirs.
+* **Output parent directories** are handled automatically, with no CLI flag: for
+  each `-w` (output) path the launcher derives its parent-directory chain (below
+  the working dir), **pre-creates those dirs on disk**, and applies a node-only
+  grant so a tool can `stat`/enumerate them and its recursive `mkdir` succeeds,
+  while each directory's subtree stays denied (undeclared files inside remain
+  hidden and unwritable). This mirrors `linux-sandbox`, which pre-creates output
+  parent dirs in its writable execroot and likewise has no output-dir flag.
 * `-H` switches to **hermetic reads**: the working directory is denied by
   default, so only `-r`/`-w` inputs are readable. This is the Windows analog of
   Bazel's `--experimental_use_hermetic_linux_sandbox` and enforces read
@@ -281,7 +282,7 @@ Because the action runs in place, declared inputs reached through the execroot's
 per-entry symlink forest (each `_main/*` entry is a symlink/junction into the
 real workspace) are rescued by a policy **marker bit**
 (`FileAccessPolicy_DeclaredInput`): it is OR'd only into explicit `-r`/`-w`/
-`-d`/tool grants, never the whole-disk read baseline, so a denied
+output-dir/tool grants, never the whole-disk read baseline, so a denied
 symlink/junction read is allowed **only** when its resolved target is a declared
 input — closing the leak where undeclared workspace files were reachable via the
 baseline read grant. This whole design (mode mapping, the subtractive behaviors,

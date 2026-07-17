@@ -278,7 +278,8 @@ with a dedicated policy bit:
 
 * `FileAccessPolicy_DeclaredInput = 0x2000` (`Policy_DeclaredInput` on the
   builder side) is OR'd into the policy of **explicit** grants only — `-r`, `-w`,
-  `-d`, and the tool path — in `main.cpp`. It is **not** set on `AddRootScope` (the
+  the launcher-derived output parent dirs, and the tool path — in `main.cpp`. It
+  is **not** set on `AddRootScope` (the
   whole-FS baseline), the working-dir Deny scope, or `-b`.
 * Because the manifest's intermediate cone nodes inherit with
   `coneMask = Policy_MaskNothing (0xFFFF)`, the `0x2000` bit **propagates to every

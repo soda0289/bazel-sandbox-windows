@@ -17,8 +17,8 @@ It only touches the Java host (no native/C++ changes), completing the
 
 | File | Change |
 |------|--------|
-| `.../sandbox/WindowsSandboxUtil.java` | Adds builder support for `-d` (output dirs), `-n`/`-N` (network), `--filter-inputs`, `--execroot-writable`, `-D <file>`, `-S <file>`; `-D` now takes a path. |
-| `.../sandbox/WindowsSandboxedSpawnRunner.java` | Materializes runfiles symlink trees (like local exec); grants both the in-place link path **and** its real target for every input (name-agnostic, covers runfiles forests + pnpm store); grants the `*.runfiles_manifest` sibling; grants each declared output's parent-dir chain as `-d`; enables `--filter-inputs` + `--execroot-writable` ("mode 2"); wires network blocking; spills to an `@argfile` past the `CreateProcessW` 32K command-line limit. |
+| `.../sandbox/WindowsSandboxUtil.java` | Adds builder support for `-n`/`-N` (network), `--filter-inputs`, `--execroot-writable`, `-D <file>`, `-S <file>`; `-D` now takes a path. |
+| `.../sandbox/WindowsSandboxedSpawnRunner.java` | Materializes runfiles symlink trees (like local exec); grants both the in-place link path **and** its real target for every input (name-agnostic, covers runfiles forests + pnpm store); grants the `*.runfiles_manifest` sibling; grants each declared output file as `-w` (the launcher itself pre-creates + reveals the output parent-dir chain); enables `--filter-inputs` + `--execroot-writable` ("mode 2"); wires network blocking; spills to an `@argfile` past the `CreateProcessW` 32K command-line limit. |
 | `.../sandbox/WindowsSandboxedSpawn.java` | Plumbs the sandbox-debug and statistics output paths. |
 | `.../exec/local/WindowsLocalEnvProvider.java` | Also sets `TMPDIR` (msys/Cygwin `mktemp` honors only `TMPDIR`, else falls back to the shared `/tmp` the sandbox denies). |
 | `.../sandbox/BUILD` | Adds the `artifacts` / `runfiles_tree` / `runfiles_tree_updater` deps the above needs. |

@@ -129,11 +129,17 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   so no later action, or a reduced→full classpath re-execution of the same Java
   action, inherits stale scratch. Declared `-w` outputs are never in the set and
   are preserved. Cleanup is skipped under `--sandbox_debug`.
-- **`-d <path>`** — reveal a declared **output's parent directory**. linux-sandbox
-  pre-creates output parent dirs in its writable execroot; here `-d` applies a
-  node-only grant (read + create-directory + write on the exact dir) so the tool
-  can `stat`/enumerate it and its recursive `mkdir` succeeds, while the dir's
-  subtree stays denied — undeclared files inside it remain hidden and unwritable.
+- **Output parent directories (derived from `-w`, no CLI flag)** — linux-sandbox
+  pre-creates the parent directory of every declared output in its writable
+  execroot, so a tool's recursive `mkdir` of its output dir is a no-op and the
+  write succeeds; linux-sandbox has no output-dir flag. `BazelSandbox.exe`
+  reproduces this in place: for each `-w` (output) path it derives the parent
+  directory chain (strictly below the working dir), **pre-creates those dirs on
+  disk**, and applies a node-only grant (read + create-directory + write on each
+  exact dir) so the tool can `stat`/enumerate them and its recursive `mkdir`
+  succeeds, while each dir's subtree stays denied — undeclared files inside remain
+  hidden and unwritable. (There is no `-d` flag; the launcher derives everything
+  from `-w`, matching linux-sandbox's flag-free model.)
 
 ### The `DeclaredInput` marker-bit fix (execroot symlink forest)
 
@@ -144,7 +150,7 @@ symlinks/junctions into the **real workspace source tree**. That real tree is
 covered by the whole-disk read baseline, so *undeclared* workspace files were
 reachable through those links — a read leak absent on Linux. The fix is a policy
 marker bit `FileAccessPolicy_DeclaredInput` (`0x2000`) OR'd **only** into
-explicit `-r`/`-w`/`-d`/tool grants (never the root baseline). When a denied
+explicit `-r`/`-w`/output-dir/tool grants (never the root baseline). When a denied
 symlink/junction read resolves to a target carrying this marker
 (`IsDeclaredInput()`), the read is rescued; otherwise it stays hidden. So
 declared inputs reached through the forest stay visible while undeclared

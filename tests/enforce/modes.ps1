@@ -212,55 +212,51 @@ foreach ($op in @('enumfind', 'enumfindnt', 'enumfindntdirect')) {
         (Invoke-SandboxRaw $enGrants @($op, $enQm, 'other'))
 }
 
-# --- -d: output parent directory (node-only reveal + create/write) ----------
+# --- output parent directories (derived from -w, no CLI flag) ----------------
 # linux-sandbox pre-creates the parent directory of every declared output inside
 # its (writable) sandbox execroot, so a tool's recursive mkdir of that dir is a
-# no-op and the output write succeeds. In-place on Windows the dir already exists
-# but, under --filter-inputs, the hermetic execroot hides it and denies create -
-# so a tool that mkdir's its own output dir gets ACCESS_DENIED (the EPERM we hit
-# on fusion's TailwindCss action). -d grants a NODE-only policy on that exact dir
-# (reveal + AllowCreateDirectory + AllowWrite) WITHOUT opening its subtree, so the
-# dir becomes creatable/writable while undeclared files inside it stay hidden and
-# unwritable. See docs/detours-input-filtering.md.
+# no-op and the output write succeeds; linux-sandbox itself has no output-dir
+# flag. We reproduce that in-place: BazelSandbox.exe derives each -w (output)
+# path's parent-directory chain (strictly below -W), pre-creates those dirs on
+# disk, and reveals them NODE-only (reveal + AllowCreateDirectory + AllowWrite)
+# WITHOUT opening the subtree, so undeclared files inside stay hidden and
+# unwritable. There is no -d flag. See docs/detours-input-filtering.md.
 $od = New-Workspace
-$outdir = Join-Path $od 'bin'                     # existing output parent dir
-New-Item -ItemType Directory -Force -Path $outdir | Out-Null
-$newdir = Join-Path $od 'freshbin'                # NOT created on disk
+$outdir = Join-Path $od 'bin'                     # output parent dir (revealed via -w)
 $outfile = Join-Path $outdir 'gen.txt'            # a declared output file
+$deepfile = Join-Path $od 'a\b\c\deep.txt'        # forces a multi-level parent chain
 $secret = Join-Path $outdir 'secret.txt'          # undeclared file inside the dir
+New-Item -ItemType Directory -Force -Path $outdir | Out-Null
 'top secret' | Set-Content $secret
 
-# Baseline (no -d): creating the output dir under a hermetic execroot is denied
-# (write-class op, so NOT masked to not-found - it is a hard ACCESS_DENIED).
-Assert-Exit 'no -d: mkdir existing output dir denied' 10 `
+# Baseline (no -w touching the dir): under a hermetic execroot the output dir is
+# hidden and create is denied - a hard ACCESS_DENIED (write-class op, not masked).
+Assert-Exit 'no output grant: mkdir output dir denied' 10 `
     (Invoke-SandboxRaw @('--filter-inputs', '-W', $od) @('mkdir', $outdir))
-Assert-Exit 'no -d: mkdir new output dir denied' 10 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od) @('mkdir', $newdir))
 
-# With -d the create call reaches the filesystem. For a brand-new dir it succeeds
-# (0); for one that already exists it gets ALREADY_EXISTS (20, "other") instead of
-# ACCESS_DENIED (10) - i.e. the policy now permits it (Node maps that to EEXIST and
-# treats recursive mkdir as done).
-Assert-Exit '-d: mkdir new output dir allowed' 0 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $newdir) @('mkdir', $newdir))
-Assert-Exit '-d: mkdir existing output dir reaches already-exists (allowed)' 20 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $outdir) @('mkdir', $outdir))
+# -w on the declared output reveals + pre-creates its parent dir chain. The dir
+# now exists on disk, so a tool's mkdir of it reaches ALREADY_EXISTS (20, "other")
+# instead of ACCESS_DENIED (10) - the recursive-mkdir no-op linux relies on.
+Assert-Exit 'output parent dir revealed: mkdir reaches already-exists' 20 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $outfile) @('mkdir', $outdir))
+# Multi-level chains are pre-created too (a\b\c all exist from a single -w).
+Assert-Exit 'nested output parent chain pre-created: mkdir reaches already-exists' 20 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $deepfile) @('mkdir', (Join-Path $od 'a\b\c')))
+# And the declared output write into the (revealed) dir succeeds.
+Assert-Exit 'declared output write allowed' 0 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $outfile) @('write', $outfile))
 
-# -d on the parent dir + -w on the declared output: the output write succeeds.
-Assert-Exit '-d + -w: declared output write allowed' 0 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $outdir, '-w', $outfile) `
-        @('write', $outfile))
-
-# Safety: -d reveals the DIRECTORY only, not its contents. An undeclared file
-# inside the -d dir is still hidden on read (NOT_FOUND, masked) and unwritable
-# (ACCESS_DENIED) - the "hidden file can't be overwritten" guarantee.
-Assert-Exit '-d: undeclared file in output dir still hidden (read)' 11 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $outdir) @('read', $secret))
-Assert-Exit '-d: undeclared file in output dir not writable' 10 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $outdir) @('write', $secret))
-# And enumeration of the -d dir still omits the undeclared file.
-Assert-Exit '-d: undeclared file hidden from enumeration of output dir' 11 `
-    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-d', $outdir) @('enumfind', $outdir, 'secret.txt'))
+# Safety: revealing the output dir exposes the DIRECTORY only, not its contents.
+# An undeclared file inside stays hidden on read (NOT_FOUND, masked), unwritable
+# (ACCESS_DENIED), and hidden from enumeration - the "hidden file can't be
+# overwritten / can't leak" guarantee.
+Assert-Exit 'output dir: undeclared file still hidden (read)' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $outfile) @('read', $secret))
+Assert-Exit 'output dir: undeclared file not writable' 10 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $outfile) @('write', $secret))
+# And enumeration of the output dir still omits the undeclared file.
+Assert-Exit 'output dir: undeclared file hidden from enumeration' 11 `
+    (Invoke-SandboxRaw @('--filter-inputs', '-W', $od, '-w', $outfile) @('enumfind', $outdir, 'secret.txt'))
 
 # --- --execroot-writable: create-new allowed, clobber-existing denied ----------
 # linux-sandbox's throwaway execroot is fully writable, so a tool may freely create

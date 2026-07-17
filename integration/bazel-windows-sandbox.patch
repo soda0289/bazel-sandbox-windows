@@ -49,15 +49,14 @@ index 4f73e1b943..b8eaa15c75 100644
          "//src/main/java/com/google/devtools/build/lib/exec/local",
          "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
 diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
-index 3147b3d253..dde3030470 100644
+index 3147b3d253..0bb689e578 100644
 --- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
 +++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
-@@ -109,7 +109,13 @@ public final class WindowsSandboxUtil {
+@@ -109,7 +109,12 @@ public final class WindowsSandboxUtil {
      private Set<Path> writableFilesAndDirectories = ImmutableSet.of();
      private Map<PathFragment, Path> readableFilesAndDirectories = new TreeMap<>();
      private Set<Path> inaccessiblePaths = ImmutableSet.of();
 -    private boolean useDebugMode = false;
-+    private Set<Path> outputDirectories = ImmutableSet.of();
 +    private String sandboxDebugPath = null;
 +    private String statisticsPath = null;
 +    private boolean blockNetwork = false;
@@ -67,30 +66,15 @@ index 3147b3d253..dde3030470 100644
      private List<String> commandArguments = ImmutableList.of();
  
      private CommandLineBuilder(PathFragment windowsSandboxPath, List<String> commandArguments) {
-@@ -178,10 +184,83 @@ public final class WindowsSandboxUtil {
+@@ -178,10 +183,66 @@ public final class WindowsSandboxUtil {
        return this;
      }
  
 -    /** Sets whether to enable debug mode (e.g. to print debugging messages). */
-+    /**
-+     * Sets the declared outputs' parent directories, if any.
-+     *
-+     * <p>Each is passed as {@code -d} to {@code BazelSandbox.exe}, which grants a NODE-only policy
-+     * (reveal + create-directory + write) on that exact directory without opening its subtree. This
-+     * mirrors {@code linux-sandbox}, which pre-creates the parent directory of every declared output
-+     * inside its (writable) sandbox execroot, so a tool's recursive {@code mkdir} of its output
-+     * directory is a no-op and the output write succeeds. Because the grant is node-only, undeclared
-+     * files inside the output directory stay hidden (reads report NOT_FOUND) and unwritable, so a
-+     * hidden/undeclared file can never be overwritten.
-+     */
-+    @CanIgnoreReturnValue
-+    public CommandLineBuilder setOutputDirectories(Set<Path> outputDirectories) {
-+      this.outputDirectories = outputDirectories;
-+      return this;
-+    }
-+
 +    /** Sets the path for writing sandbox debug output, if any. */
-+    @CanIgnoreReturnValue
+     @CanIgnoreReturnValue
+-    public CommandLineBuilder setUseDebugMode(boolean useDebugMode) {
+-      this.useDebugMode = useDebugMode;
 +    public CommandLineBuilder setSandboxDebugPath(String sandboxDebugPath) {
 +      this.sandboxDebugPath = sandboxDebugPath;
 +      return this;
@@ -111,9 +95,7 @@ index 3147b3d253..dde3030470 100644
 +    }
 +
 +    /** Sets whether to restrict network access to loopback only. */
-     @CanIgnoreReturnValue
--    public CommandLineBuilder setUseDebugMode(boolean useDebugMode) {
--      this.useDebugMode = useDebugMode;
++    @CanIgnoreReturnValue
 +    public CommandLineBuilder setUseLoopbackOnly(boolean useLoopbackOnly) {
 +      this.useLoopbackOnly = useLoopbackOnly;
 +      return this;
@@ -154,15 +136,12 @@ index 3147b3d253..dde3030470 100644
        return this;
      }
  
-@@ -219,8 +298,25 @@ public final class WindowsSandboxUtil {
+@@ -219,8 +280,22 @@ public final class WindowsSandboxUtil {
        for (Path writablePath : inaccessiblePaths) {
          commandLineBuilder.add("-b", writablePath.getPathString());
        }
 -      if (useDebugMode) {
 -        commandLineBuilder.add("-D");
-+      for (Path outputDir : outputDirectories) {
-+        commandLineBuilder.add("-d", outputDir.getPathString());
-+      }
 +      if (useLoopbackOnly) {
 +        commandLineBuilder.add("-N");
 +      } else if (blockNetwork) {
@@ -229,7 +208,7 @@ index cb67b70886..1c19752a1d 100644
  
    @Override
 diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
-index 9e65f743ea..80a4759833 100644
+index 9e65f743ea..e33ed2fbb5 100644
 --- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
 +++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxedSpawnRunner.java
 @@ -14,27 +14,46 @@
@@ -317,25 +296,16 @@ index 9e65f743ea..80a4759833 100644
      SandboxInputs readablePaths =
          SandboxHelpers.processInputFiles(
              context.getInputMapping(PathFragment.EMPTY_FRAGMENT, /* willAccessRepeatedly= */ true),
-@@ -69,33 +105,180 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+@@ -69,33 +105,171 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
  
      ImmutableSet.Builder<Path> writablePaths = ImmutableSet.builder();
      writablePaths.addAll(getWritableDirs(execRoot, environment));
-+    // Each declared output file's parent-directory chain (strictly below the execroot) is granted
-+    // as an output directory (-d): a node-only reveal + create/write so a tool's recursive mkdir of
-+    // its output directory succeeds and the directory is enumerable, mirroring how linux-sandbox
-+    // pre-creates output parent dirs in its writable sandbox execroot. The grant is node-only, so
-+    // undeclared files inside those directories stay hidden and unwritable (no hidden-file clobber).
-+    ImmutableSet.Builder<Path> outputDirs = ImmutableSet.builder();
++    // Each declared output file is granted writable (-w). BazelSandbox.exe itself derives each
++    // writable path's parent-directory chain (strictly below the working dir), pre-creates those
++    // directories and reveals them node-only, mirroring how linux-sandbox pre-creates output parent
++    // dirs in its writable sandbox execroot. No separate output-directory flag is needed here.
      for (ActionInput output : spawn.getOutputFiles()) {
--      writablePaths.add(execRoot.getRelative(output.getExecPath()));
-+      Path outputPath = execRoot.getRelative(output.getExecPath());
-+      writablePaths.add(outputPath);
-+      for (Path dir = outputPath.getParentDirectory();
-+          dir != null && dir.startsWith(execRoot) && !dir.equals(execRoot);
-+          dir = dir.getParentDirectory()) {
-+        outputDirs.add(dir);
-+      }
+       writablePaths.add(execRoot.getRelative(output.getExecPath()));
      }
  
      Duration timeout = context.getTimeout();
@@ -436,7 +406,6 @@ index 9e65f743ea..80a4759833 100644
 +            .setReadableFilesAndDirectories(ImmutableMap.copyOf(readableFiles))
              .setInaccessiblePaths(getInaccessiblePaths())
 -            .setUseDebugMode(getSandboxOptions().getSandboxDebug())
-+            .setOutputDirectories(outputDirs.build())
 +            .setStatisticsPath(statisticsPath.getPathString())
 +            .setFilterInputs(true)
 +            .setExecrootWritable(true)
