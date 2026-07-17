@@ -131,23 +131,6 @@
 
     # ---- New Bazel-9 candidates (confirmed .bazelversion 9.x, bzlmod) ------------
 
-    # GerritCodeReview/gitiles - pure-Java servlet library (Git repo browser). BEST
-    # next candidate: .bazelversion 9.1.0 (matches our fork's major.minor), pure
-    # bzlmod (MODULE.bazel + lock), small (~50 Java files), clean dep graph
-    # (rules_java 9.3.0 + rules_jvm_external 7.0 + JDK toolchain, no Go/Android/shell
-    # in the hot path). Exercises the Java compile+jar toolchain on a NON-bazel repo.
-    # Two one-time Windows overrides: --workspace_status_command= skips the repo's
-    # python3 ./tools/workspace_status.py (python3 need not be on PATH), and
-    # --lockfile_mode=off avoids friction from a lockfile committed on Linux (the
-    # Windows module-extension outputs differ). Target = the main servlet library.
-    gitiles = @{
-        RepoUrl        = 'https://github.com/GerritCodeReview/gitiles'
-        Ref            = 'master'
-        Submodules     = $true
-        Targets        = @('//java/com/google/gitiles:servlet')
-        ExtraBuildArgs = @('--workspace_status_command=', '--lockfile_mode=off')
-    }
-
     # abseil/abseil-cpp - canonical Bazel C++ library. Pure bzlmod, NO .bazelversion
     # pin (open to any Bazel >=7) and NO committed MODULE.bazel.lock (zero lockfile
     # friction on Windows); minimal deps (rules_cc, bazel_skylib, platforms,
@@ -201,6 +184,129 @@
     #                           toolchain; CI has no Windows runner.
     #   cert-manager/cert-manager    NOT A BAZEL PROJECT - Make/Go (go.mod), no
     #                           MODULE.bazel/WORKSPACE/BUILD. Not smoke-testable here.
+
+    # ---- jgit / gitiles (POSIX-shell genrules; NOW BUILDABLE on Windows) --------
+    # jgit was long "blocked" on this Windows host; it is NOW GREEN both local AND
+    # windows-sandbox (0 regressions) with the recipe below. The failures were never
+    # sandbox bugs (they reproduced identically under plain --spawn_strategy=local).
+    # Kept as presets - jgit is a good heavy Java+genrule sandbox exercise (msys
+    # process spawning, thousands of per-file touch, mktemp temp dirs, coursier fetch).
+    #
+    # ROOT CAUSE (corrected after end-to-end Bazel repro): jgit runs POSIX-shell
+    # genrules that need a COHERENT msys2 toolchain (mktemp/unzip/find/touch/zip):
+    #   //org.eclipse.jgit:jgit  ->  mktemp -d; unzip; find . -exec touch -t ...; zip
+    # This genrule fails with GNU find's "find: 'touch': No such file or directory".
+    # (jgit ALSO ships a bazlets transform_srcjar rule - reached only by the .ee8
+    # servlet bridge, and hence by gitiles, NOT by //org.eclipse.jgit:jgit - which
+    # fails the SAME WAY but for a DIFFERENT root cause; see the gitiles section.)
+    #
+    # It is NOT a ';'-vs-':' separator bug (msys2 converts PATH correctly) and NOT a
+    # sandbox bug (fails identically under plain --spawn_strategy=local). The real cause
+    # is PATH COMPOSITION. Bazel runs genrules via BAZEL_SH (C:\msys64\usr\bin\bash.exe)
+    # as a NON-login `bash -c`, which does NOT source /etc/profile, so msys2 /usr/bin is
+    # NOT auto-prepended. jgit's .bazelrc forces --incompatible_strict_action_env +
+    # --action_env=PATH, so the genrule's PATH is exactly the forwarded Windows client
+    # PATH. A typical Windows box has NO msys2 /usr/bin on that PATH, but DOES have
+    # competing PARTIAL toolchains: uutils-coreutils (C:\Program Files\coreutils\bin),
+    # Git's usr\bin, and Windows' own System32\find.exe (which has find but no touch).
+    # So `find` resolves to a GNU find whose execvp("touch") searches a PATH with no
+    # reachable `touch` -> the error. Proven: with msys2 /usr/bin FIRST on the action
+    # PATH, find+touch are co-located and the genrule SUCCEEDS; with System32-only it
+    # dies (Exit 127, POSIX tools missing).
+    #
+    # PROVEN FIX / FULL RECIPE (jgit builds GREEN local+sandbox with all of these):
+    #   1. --action_env=PATH=C:\msys64\usr\bin;<JDK17\bin>;<rest-of-PATH>
+    #      msys2 /usr/bin FIRST = one coherent POSIX toolchain (find+touch+unzip+zip+
+    #      mktemp all co-located). This is THE genrule fix. Keep JDK17 + rest so
+    #      coursier still finds a JDK (see step 2). Machine-specific (msys path).
+    #   2. JAVA_HOME=<JDK17> and put <JDK17>\bin AHEAD of any JRE (e.g. Zulu-8) on the
+    #      host PATH: rules_jvm_external's coursier fetch runs `java @argsfile`, which
+    #      needs Java 9+ (@argfile support). A JRE-8 default -> "Could not find or load
+    #      main class @...java_argsfile".
+    #   3. --config=java21  (jgit ships this config): our master-built bazel bundles a
+    #      Java-21 BazelJavaBuilder (class file v65); jgit's .bazelrc pins the tool
+    #      runtime to remotejdk_17 (max v61) -> UnsupportedClassVersionError. java21
+    #      bumps all four java version knobs to 21.
+    #   4. --workspace_status_command=<cmd that prints "STABLE_BUILD_JGIT_LABEL <v>">.
+    #      genrule-setup.sh enables `set -e -o pipefail`; the genrule does
+    #      GEN_VERSION=$(cat stable-status.txt | grep -w STABLE_BUILD_JGIT_LABEL | ...).
+    #      If the label is absent, grep exits 1 -> pipefail -> set -e ABORTS the genrule
+    #      (Exit 1). (An EMPTY --workspace_status_command= does NOT work - earlier note
+    #      that it "tolerates an empty label" was wrong.) A one-line .bat that echoes
+    #      "STABLE_BUILD_JGIT_LABEL v0.0.0-dev" is enough.
+    #   5. --lockfile_mode=off (Linux-generated committed MODULE.bazel.lock) and, on a
+    #      corporate-proxy host, JAVA_TOOL_OPTIONS + -HostJvmArgs trustStore=Windows-ROOT
+    #      so ALL JVMs (bazel server + coursier fetcher) trust the Windows cert store.
+    # NB the genrule is SLOW on Windows (~240s): `find . -exec touch ... ';'` spawns one
+    # touch process per file over ~3k files. Correct, just slow.
+
+    # eclipse-jgit/jgit - pure-Java Git implementation, .bazelversion 9.0.1, bzlmod.
+    # //org.eclipse.jgit:jgit is the manifest-stamp genrule (minimal, no bazlets /
+    # servlet-transform needed). MODULE deps: rules_java 9.3.0, rules_jvm_external 6.10,
+    # rules_shell, rules_go, rules_android, bazel_features, rbe_autoconfig.
+    # RESULT: GREEN both local (399.5s) + windows-sandbox (344.9s), 0 regressions.
+    #
+    # The ExtraBuildArgs below are the PORTABLE flags. You MUST ALSO pass the two
+    # machine-specific pieces at runtime (they encode local paths):
+    #   -ExtraBuildArgs @('--config=java21','--lockfile_mode=off',
+    #                     '--workspace_status_command=C:\path\to\ws_status.bat',
+    #                     "--action_env=PATH=C:\msys64\usr\bin;<JDK17>\bin;$env:PATH")
+    # and set $env:JAVA_HOME=<JDK17>; $env:PATH="C:\msys64\usr\bin;<JDK17>\bin;$env:PATH"
+    # (see the FULL RECIPE comment above). ws_status.bat = one line:
+    #   @echo STABLE_BUILD_JGIT_LABEL v0.0.0-dev
+    jgit = @{
+        RepoUrl        = 'https://github.com/eclipse-jgit/jgit'
+        Ref            = 'master'
+        Targets        = @('//org.eclipse.jgit:jgit')
+        ExtraBuildArgs = @('--config=java21', '--lockfile_mode=off')
+    }
+
+    # GerritCodeReview/gitiles - pure-Java servlet library (Git repo browser),
+    # .bazelversion 9.1.0, bzlmod, ~50 Java files. //java/com/google/gitiles:servlet
+    # depends on //lib:jgit-servlet -> @jgit//org.eclipse.jgit.http.server.ee8 (the
+    # javax/EE8 bridge) and on the jgit stamp genrule. jgit is a git SUBMODULE here
+    # (local_path_override path="modules/jgit"), hence Submodules. gitiles' .bazelrc
+    # ALREADY defaults to java21 (java_*_version=21), so do NOT pass --config=java21
+    # (that config is undefined in gitiles and errors); java21 is implicit.
+    #
+    # RESULT: GREEN both local (465.8s) + windows-sandbox (391s), 0 regressions
+    # (sandbox 0.84x). Needs the shared jgit runtime pieces (msys2-first
+    # --action_env=PATH, JAVA_HOME/JDK17, workspace_status_command) PLUS two fixes:
+    #
+    #  (a) transform_srcjar (bazlets servlet_transform.bzl, reached via the ee8
+    #      bridge) is a `ctx.actions.run_shell` that does NOT set
+    #      use_default_shell_env=True, so the action gets NO PATH at all - and
+    #      --action_env can only reach actions that DO opt into the default shell env.
+    #      With no PATH, `find` still runs (bash's built-in default lookup) but its
+    #      -exec child `touch` cannot be located -> "find: 'touch': No such file or
+    #      directory". Breaks ONLY on Windows (Linux actions get a default
+    #      /bin:/usr/bin). This is a genuine upstream jgit Windows-portability bug;
+    #      the msys2-first --action_env=PATH pin does NOT fix it. FIX: add
+    #      `use_default_shell_env = True` to that run_shell. For the smoke run we
+    #      persist the one-line patch via --override_repository pointing at a patched
+    #      copy of the bazlets repo (canonical name
+    #      jgit++git_repository+com_googlesource_gerrit_bazlets).
+    #  (b) errorprone toolchain drift: our master-built bazel bundles a stricter
+    #      errorprone that promotes [NullArgumentForNonNullParameter] to an ERROR
+    #      against gitiles source (Revision.java, LogServlet.java, ...). Relax with
+    #      --javacopt=-Xep:NullArgumentForNonNullParameter:WARN.
+    #
+    # gitiles' own workspace_status.py emits STABLE_BUILD_GITILES_LABEL +
+    # STABLE_BUILD_<submodule>_LABEL (incl. JGIT) via `git describe`, but relies on the
+    # flaky Windows-Store python3 shim; override it with a deterministic .bat that
+    # echoes STABLE_BUILD_GITILES_LABEL / STABLE_BUILD_JGIT_LABEL / _JAVA-PRETTIFY_.
+    # The ExtraBuildArgs below are PORTABLE; also pass at runtime (machine-specific):
+    #   --action_env=PATH=C:\msys64\usr\bin;<JDK17>\bin;$env:PATH
+    #   --action_env=JAVA_HOME=<JDK17>
+    #   --workspace_status_command=C:\path\to\gitiles_ws_status.bat
+    #   --override_repository=jgit++git_repository+com_googlesource_gerrit_bazlets=<patched bazlets>
+    gitiles = @{
+        RepoUrl        = 'https://github.com/GerritCodeReview/gitiles'
+        Ref            = 'master'
+        Submodules     = $true
+        Targets        = @('//java/com/google/gitiles:servlet')
+        ExtraBuildArgs = @('--lockfile_mode=off', '--javacopt=-Xep:NullArgumentForNonNullParameter:WARN')
+    }
 
     # ---- Optional heavyweight (Linux-centric; low sandbox signal) ----------
     # KNOWN-BLOCKED: repo HEAD is not Bazel-9-compatible - BUILD files use native

@@ -15,11 +15,11 @@ The authoritative `linux-sandbox` flag list is its option parser
 
 Related docs: [`gsoc-proposal-comparison.md`](gsoc-proposal-comparison.md)
 (origin + Bazel's actual `windows-sandbox` CLI contract),
-[`vendor-architecture.md`](vendor-architecture.md) (how the engine enforces), and
-[`sandbox-parity-findings.md`](sandbox-parity-findings.md) (the running ledger of
+[`vendor-architecture.md`](../vendor-architecture.md) (how the engine enforces), and
+[`sandbox-parity-findings.md`](../sandbox-parity-findings.md) (the running ledger of
 concrete under-granting / over-exposure discrepancies, their status, and the
 prioritized gap TODO), and
-[`projfs-sandbox-modes.md`](projfs-sandbox-modes.md) (the proposed ProjFS-based
+[`projfs-sandbox-modes.md`](../design/projfs-sandbox-modes.md) (the proposed ProjFS-based
 constructive redesign — the 3 Windows sandbox modes and their linux-sandbox
 parity contract).
 
@@ -41,7 +41,7 @@ Because our model denies at the call site rather than hiding files, the
 must be emulated differently. Note our `-H` means **hermetic reads** (not
 linux-sandbox's `-H` = set hostname); read-confinement is the Windows analog of
 `--experimental_use_hermetic_linux_sandbox`. By default reads are permissive to
-match the default linux-sandbox (see [`sandbox-parity-findings.md`](sandbox-parity-findings.md)).
+match the default linux-sandbox (see [`sandbox-parity-findings.md`](../sandbox-parity-findings.md)).
 
 ## 2. Flag-by-flag comparison
 
@@ -99,7 +99,7 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   - Writes are **not** masked: an undeclared write is still `ACCESS_DENIED`, so
     missing-output declarations still fail loudly.
 
-  See `docs/detours-input-filtering.md` for the full design. This gives us
+  See `docs/design/detours-input-filtering.md` for the full design. This gives us
   symlink-forest-like input hermeticity **without** materializing a per-action tree
   (which is prohibitively slow on Windows NTFS / ProjFS), at effectively native
   speed.
@@ -111,7 +111,7 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   (the direct analogue of the Linux flag), and the allowlist is seeded with
   `C:\Windows\System32` (system DLLs) + other required OS locations and extended
   through the existing **`--sandbox_add_mount_pair`** option. Not yet implemented;
-  see `docs/detours-input-filtering.md` §Modes.
+  see `docs/design/detours-input-filtering.md` §Modes.
 
 - **`--execroot-writable`** — matches the fact that linux-sandbox runs in a
   **fully writable throwaway execroot**. Because the Windows sandbox runs *in
@@ -155,7 +155,7 @@ symlink/junction read resolves to a target carrying this marker
 (`IsDeclaredInput()`), the read is rescued; otherwise it stays hidden. So
 declared inputs reached through the forest stay visible while undeclared
 workspace files do not leak — giving the same net visibility as the Linux
-forest. See `docs/detours-input-filtering.md`.
+forest. See `docs/design/detours-input-filtering.md`.
 
 
   > **Note on `-r` keys vs values:** the runner now grants **both** the in-place

@@ -27,7 +27,7 @@ it keeps the `DetoursServices` enforcement engine (which *does* originate in
 Microsoft's [microsoft/BuildXL](https://github.com/microsoft/BuildXL)) but builds
 it against public upstream Detours and drops all managed code. For a detailed
 comparison to the GSoC proposal and to Bazel's actual `windows-sandbox` CLI
-contract, see [`docs/gsoc-proposal-comparison.md`](docs/gsoc-proposal-comparison.md).
+contract, see [`docs/comparison/gsoc-proposal-comparison.md`](docs/comparison/gsoc-proposal-comparison.md).
 
 ## How it works
 
@@ -110,18 +110,18 @@ manifest flags and policy bits `BazelSandbox` actually uses — see
 For how this project relates to the original "Sandboxing on Windows" GSoC
 proposal and to Bazel's actual `windows-sandbox` CLI contract — including a
 feature parity table and an analysis of `-M`/`-m` bind mounts — see
-[`docs/gsoc-proposal-comparison.md`](docs/gsoc-proposal-comparison.md).
+[`docs/comparison/gsoc-proposal-comparison.md`](docs/comparison/gsoc-proposal-comparison.md).
 
 For a flag-by-flag comparison with Bazel's `linux-sandbox` — which flags are
 implemented, which are intentionally not applicable on Windows, and which are
 worth adding (notably `-C` resource limits) — see
-[`docs/linux-sandbox-comparison.md`](docs/linux-sandbox-comparison.md).
+[`docs/comparison/linux-sandbox-comparison.md`](docs/comparison/linux-sandbox-comparison.md).
 
 For the design of the **in-place input-filtering path** — the `--filter-inputs`
 default that makes undeclared inputs invisible (matching hermetic
 `linux-sandbox` / remote execution), the mode mapping, the `--execroot-writable`
 model, and the `DeclaredInput` marker-bit fix for the execroot symlink
-forest — see [`docs/detours-input-filtering.md`](docs/detours-input-filtering.md).
+forest — see [`docs/design/detours-input-filtering.md`](docs/design/detours-input-filtering.md).
 
 ## Building
 
@@ -287,7 +287,7 @@ symlink/junction read is allowed **only** when its resolved target is a declared
 input — closing the leak where undeclared workspace files were reachable via the
 baseline read grant. This whole design (mode mapping, the subtractive behaviors,
 and the marker-bit fix) is specified in
-[`docs/detours-input-filtering.md`](docs/detours-input-filtering.md).
+[`docs/design/detours-input-filtering.md`](docs/design/detours-input-filtering.md).
 
 ### Network sandboxing
 
@@ -519,7 +519,7 @@ bypassed by a normal long path — they are edge cases:
   allowed scope); the *reverse* — a **declared input** reached through the
   execroot's per-entry symlink forest — is resolved and allowed under
   `--filter-inputs` via the `DeclaredInput` marker bit (see
-  [`docs/detours-input-filtering.md`](docs/detours-input-filtering.md)), so
+  [`docs/design/detours-input-filtering.md`](docs/design/detours-input-filtering.md)), so
   declared inputs stay visible while undeclared ones do not leak.
 * **Case-insensitive matching is ASCII-only.** Path fragments are upper-cased
   with `_towupper_l` under the invariant locale, which folds `a`–`z` but not
@@ -554,9 +554,15 @@ defs.bzl                  shared build constants (Windows target defines)
 .bazelrc / .bazelversion  Bazel config (JVM certs, PATH, serial tests) + version
 third_party/detours/      BUILD file applied to the fetched upstream Detours
 docs/
-  vendor-architecture.md  vendored-engine coupling map + policy/manifest subset
-  gsoc-proposal-comparison.md  parity vs. GSoC proposal + Bazel CLI contract
-  linux-sandbox-comparison.md  flag-by-flag comparison with linux-sandbox
+  README.md                 documentation index (start here)
+  vendor-architecture.md    vendored-engine coupling map + policy/manifest subset
+  sandbox-parity-findings.md running ledger of parity divergences + their tests
+  design/
+    detours-input-filtering.md  Detours directory-enumeration input-filtering design
+    projfs-sandbox-modes.md      ProjFS constructive-VFS sandbox modes (deferred)
+  comparison/
+    gsoc-proposal-comparison.md  parity vs. GSoC proposal + Bazel CLI contract
+    linux-sandbox-comparison.md  flag-by-flag comparison with linux-sandbox
 src/
   main.cpp                launcher (options, manifest, Detours injection, waiting)
   manifest_builder.{h,cpp} native FileAccessManifest blob + path hash-tree

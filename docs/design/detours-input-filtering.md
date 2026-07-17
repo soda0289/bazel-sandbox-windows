@@ -4,17 +4,17 @@ Status: **proposal / approved for implementation.** This doc specifies a
 **subtractive, in-place** Windows sandbox that reaches the practical parity goals
 of `linux-sandbox` (undeclared inputs are invisible; writes are confined) by
 *filtering* what the real execroot shows the process, rather than *constructing* a
-new filesystem. It is the near-term plan and, for the read-isolation goal,
-**supersedes** the ProjFS redesign in
+new filesystem. It is the approach now implemented (see §9) and, for the
+read-isolation goal, **supersedes** the ProjFS redesign in
 [`projfs-sandbox-modes.md`](projfs-sandbox-modes.md).
 
 Related docs:
 [`projfs-sandbox-modes.md`](projfs-sandbox-modes.md) (the constructive VFS
 alternative — deferred, see §8),
-[`linux-sandbox-comparison.md`](linux-sandbox-comparison.md) (flag/feature map),
-[`sandbox-parity-findings.md`](sandbox-parity-findings.md) (A4/A5 divergences that
+[`linux-sandbox-comparison.md`](../comparison/linux-sandbox-comparison.md) (flag/feature map),
+[`sandbox-parity-findings.md`](../sandbox-parity-findings.md) (A4/A5 divergences that
 motivate this),
-[`vendor-architecture.md`](vendor-architecture.md) (the Detours engine we build
+[`vendor-architecture.md`](../vendor-architecture.md) (the Detours engine we build
 on).
 
 ---
@@ -32,7 +32,7 @@ model is viable but **slow and complex**:
   write-overlay model, and a new ProjFS provider process — a large amount of new,
   subtle code.
 
-The user requirement is a sandbox that is **at least as fast as the current
+The overriding requirement is a sandbox that is **at least as fast as the current
 Detours sandbox** and reuses what already works. The insight that reshapes the
 design:
 
@@ -309,11 +309,17 @@ Bounds that keep it safe:
 
 ## 4. The virtual-execroot question (fake path VFS)
 
-The user asked whether we should go further: have Detours **synthesize a fake
-execroot path** that does not exist on disk, resolving each virtual path to the
-real input file on open (returning a real handle) and synthesizing enumerations
-from the input manifest — i.e. a userspace path-remapping VFS, the true analog of
-Linux's symlink forest, with **no physical staging at all**.
+The Detours sandbox began life as the Google Summer of Code prototype, which
+enforced isolation by *denying* access to undeclared paths. Reaching behavioural
+parity with Bazel's `linux-sandbox` and `processwrapper-sandbox`, though, demands
+that undeclared inputs be *hidden* — absent from directory enumeration and
+reported as `NOT_FOUND` — rather than merely rejected once a tool stumbles onto
+them. The most complete form of hiding is to have Detours **synthesize a fake
+execroot path** that does not exist on disk: each virtual path resolves to its
+real input file on open (returning a real handle), enumerations are synthesized
+from the input manifest, and nothing is staged physically. That is a userspace
+path-remapping VFS — the true analog of Linux's symlink forest, with **no
+physical staging at all**.
 
 **Assessment: attractive, but defer it. Do subtractive filtering (§3) first.**
 
@@ -458,11 +464,20 @@ evolution if fail-closed isolation or staging elimination becomes required.
 
 ---
 
-## 9. Implementation plan (phased)
+## 9. Implementation status & fix log
 
-**Status:** Mechanisms A and B are **implemented and tested** (full enforce suite
-green, including the enumeration matrix across all three code paths). Phase 4
-(real-action parity) remains.
+Mechanisms A and B and the write model (§7) are **implemented and tested** — the
+full enforce suite is green, including the enumeration matrix across all three
+code paths. What follows is the build-out record and the parity bugs surfaced
+while validating against real repos (notably the fusion frontend build). It is a
+*log* of what was built, not a forward-looking plan.
+
+The canonical per-finding ledger — each discrepancy with its root cause, current
+status, and the test that pins it — is
+[`sandbox-parity-findings.md`](../sandbox-parity-findings.md). Where a design
+mechanism here and a discovered bug there are the same story, that doc is the
+source of truth for the finding; this section keeps the implementation-level
+detail (flag bits, hooked surfaces, buffer rewrites).
 
 1. **Mechanism A — NOT_FOUND on denied read. ✅ DONE.**
    - Added `ExtraFlag_DeniedReadsAsNotFound` (0x400) +
@@ -589,38 +604,38 @@ green, including the enumeration matrix across all three code paths). Phase 4
      fresh-from-root case is unchanged (its suffix already *is* the full path).
      Regression: the enumeration matrix is re-run with a `\\?\`-prefixed directory.
 
-4. **Integration + parity tests.**
-   - `ng_package` / `node_modules` case end-to-end under `--filter-inputs`.
-   - Confirm A4/A5 behavior matches linux-sandbox expectations.
-   - Regenerate `files/bazel-windows-sandbox.patch`; update
-     `linux-sandbox-comparison.md`.
+4. **Integration + parity validation. ✅ DONE (Mode 2).**
+   - The `ng_package` / `node_modules`-heavy cases build end-to-end under
+     `--filter-inputs`; A4/A5 behavior matches linux-sandbox expectations (see
+     parity-findings A4/A5). The opt-in `tests/e2e/mode2.ps1` exercises the
+     Bazel↔sandbox integration layer.
+   - Outstanding: regenerate `files/bazel-windows-sandbox.patch` after the latest
+     native changes; Mode 3 (`--hermetic-fs`, §1.1) remains future work.
 
 ---
 
-## 10. Test plan
+## 10. Test strategy
 
-* **Unit (host):** manifest carries the new flag bit (extend existing
-  manifest-builder tests).
-* **Behavioral (probe.exe / small test progs):**
-  - denied read → `NOT_FOUND` not `ACCESS_DENIED`;
-  - `AllowReadIfNonExistent` absent-probe behavior unchanged;
-  - `FindFirstFile`/`FindNextFile` filtered (`enumfind`);
-  - `GetFileInformationByHandleEx` directory classes filtered (`enumfindnt`);
-  - direct `ntdll!NtQueryDirectoryFile` filtered (`enumfindntdirect`, the
-    Node/libuv path);
-  - each enumeration op checked for the full matrix: declared file visible,
-    undeclared file hidden, ancestor dir of a declared input visible, undeclared
-    dir hidden;
-  - the same matrix re-run with the enumerated directory opened via the `\\?\`
-    extended-length prefix (the form Node/libuv use for `readdir`) — see the
-    `\\?\` sub-path device-classification bug below;
-  - write outside execroot still `ACCESS_DENIED`.
-* **Real action:** the canonical `ng_package` build (logical-path / A5 probe) and a
-  `node_modules`-heavy action, run in place under `--filter-inputs`, compared to a
-  linux-sandbox run of the same commit.
-* **End-to-end (opt-in, `tests/e2e/mode2.ps1`):** drives a real Bazel build through
-  the `windows-sandbox` strategy to validate the Bazel<->sandbox integration layer
-  (that Mode 2 really emits `--filter-inputs`, declared inputs resolve, and an
-  undeclared input is observed as NOT_FOUND — not ACCESS_DENIED — by a real action).
-  Requires a patched Bazel + network/cert; intentionally **not** part of
-  `bazel test //tests:all`. See `tests/e2e/README.md`.
+Tests are layered. The exhaustive op-by-op assertions live in the test files
+themselves (`tests/enforce/*.ps1`, `tests/unit/*`), and each parity fix names the
+test that pins it in
+[`sandbox-parity-findings.md`](../sandbox-parity-findings.md) ("Where the tests
+live"). The tiers:
+
+* **Unit (host):** the manifest carries the new flag bits (`manifest_builder`
+  tests).
+* **Behavioral (`probe.exe`):** denied reads → `NOT_FOUND` (not `ACCESS_DENIED`)
+  across every read/stat/enumerate syscall surface (`read`/`ntread`/`stat`/
+  `statbyname`/`findfile`); enumeration hides undeclared entries while keeping
+  declared files and ancestor dirs (the full matrix over `enumfind`,
+  `enumfindnt`, `enumfindntdirect`), re-run against `\\?\` extended-length paths
+  (the Node/libuv `readdir` form); writes outside the execroot stay
+  `ACCESS_DENIED`.
+* **Real action:** the `ng_package` / `node_modules`-heavy build under
+  `--filter-inputs`, compared against a linux-sandbox run of the same commit.
+* **End-to-end (opt-in, `tests/e2e/mode2.ps1`):** drives a real Bazel build
+  through the `windows-sandbox` strategy to validate the Bazel↔sandbox integration
+  layer (Mode 2 emits `--filter-inputs`; declared inputs resolve; an undeclared
+  input is observed as `NOT_FOUND`, not `ACCESS_DENIED`). Requires a patched Bazel
+  + network/cert; intentionally **not** part of `bazel test //tests:all`. See
+  `tests/e2e/README.md`.

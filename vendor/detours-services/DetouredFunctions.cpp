@@ -4978,7 +4978,7 @@ HANDLE WINAPI Detoured_FindFirstFileA(
 }
 
 // ---------------------------------------------------------------------------
-// Bazel directory-enumeration input filtering (see docs/detours-input-filtering.md).
+// Bazel directory-enumeration input filtering (see docs/design/detours-input-filtering.md).
 //
 // When ShouldFilterDirectoryEnumeration() is set, directory listings hide
 // entries that are not declared inputs so that undeclared files are invisible to

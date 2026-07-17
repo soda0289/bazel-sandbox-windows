@@ -3,7 +3,7 @@
 This catalogs concrete behavioral discrepancies discovered between this Windows
 sandbox and Bazel's `linux-sandbox`, together with root causes, current status,
 and the test that pins each one. It complements
-[`linux-sandbox-comparison.md`](linux-sandbox-comparison.md) (which is the
+[`linux-sandbox-comparison.md`](comparison/linux-sandbox-comparison.md) (which is the
 architectural/feature narrative); this file is the running issue ledger.
 
 ## Framing: two reference points, two categories
@@ -136,7 +136,7 @@ forest.
   rolled-up package *is* a declared input, so it is allowed; undeclared workspace
   files reached through the forest are not. `src/main.cpp` sets the marker on
   explicit grants; the guard lives in `DetouredFunctions.cpp`. See
-  `docs/detours-input-filtering.md` §3.5.
+  `docs/design/detours-input-filtering.md` §3.5.
 * **Status:** Fixed. Verified end to end: `:pkg` (and `:pkg_apf`) build cleanly
   under the `windows-sandbox` (Mode 2) with no ESM/EPERM error.
 * **Test:** `enforce_reparse` — declared-input-through-junction cases; the
@@ -189,7 +189,7 @@ forest.
   child's environment block (a child spawned with a custom env can't drop it). Now
   any process in the tree sees any path the tree created. Name-agnostic; no
   JavaBuilder special-casing. See `PolicyResult.cpp` (`CreatedFilesTracker`) and
-  `docs/detours-input-filtering.md`.
+  `docs/design/detours-input-filtering.md`.
 * **Status:** Fixed. Verified end to end: the previously-failing
   `AddJarManifestEntry` / `analysis_cache_clear_event` Java actions build
   successfully; a full `//src:bazel` build ran **1,264 windows-sandbox Javac

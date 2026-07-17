@@ -23,10 +23,10 @@ CI.
 > constructive VFS become necessary later (e.g. for full Mode 3 hermeticity).
 
 Related docs:
-[`linux-sandbox-comparison.md`](linux-sandbox-comparison.md) (flag/feature map),
-[`sandbox-parity-findings.md`](sandbox-parity-findings.md) (the concrete
+[`linux-sandbox-comparison.md`](../comparison/linux-sandbox-comparison.md) (flag/feature map),
+[`sandbox-parity-findings.md`](../sandbox-parity-findings.md) (the concrete
 divergences that motivated this — A4/A5 in particular),
-[`vendor-architecture.md`](vendor-architecture.md) (the current Detours engine).
+[`vendor-architecture.md`](../vendor-architecture.md) (the current Detours engine).
 
 ---
 

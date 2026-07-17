@@ -83,7 +83,7 @@ Assert-Exit 'hermetic: read outside -W still allowed' 0 `
 # Strict mode implies -H and additionally masks read denials as NOT_FOUND, so an
 # undeclared input looks ABSENT (as under linux-sandbox's symlink forest) rather
 # than permission-denied. Writes are NOT masked so missing-output declarations
-# still fail loudly. See docs/detours-input-filtering.md (Mechanism A).
+# still fail loudly. See docs/design/detours-input-filtering.md (Mechanism A).
 $fi = New-Workspace
 $vis = Join-Path $fi 'a.txt'          # seeded by New-Workspace
 $hidden = Join-Path $fi 'secret.txt'
@@ -173,7 +173,7 @@ Assert-Exit 'filter-inputs: colocated undeclared package.json hidden from enumer
 # but hides undeclared files and undeclared directories. This is enforced across
 # all three enumeration code paths: Win32 FindFirstFile, the
 # GetFileInformationByHandleEx wrapper, and direct ntdll!NtQueryDirectoryFile
-# (the path Node/libuv use). See docs/detours-input-filtering.md (Mechanism B).
+# (the path Node/libuv use). See docs/design/detours-input-filtering.md (Mechanism B).
 $en = New-Workspace
 New-Item -ItemType Directory -Force -Path (Join-Path $en 'sub') | Out-Null    # ancestor of a declared input
 New-Item -ItemType Directory -Force -Path (Join-Path $en 'other') | Out-Null  # undeclared directory
@@ -220,7 +220,7 @@ foreach ($op in @('enumfind', 'enumfindnt', 'enumfindntdirect')) {
 # path's parent-directory chain (strictly below -W), pre-creates those dirs on
 # disk, and reveals them NODE-only (reveal + AllowCreateDirectory + AllowWrite)
 # WITHOUT opening the subtree, so undeclared files inside stay hidden and
-# unwritable. There is no -d flag. See docs/detours-input-filtering.md.
+# unwritable. There is no -d flag. See docs/design/detours-input-filtering.md.
 $od = New-Workspace
 $outdir = Join-Path $od 'bin'                     # output parent dir (revealed via -w)
 $outfile = Join-Path $outdir 'gen.txt'            # a declared output file

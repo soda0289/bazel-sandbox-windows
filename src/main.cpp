@@ -60,7 +60,7 @@ struct Options {
     // sandbox SUBTRACTIVE: denied reads of existing-but-undeclared paths report
     // NOT_FOUND instead of ACCESS_DENIED, and undeclared entries are removed from
     // directory enumerations - so undeclared inputs are invisible, as under
-    // linux-sandbox's symlink forest. See docs/detours-input-filtering.md.
+    // linux-sandbox's symlink forest. See docs/design/detours-input-filtering.md.
     bool filterInputs = false;
     // --execroot-writable: allow the sandboxed tool to CREATE new files/directories
     // anywhere in the execroot (working dir) and re-write files it created, while
@@ -734,7 +734,7 @@ int wmain(int argc, wchar_t** argv) {
 
     // --filter-inputs turns on the subtractive behaviors in the DLL: denied reads
     // report NOT_FOUND (not ACCESS_DENIED) and directory enumerations hide
-    // undeclared children. See docs/detours-input-filtering.md.
+    // undeclared children. See docs/design/detours-input-filtering.md.
     uint32_t extraFlags = ExtraFlag_None;
     if (o.filterInputs) {
         extraFlags |= ExtraFlag_DeniedReadsAsNotFound |

@@ -6,8 +6,8 @@
 This document explains the methodology, how to run it, and the findings from the
 first real-repo run (aspect-build/rules_js).
 
-See also: `tests/e2e/README.md` (usage reference), `docs/detours-input-filtering.md`
-(the sandbox design), `docs/linux-sandbox-comparison.md` (parity model).
+See also: `tests/e2e/README.md` (usage reference), `docs/design/detours-input-filtering.md`
+(the sandbox design), `docs/comparison/linux-sandbox-comparison.md` (parity model).
 
 ## Results at a glance
 
@@ -20,7 +20,10 @@ See also: `tests/e2e/README.md` (usage reference), `docs/detours-input-filtering
 | bazelbuild/bazel `//src/main/cpp/util:util` (native MSVC cl.exe) | runfiles + symlink (harness defaults) | 1 | 0 | **0** | 0 |
 | bazelbuild/bazel `//src/.../lib/util:blocker` (Javac / JavaBuilder) | runfiles + symlink (harness defaults) | 1 | 0 | **0** (after fix; see below) | 0 |
 | **bazelbuild/bazel `//src:bazel`** (full self-build, 6,651 actions, **1,264 Javac sandboxed**) | symlink, fresh bases | ✅ green | 0 | **0** | 0 |
+| **abseil/abseil-cpp `//absl/strings` `//absl/base` `//absl/container:flat_hash_map`** (native MSVC C++ compile + static-lib link) | symlink, fresh bases | 3 | 0 | **0** | 0 |
 | GoogleContainerTools/distroless `//...` | **BLOCKED** — repo not Bazel-9-compatible (native `sh_binary`/old `rules_go`); fails at loading in both phases | — | — | — | — |
+| GerritCodeReview/gitiles `//java/com/google/gitiles:servlet` | submodule (jgit), fresh bases. Needs the jgit recipe **plus** two Windows fixes: (a) add `use_default_shell_env = True` to jgit-bazlets `transform_srcjar` (`servlet_transform.bzl`) — the `run_shell` gets no PATH so `find -exec touch` can't find `touch`; (b) `--javacopt=-Xep:NullArgumentForNonNullParameter:WARN` (errorprone drift). NOT `--config=java21` (undefined; gitiles `.bazelrc` already defaults java21). | 1 | 0 | **0** | 0 |
+| eclipse-jgit/jgit `//org.eclipse.jgit:jgit` (Java + POSIX-shell stamp genrule) | symlink, fresh bases | 1 | 0 | **0** | 0 |
 
 The `pass-sandbox / fail-local` column is not a bug: those are targets that fail
 under Windows `local` (execroot leakage / cross-config resolution) but **pass** under
@@ -157,6 +160,9 @@ graphs push it toward 1.0. Recorded timings live in the `test_findings` table.
 | rules_js `examples/` `//...` (271 targets) | **symlink** (`--windows_enable_symlinks`) | 1209.2s | 1286.4s | **1.06x** (+77.2s, +6%) |
 | rules_dotnet `examples/` `//...` (24 targets, .NET) | symlink + runfiles | 241.9s | 257.5s | **1.06x** (+15.6s, +6%) |
 | **bazelbuild/bazel `//src:bazel`** (full self-build, ~6,651 actions, **1,264 Javac sandboxed**) | symlink | **4050.2s** | **3869.1s** | **0.96x** (−181.1s, −4.5%) |
+| **abseil/abseil-cpp** (`strings` + `base` + `container:flat_hash_map`, native MSVC C++) | symlink, fresh bases | **116.0s** | **82.5s** | **0.71x** (−33.5s, −29%) |
+| **eclipse-jgit/jgit** `//org.eclipse.jgit:jgit` (Java + slow per-file `touch` stamp genrule) | symlink, fresh bases | **399.5s** | **344.9s** | **0.86x** (−54.6s, −14%) |
+| **GerritCodeReview/gitiles** `//java/com/google/gitiles:servlet` (Java servlet lib; jgit submodule + ee8 `transform_srcjar`) | submodule, fresh bases | **465.8s** | **391.0s** | **0.84x** (−74.8s, −16%) |
 
 The **`examples/` +6% is the most trustworthy figure** — a large (271-target,
 ~20 min) copy-heavy graph, not noise-dominated the way the 10-target
