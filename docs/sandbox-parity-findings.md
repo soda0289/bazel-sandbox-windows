@@ -218,6 +218,77 @@ forest.
   `-w` output preserved, pre-existing undeclared file preserved, scratch preserved
   under `-D`.
 
+### A8. Concurrent actions collide on a fixed-name undeclared file in the shared in-place execroot — OPEN
+
+* **Symptom:** `goyacc` fails under `windows-sandbox` with
+  `error creating y.output: open y.output: Access is denied.`
+  (`ERROR_ACCESS_DENIED`), while the same action passes under
+  `--spawn_strategy=local`. Surfaced by the full-repo fusion `//...` differential
+  (`@@gazelle++go_deps+com_github_bazelbuild_buildtools//build:parse.y.go_yacc`).
+  `goyacc` writes an **undeclared diagnostic side-file `y.output`** into its working
+  directory — which is the **execroot root** — with a fixed name, in addition to
+  its declared `-o` output.
+* **Not** a "root-level write is broken" bug. Verified by reproduction: a *fresh*
+  create of `y.output` at the real execroot root under
+  `--filter-inputs --execroot-writable` **succeeds** (write-only, and a single-open
+  `GENERIC_READ|GENERIC_WRITE` + `CREATE_ALWAYS` exactly as Go's `os.Create`, via
+  both relative and absolute paths), and a full `goyacc` run on a fresh grammar
+  passes and discards `y.output` on exit. The `execroot-writable` create-new
+  allowance covers execroot-root leaf files fine.
+* **Root cause — the shared in-place execroot vs. a per-action created-set.**
+  `--execroot-writable` is *create-new + re-write-what-**this-action**-created*, not
+  *write-anything*. The enforcement (`PolicyResult::AllowWrite`,
+  `vendor/detours-services/PolicyResult.cpp`): allow if the path is in **this
+  action's** created-set; else **deny if the file already exists on disk**
+  (no-clobber guard, protects undeclared inputs / source from being overwritten);
+  else create it and record it. The created-set is a **per-action-invocation**
+  shared-memory region, but `windows-sandbox` runs **in place in one shared
+  execroot** (not a throwaway per-action copy like `linux-sandbox`). So two
+  **concurrent actions** (Bazel runs many actions in parallel, each its own
+  `BazelSandbox.exe`) that write the **same fixed cwd path** collide: while action A
+  holds/created `<execroot>/y.output` (before A's tree exits and discards it),
+  concurrent action B sees A's file on disk, absent from **B's** created-set, and is
+  denied. Reproduced directly: A creates `y.output` and sleeps; B (started while A
+  runs) → `ERROR_ACCESS_DENIED`; A then exits cleanly and discards. This is **not**
+  a clean-vs-unclean-exit issue — discard is per-action-tree-exit regardless of exit
+  code, and within a single action the created-set is shared cross-process (A6), so
+  any process re-writes/reads fine. The gap is strictly **between** concurrent
+  actions sharing the one filesystem.
+* **How `local` "handles" it:** it doesn't — it just never enforces no-clobber.
+  Under `local` the undeclared write to cwd simply happens (last-writer-wins; two
+  truly-concurrent writers of the same unshared handle could even hit a Windows
+  sharing violation). It is latent **non-hermeticity** that Bazel tolerates because
+  `y.output`'s content is never consumed (only the declared `-o` output is).
+  `linux-sandbox` hides it by giving every action its own execroot copy, so the
+  fixed path never collides. Our in-place model turns that benign local race into a
+  hard denial.
+* **Contrast with vite `.vite-temp` (A7 write-model class):** vite's scratch is
+  created **fresh by its own action** and lives in that action's created-set, so it
+  is never a cross-action clobber — it passes. The distinguishing factor is a
+  *fixed-name file at a shared, persisted path that already exists on disk* vs. a
+  file each action creates for itself, **not** the path's location.
+* **Repro caveat:** for this build there was a **single** `goyacc` action/config, so
+  the concurrent writer was a transient race (an overlapping retry/other writer)
+  inherent to the shared in-place execroot; it could not be reproduced
+  deterministically in the post-build execroot state (a fresh create passes). The
+  *mechanism* is proven; the specific overlapping writer for that one action is not
+  pinned down.
+* **Fix directions (any one closes the class):**
+  * **(a) Narrow the no-clobber guard to declared inputs.** Deny clobbering only
+    paths that are declared `-r` **inputs**; treat any *other* pre-existing cone
+    path as clobberable scratch. Makes the shared in-place execroot behave like a
+    throwaway one for undeclared scratch while preserving the no-clobber guarantee
+    for real inputs.
+  * **(b) Pre-clean undeclared root scratch before the action** (belt-and-braces
+    with A7's discard-on-exit, covering leftovers from non-discarding paths such as
+    a `local` fallback).
+  * **(c) Detours-based per-action VFS / write-redirection** — virtually map all
+    undeclared writes into a per-action temp overlay so no two actions ever share a
+    real path. This is the bullet-proof, most linux-faithful option (it *is* a
+    throwaway execroot), and it generalizes A7/A8/B2 into one model. See the
+    virtual-execroot / VFS direction in `docs/design/detours-input-filtering.md` §4.
+* **Status:** Open. Tracked as a P1 gap below.
+
 ---
 
 ## Category B - over-exposure (Goal 2)
@@ -331,21 +402,28 @@ Ordered by impact on the two goals. **P0** = blocks real builds (Goal 1); **P1**
 P0 items — Goal-1 (nothing that reads under default linux-sandbox is wrongly
 denied) is met on every repo smoke-tested to date.
 
-1. **P1 - B2: junction-in-`-w` write escape.** Resolve write targets through
+1. **P1 - A8: concurrent actions collide on fixed-name undeclared scratch.** In the
+   shared in-place execroot, two parallel actions writing the same undeclared cwd
+   path (e.g. `goyacc`'s `y.output`) can hit an `ERROR_ACCESS_DENIED` no-clobber
+   denial. Narrow the no-clobber guard to deny only declared **inputs** (`-r`),
+   treating other pre-existing cone paths as clobberable scratch; or move to a
+   per-action write overlay (see §6 of `comparison/linux-sandbox-comparison.md`).
+   See A8.
+2. **P1 - B2: junction-in-`-w` write escape.** Resolve write targets through
    reparse points before allowing, or refuse writes that traverse an untrusted
    junction inside a writable scope. Applies in **all** modes (writes are always
-   confined, independent of the read mode), which is why it is the highest-value
-   open item. **Test:** `enforce_limitations` (reparse-escape case).
-2. **P2 - B3: 8.3 short-name / non-ASCII case `-b` bypass.** Canonicalize paths
+   confined, independent of the read mode). **Test:** `enforce_limitations`
+   (reparse-escape case).
+3. **P2 - B3: 8.3 short-name / non-ASCII case `-b` bypass.** Canonicalize paths
    (expand short names, normalize case-fold) before matching block entries.
    **Test:** `enforce_limitations` (short-name / non-ASCII cases).
-3. **P2 - B5: detour the raw NT attribute syscalls.** Add
+4. **P2 - B5: detour the raw NT attribute syscalls.** Add
    `Detoured_NtQueryAttributesFile` / `Detoured_NtQueryFullAttributesFile` so a
    direct `ntdll` caller cannot probe an undeclared file's existence past the
    masked Win32/`NtCreateFile` surface. Low-risk (leaks presence, not content;
    normal stat surfaces are already hooked). Mirror the `GetFileAttributesExW`
    denial masking and add a probe op + consistency-matrix row.
-4. **P2 - >260 raw-path child truncation.** Child-side (CRT truncates the raw
+5. **P2 - >260 raw-path child truncation.** Child-side (CRT truncates the raw
    path before the engine sees it); not an engine bug. Kept as a `Note-Exit`.
    Only actionable by encouraging long-path-aware manifests in child tools.
 

@@ -311,6 +311,26 @@ target. No path-name heuristics remain, and the handle-resolution fallback is
 strictly *no less* hermetic than the literal check: a link whose real target is
 undeclared still resolves to a non-granted path and stays denied.
 
+**3. Parallel actions share one execroot — undeclared fixed-name scratch can
+collide.** Bazel runs many actions concurrently (`--jobs`), and each sandboxed
+action is its own `BazelSandbox.exe` operating **in place in the same real
+execroot**. `linux-sandbox` gives every action its **own** staged tree, so two
+actions never share a physical path. Because we run in place, two concurrent
+actions that both write an **undeclared, fixed-name** file into their working
+directory (the execroot root) target the **same** path. The `--execroot-writable`
+no-clobber guard — allow if in *this action's* created-set, else deny if the file
+already exists on disk (protecting undeclared inputs) — then denies whichever
+action does not "own" the on-disk copy: while action A holds
+`<execroot>/y.output` (created, not yet exited/discarded), concurrent action B sees
+it on disk, absent from B's per-action created-set, and gets `ERROR_ACCESS_DENIED`.
+`local` never hits this only because it enforces no no-clobber at all (the
+undeclared write just races, last-writer-wins; the file's content is never
+consumed) — i.e. it is latent non-hermeticity that `linux-sandbox` masks with
+per-action trees and our in-place model surfaces as a hard denial. This was
+observed with `goyacc`'s `y.output` diagnostic side-file; see
+`sandbox-parity-findings.md` §A8 for the reproduction and fix directions, and §6
+below for the constructive (per-action VFS) fix that removes the class entirely.
+
 ## 5. Summary
 
 - **Core parity achieved.** Every flag Bazel's `WindowsSandboxUtil` emits
@@ -415,6 +435,16 @@ Tradeoffs / caveats:
   network toggles (`-n`/`-N`), and `-S` stats would still be enforced via Detours.
   A ProjFS-based sandbox is therefore a **hybrid** (ProjFS for the input view +
   Detours for writes/network), not a Detours replacement.
+- **Write side — a per-action write overlay.** The symmetric fix for the write
+  model (§4a consequence 3 / `sandbox-parity-findings.md` §A8) is to stop letting
+  undeclared writes land in the shared real execroot and instead **redirect them
+  into a per-action scratch overlay** (a temp directory unique to the action),
+  transparently via Detours path rewriting or the ProjFS provider. Each action then
+  gets a private write namespace — exactly like `linux-sandbox`'s throwaway
+  execroot — so two concurrent actions can never collide on a fixed-name file such
+  as `y.output`, and the no-clobber guard is no longer load-bearing for undeclared
+  scratch. This generalizes the discard-on-exit (§A7) and the cross-action-collision
+  (§A8) handling into one model and is the most linux-faithful option.
 - **Sharp edges.** ProjFS is optimized for read virtualization; write-back,
   deletes, and case-sensitivity need care.
 - **A separate architecture, not an incremental change.** This is a new sandbox
