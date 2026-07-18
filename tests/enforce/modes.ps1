@@ -197,7 +197,7 @@ foreach ($op in @('enumfind', 'enumfindnt', 'enumfindntdirect')) {
 # (the form Node/libuv use for readdir). A Win32Nt-typed directory path must resolve
 # child policies through the manifest tree just like a plain Win32 path: previously the
 # special-case device-path rules misclassified every subpath of a \\?\ directory as a
-# non-drive device and granted AllowAll, LEAKING undeclared entries (fusion tsc TS6053:
+# non-drive device and granted AllowAll, LEAKING undeclared entries (a tsc TS6053:
 # an undeclared src/test-utils.ts became visible to a \\?\ readdir but unreadable, so
 # tsc's glob matched a file it then couldn't open). Regression guard for that leak.
 $enQm = "\\?\$en"

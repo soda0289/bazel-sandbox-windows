@@ -173,8 +173,8 @@ function New-Workspace {
 }
 
 # True if the current token holds SeCreateSymbolicLinkPrivilege (the right that
-# lets a non-elevated process create symlinks). Mirrors the check in fusion's
-# localdev/check-windows-filesystem-support.ps1.
+# lets a non-elevated process create symlinks). Mirrors a typical local-dev
+# Windows filesystem-support check.
 function Test-SymlinkPrivilege {
     try {
         return [bool](& (Join-Path ([Environment]::SystemDirectory) 'whoami.exe') /priv 2>$null |

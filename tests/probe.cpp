@@ -147,7 +147,7 @@ int DoRename(const wchar_t* src, const wchar_t* dst) {
 
 // Rename via a handle (SetFileInformationByHandle + FILE_RENAME_INFO). This is
 // the path modern runtimes (Rust/uutils, .NET, MSVC) use instead of MoveFile,
-// and is exactly what fusion's coreutils-based actions exercise.
+// and is exactly what coreutils-based build actions exercise.
 int DoRenameByHandle(const wchar_t* src, const wchar_t* dst) {
     HANDLE h = CreateFileW(src, DELETE | SYNCHRONIZE, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);

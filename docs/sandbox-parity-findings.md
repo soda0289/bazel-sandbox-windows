@@ -140,7 +140,7 @@ forest.
 * **Status:** Fixed. Verified end to end: `:pkg` (and `:pkg_apf`) build cleanly
   under the `windows-sandbox` (Mode 2) with no ESM/EPERM error.
 * **Test:** `enforce_reparse` — declared-input-through-junction cases; the
-  end-to-end proof is the fusion `:pkg` build.
+  end-to-end proof is a real `ng_package` `:pkg` build.
 
 ### A5. `ng_package` packager: `exports is not defined in ES module scope` — FIXED (same root cause as A4)
 
@@ -223,7 +223,7 @@ forest.
 * **Symptom:** `goyacc` fails under `windows-sandbox` with
   `error creating y.output: open y.output: Access is denied.`
   (`ERROR_ACCESS_DENIED`), while the same action passes under
-  `--spawn_strategy=local`. Surfaced by the full-repo fusion `//...` differential
+  `--spawn_strategy=local`. Surfaced by a full-repo `//...` differential
   (`@@gazelle++go_deps+com_github_bazelbuild_buildtools//build:parse.y.go_yacc`).
   `goyacc` writes an **undeclared diagnostic side-file `y.output`** into its working
   directory — which is the **execroot root** — with a fixed name, in addition to
@@ -286,7 +286,10 @@ forest.
     undeclared writes into a per-action temp overlay so no two actions ever share a
     real path. This is the bullet-proof, most linux-faithful option (it *is* a
     throwaway execroot), and it generalizes A7/A8/B2 into one model. See the
-    virtual-execroot / VFS direction in `docs/design/detours-input-filtering.md` §4.
+    virtual-execroot / VFS direction in `docs/design/detours-input-filtering.md` §4,
+    and the full design study in
+    [`docs/design/detours-write-overlay-vfs.md`](design/detours-write-overlay-vfs.md)
+    (which recommends fix (a) now and this overlay only against a demonstrated need).
 * **Status:** Open. Tracked as a P1 gap below.
 
 ---

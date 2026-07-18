@@ -526,7 +526,7 @@ artifacts (see the re-enumeration caveat below).
 
 ### 12.2 Performance (the pivotal finding)
 
-Measured on the real `fusion` `node_modules` tree (88,954 manifest entries;
+Measured on a real large `node_modules` tree (88,954 manifest entries;
 12,513 dirs / 76,441 files; 5,928 pnpm reparse-point leaves projected as symlink
 leaves without recursion for cycle-safety). Per-file numbers are over an 8,000-
 file sample:

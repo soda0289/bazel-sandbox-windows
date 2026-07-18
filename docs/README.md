@@ -33,6 +33,14 @@ to build it. Use this folder for the deeper design, comparison, and testing docs
 * [`projfs-sandbox-modes.md`](design/projfs-sandbox-modes.md) — the *constructive*
   ProjFS VFS alternative and its sandbox modes. Deferred (slow/complex per the
   spike); kept as the reference for the constructive approach.
+* [`detours-write-overlay-vfs.md`](design/detours-write-overlay-vfs.md) — research
+  proposal for a Detours **write-redirection overlay** (per-action VFS) to close
+  A8 and generalize A7/B2: redirect only *undeclared writes* into a private
+  per-action backing store (temp/RAM disk) while reads stay on the real execroot.
+  Includes a design study of [usvfs](https://github.com/ModOrganizer2/usvfs)
+  (GPLv3 — study only), the write-only vs full-VFS analysis, the enumeration
+  filter→insert problem, and the shared-memory overlay map. Recommends the cheap
+  A8 no-clobber fix now; overlay as a later evolution; not the full read VFS.
 
 ## `comparison/` — parity reference points
 

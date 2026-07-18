@@ -241,7 +241,7 @@ default, with none of the ProjFS coalescing machinery.
 Running **in place** in the real execroot (§1) means the execroot is not a
 freshly-constructed forest of only-declared inputs — it is bazel's own on-disk
 tree, and `execroot/_main` is a **symlink into the real workspace source tree**
-(e.g. `execroot/_main/package.json` → `C:\...\fusion\package.json`). Bazel
+(e.g. `execroot/_main/package.json` → `C:\...\workspace\package.json`). Bazel
 materializes that symlink for the *whole* workspace, independent of any single
 action's declared inputs. On `linux-sandbox` the equivalent file is simply never
 symlinked into the throwaway forest, so it does not exist in the sandbox view. In
@@ -364,6 +364,12 @@ risk. Keep the virtual execroot documented as the eventual **true-hermetic (Mode
 3) evolution** if fail-closed isolation or staging elimination becomes a hard
 requirement; revisit then.
 
+> **Follow-up (write-only variant).** The *write* half of this idea — redirect only
+> undeclared writes into a per-action overlay while leaving reads on the real
+> execroot — sidesteps the fail-closed objections above (a missed hook leaks a real
+> file, it never makes an input unreachable) and closes A8/A7/B2. It is worked out
+> in [`detours-write-overlay-vfs.md`](detours-write-overlay-vfs.md).
+
 ---
 
 ## 5. Launcher / CLI surface
@@ -469,7 +475,8 @@ evolution if fail-closed isolation or staging elimination becomes required.
 Mechanisms A and B and the write model (§7) are **implemented and tested** — the
 full enforce suite is green, including the enumeration matrix across all three
 code paths. What follows is the build-out record and the parity bugs surfaced
-while validating against real repos (notably the fusion frontend build). It is a
+while validating against real repos (notably a large Angular/TypeScript monorepo
+frontend build). It is a
 *log* of what was built, not a forward-looking plan.
 
 The canonical per-finding ledger — each discrepancy with its root cause, current
@@ -513,7 +520,7 @@ detail (flag bits, hooked surfaces, buffer rewrites).
      even though `open()`/`read()` of the same path were masked to `NOT_FOUND`. That
      stat/read *inconsistency* broke parity with linux-sandbox, where an undeclared input
      is simply absent from the symlink forest so **both** stat and read observe `ENOENT`.
-     It surfaced as fusion `//frontends/care-coordination:static` **ViteBuild ENOENT**:
+     It surfaced in a real Vite build target as a **ViteBuild ENOENT**:
      vite's `tsconfck` does `fs.stat(tsconfig.json)` and, seeing `isFile=true`, tries to
      `readFile` it — which is masked → hard error; on Linux the same `stat` returns
      `ENOENT`, so tsconfig is treated as absent (optional) and the build succeeds.
@@ -594,7 +601,7 @@ detail (flag bits, hooked surfaces, buffer rewrites).
      prefix (Node/libuv's default for `readdir`) the type is `Win32Nt`, so the
      device-path branch classified every leaf as a "non-drive device" and granted
      `FileAccessPolicy_AllowAll` — leaking *all* undeclared entries through the filter
-     (they became visible **and** readable). This surfaced as fusion `tsc` **TS6053**:
+     (they became visible **and** readable). This surfaced as a `tsc` **TS6053**:
      an undeclared `src/test-utils.ts` was returned by a `\\?\` `readdir`, matched by
      the `src/**/*.ts` include glob, then failed to open (the read is still masked).
      Fix: `InitializeFromCursor` now evaluates the special-case rules against the
