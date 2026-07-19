@@ -663,6 +663,22 @@ them), and a deterministic FNV-1a `FileId` for the Id classes
 store (`mw-p3-createdir`), so overlay-only subdirs both avoid mutating the real
 execroot and appear (as directories) in the parent enumeration.
 
+**Descending into an overlay-only directory.** An overlay-only subdir must also
+enumerate its *own* children when a tool descends into it (recursive `dir /s`, or a
+tool that `mkdir`s a scratch dir then lists it). The NT path already handles this:
+`ResolveOverlayOpenPath` redirects the open of an overlay-only directory to the
+backing store, so `NtQueryDirectoryFile` lists the backing children directly. The
+Win32 `FindFirstFileEx` family needed an explicit fix (`mw-smoke-inner-subdir-enum`):
+its nested Nt open is shielded by the wrapper's `DetouredScope`, so a search of
+`objdir\*` where `objdir` is overlay-only would hit `Real_FindFirstFileExW` on the
+absent real path and return `PATH_NOT_FOUND`. `ReportFindFirstFileExWAccesses` now
+redirects the whole search into the backing directory when the directory component is
+overlay-only. Because all children of an overlay-only dir live in the backing store,
+`EnsureOverlayEnumSnapshot` suppresses the FindNextFile splice for such a handle
+(real dir absent ⇒ empty snapshot) so nothing is double-listed. Under `--filter-inputs`
+the backing children stay visible via the `WasCreatedInThisProcess` carve-out in
+`IsEnumChildVisible`.
+
 **Multi-call emit-once protocol (thread/process safety).** Synthetic entries are
 emitted **only after** the real enumeration reports exhaustion
 (`STATUS_NO_MORE_FILES` / `STATUS_NO_SUCH_FILE`), never interleaved into a
@@ -1263,6 +1279,61 @@ subtractive path is byte-for-byte unchanged.
      `writeenummeta`, `writeovsubdirenum`) across permissive + `--filter-inputs` — the
      fix also closed a real parity bug where the `--filter-inputs` `FindNextFileW` filter
      loop dropped the overlay tail on exhaustion. Overlay suite now **65 cases**.
+   - **[done] Kernel `CopyFile`/`CopyFileEx` redirect + real-tool e2e (`mw-copyfile`).**
+     `CopyFile(Ex)(W/A)`, `CopyFileTransactedW` all funnel through `DetoursCopyFileEx`,
+     which performs a *self-contained kernel copy* — it opens the source and writes the
+     destination itself, so the per-open overlay redirect (`CreateFile`/`NtCreateFile`)
+     never fires on either handle. Two bugs resulted: an overlay-only source (a file the
+     action wrote via the overlay) came back `NOT_FOUND`, and the **destination was
+     written straight to the real execroot**, leaking a scratch output onto disk. Fixed
+     by resolving both halves before the real call: the source through
+     `ResolveOverlayProbePath` (backing copy when one exists; a real in-cone source stays
+     put) and the destination through `ResolveOverlayRenameDest` (into the backing store,
+     parents ensured, virtual path marked created; a declared `-w` output stays on the
+     real path). Surfaced by uutils `cp` / Rust `std::fs::copy`, and also fixes native
+     `copy`, node `fs.copyFileSync`, and .NET `File.Copy`. Two further real-tool fixes
+     landed alongside: the overlay enum-snapshot builder was made last-error-neutral (a
+     leaked `ERROR_ENVVAR_NOT_FOUND`/203 was turning python `os.scandir`'s
+     end-of-enumeration into a hard `OSError`), and the exact `FindFirstFileEx` backing
+     probe now restores the *virtual* last component into `cFileName` (it was returning
+     the backing dir's name for the cone root, so the JVM class loader canonicalized
+     in-cone classpath entries into the backing store and failed class resolution).
+     Pinned by the opt-in **`tests/e2e/realtools.ps1`** matrix (native cmd, PowerShell
+     7 + 5.1, uutils + msys2 GNU coreutils, node, python, java/javac, dotnet, tar, xcopy,
+     curl — each does create/list/copy/read-back under `--write-overlay` and asserts a
+     clean real execroot).
+   - **[done] Composite-op + NT link-info redirect (`mw-composite-ops`).** Same
+     self-contained-kernel-op class as `mw-copyfile`, swept across the remaining hooks:
+     `CopyFile2` (Win8+; not backstopped by the `NtCreateFile` hook, so it needed its own
+     dynamically-attached hook mirroring `DetoursCopyFileEx`), `CreateHardLink(W/A)`,
+     `CreateSymbolicLink(W/A)`, `ReplaceFile(W/A)` (was a no-op stub — now resolves the
+     replaced target/replacement/backup into the backing store, copying up the real
+     original when the replaced target has no backing copy yet), and `RemoveDirectory(W/A)`
+     (was asymmetric with `CreateDirectoryW`: an overlay-only scratch dir could not be
+     removed and a real in-cone dir would be deleted from disk — now routed through
+     `ResolveOverlayDelete` like `DeleteFileW`). Crucially, the **NT-layer link path** is
+     the one real tools actually take: `cmd`'s `mklink /H` (and others) open the existing
+     file and issue `NtSetInformationFile(FileLinkInformation)` naming the new link,
+     bypassing the `CreateHardLinkW` export hook entirely. `HandleFileLinkInformation` now
+     rewrites that info buffer's link name to an NT-form backing path (`\??\` + backing,
+     `RootDirectory = NULL`) so the new link lands in the overlay, not the real execroot
+     (empirically confirmed: `mklink /H` no longer leaks). Symlinks whose target is itself
+     an overlay-only path cannot be transparently read back (the kernel resolves the
+     reparse target internally, past the detours), but the no-leak guarantee holds; the
+     symlink hook also had to move its overlay redirect ahead of the default
+     `IgnoreReparsePoints` early-return. Pinned by new probe ops (`writeovhardlink`,
+     `writeovsymlink`, `writeovreplace`, `writeovrmdir`) + `tests/enforce/overlay.ps1`
+     cases (including a real-in-cone `rmdir` denial) and `tests/e2e/realtools.ps1`
+     `mklink /H` and `mkdir`+`rmdir` cases.
+     - **Deliberately deferred (no leak observed, lower priority):**
+       `SetFileAttributes(W/A)` and `SetFileTime` are not overlay-hooked — empirically
+       `attrib +r` on a real in-cone input did **not** mutate the real file (no leak),
+       and `SetFileTime` on an overlay-only file may fail cosmetically; handle-based
+       `SetFileInformationByHandle`/`NtSetInformationFile(FileBasicInformation)` *is*
+       hooked, which is why tar's mtime-preserve works. `NtSetInformationFile(`
+       `FileRenameInformation)` is intercepted for policy but not yet overlay-redirected
+       (the Win32 `MoveFile*` hooks cover the common rename path; the NT rename path is a
+       known follow-up mirroring the `FileLinkInformation` fix above).
 6. **Backing store + discard (mostly in place).** The launcher already creates the
    per-invocation backing root and embeds it in the manifest; confirm delete-on-tree
    -exit, `-D` retain + path print, and cross-volume `MoveFile` from the overlay to a

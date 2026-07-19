@@ -229,6 +229,65 @@ Assert-True 'overlay rename: real src NOT created' `
 Assert-True 'overlay rename: real dest NOT created' `
     (-not (Test-Path (Join-Path $ws 'ovr_dst.txt')))
 
+# --- Composite-op redirect (mw-composite-ops) ---------------------------------
+# CreateHardLink / CreateSymbolicLink / ReplaceFile / RemoveDirectory are all
+# self-contained kernel ops (they open their own handles), so the per-open overlay
+# redirect never fires on their inner opens. Without an explicit redirect they leak
+# the new entry onto the real execroot (hardlink/symlink), mutate the real target
+# (ReplaceFile), or fail/delete the real dir (RemoveDirectory). These cases pin the
+# fix: the whole op resolves inside the backing store and the real execroot is
+# untouched.
+
+# Hardlink: link an overlay-only file to another undeclared path, read it back.
+$ws = New-Workspace
+Assert-Exit 'overlay hardlink: link of own overlay file succeeds, reads back' 0 `
+    (Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('writeovhardlink', $ws))
+Assert-True 'overlay hardlink: real target NOT created' `
+    (-not (Test-Path (Join-Path $ws 'ovhl_tgt.txt')))
+Assert-True 'overlay hardlink: real link NOT created' `
+    (-not (Test-Path (Join-Path $ws 'ovhl_lnk.txt')))
+
+# Symlink: needs SeCreateSymbolicLinkPrivilege / Developer Mode. When unavailable the
+# create fails with a privilege error (exit 20) and the case is skipped; when it works
+# the link resolves into the backing store and the real execroot stays clean.
+$ws = New-Workspace
+$slExit = Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('writeovsymlink', $ws)
+if ($slExit -eq 20) {
+    Skip-Case 'overlay symlink: link of own overlay file' 'symlink privilege unavailable'
+} else {
+    Assert-Exit 'overlay symlink: creating link at overlay location succeeds' 0 $slExit
+    Assert-True 'overlay symlink: real target NOT created' `
+        (-not (Test-Path (Join-Path $ws 'ovsl_tgt.txt')))
+    Assert-True 'overlay symlink: real link NOT created' `
+        (-not (Test-Path (Join-Path $ws 'ovsl_lnk.txt')))
+}
+
+# ReplaceFile (atomic save): replace an overlay-only target with an overlay-only
+# replacement, then read the target back.
+$ws = New-Workspace
+Assert-Exit 'overlay replace: atomic replace of own overlay file, reads back' 0 `
+    (Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('writeovreplace', $ws))
+Assert-True 'overlay replace: real replaced NOT created' `
+    (-not (Test-Path (Join-Path $ws 'ovrep_dst.txt')))
+Assert-True 'overlay replace: real replacement NOT created' `
+    (-not (Test-Path (Join-Path $ws 'ovrep_src.txt')))
+
+# RemoveDirectory: create an overlay-only dir (redirected into the backing store),
+# then remove it - must succeed (symmetric with CreateDirectoryW) with no real dir.
+$ws = New-Workspace
+Assert-Exit 'overlay rmdir: removing own overlay dir succeeds' 0 `
+    (Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('writeovrmdir', $ws))
+Assert-True 'overlay rmdir: real execroot subdir NOT created' `
+    (-not (Test-Path (Join-Path $ws 'ovrmdir')))
+
+# RemoveDirectory must NEVER delete a real in-cone directory from disk. sub/ is a real
+# seeded dir; removing it under the overlay is denied and the real dir survives.
+$ws = New-Workspace  # seeds sub/ (empty dir)
+Assert-Exit 'overlay rmdir: removing a real in-cone dir -> denied' 10 `
+    (Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('rmdir', (Join-Path $ws 'sub')))
+Assert-True 'overlay rmdir: real in-cone dir preserved' `
+    (Test-Path (Join-Path $ws 'sub'))
+
 # --- Metadata redirect (mw-metadata) ------------------------------------------
 # A process must be able to stat a file it wrote into the overlay: every path-based
 # metadata API (GetFileAttributes(Ex), GetFileInformationByName, exact FindFirstFileEx)
@@ -347,6 +406,23 @@ Assert-True 'overlay createdir: real execroot subdir NOT created' `
 $ws = New-Workspace
 Assert-Exit 'overlay createdir + filter: overlay-only subdir appears as a directory' 0 `
     (Invoke-SandboxRaw @('-W', $ws, '--filter-inputs', '--write-overlay') @('writeovsubdirenum', $ws))
+
+# --- Enum-classes: enumerating INSIDE an overlay-only subdirectory ------------
+# An overlay-only subdir (created via CreateDirectoryW into the backing store, absent
+# from the real disk) must not only appear in the parent listing but also enumerate
+# its own overlay children when a tool descends into it (recursive `dir /s`, or a
+# tool that mkdir's a scratch dir then lists it). The Win32 FindFirstFile family must
+# redirect the overlay-only directory search into the backing store; the direct
+# NtQueryDirectoryFile path redirects the open one layer down. writeovsubdirinnerenum
+# checks BOTH surfaces list the just-written file.
+$ws = New-Workspace
+Assert-Exit 'overlay createdir: enumerating INSIDE an overlay-only subdir lists its file' 0 `
+    (Invoke-SandboxRaw @('-W', $ws, '--write-overlay') @('writeovsubdirinnerenum', $ws))
+Assert-True 'overlay createdir: real execroot subdir NOT created (inner enum)' `
+    (-not (Test-Path (Join-Path $ws 'ovinner')))
+$ws = New-Workspace
+Assert-Exit 'overlay createdir + filter: enumerating INSIDE an overlay-only subdir lists its file' 0 `
+    (Invoke-SandboxRaw @('-W', $ws, '--filter-inputs', '--write-overlay') @('writeovsubdirinnerenum', $ws))
 
 # --- Enum-classes: wildcard filtering of spliced overlay entries (gap #1) -----
 # The overlay entries spliced into an enumeration must honor the caller's wildcard,

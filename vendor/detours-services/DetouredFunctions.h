@@ -208,6 +208,13 @@ BOOL WINAPI Detoured_CopyFileExA(
     __in      DWORD dwCopyFlags
     );
 
+// See CopyFile2 on MSDN: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfile2
+HRESULT WINAPI Detoured_CopyFile2(
+    __in      PCWSTR pwszExistingFileName,
+    __in      PCWSTR pwszNewFileName,
+    __in_opt  COPYFILE2_EXTENDED_PARAMETERS* pExtendedParameters
+    );
+
 // See CopyFileEx on MSDN: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfiletransactedw
 BOOL WINAPI Detoured_CopyFileTransactedW(
     __in      LPCWSTR lpExistingFileName,

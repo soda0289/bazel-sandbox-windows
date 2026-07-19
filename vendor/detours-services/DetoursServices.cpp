@@ -325,6 +325,7 @@ CopyFileW_t Real_CopyFileW;
 CopyFileA_t Real_CopyFileA;
 CopyFileExW_t Real_CopyFileExW;
 CopyFileExA_t Real_CopyFileExA;
+CopyFile2_t Real_CopyFile2;
 CopyFileTransactedW_t Real_CopyFileTransactedW;
 CopyFileTransactedA_t Real_CopyFileTransactedA;
 MoveFileW_t Real_MoveFileW;
@@ -1293,6 +1294,27 @@ static bool DllProcessAttach()
             ATTACH(CopyFileExA);
             ATTACH(CopyFileTransactedW);
             ATTACH(CopyFileTransactedA);
+
+            // CopyFile2 (Win8+) is a self-contained kernel copy that is NOT backstopped
+            // by the NtCreateFile hook, so a Model W action would leak its destination to
+            // the real execroot without an explicit hook. Resolve it dynamically (absent on
+            // older OSes; not guaranteed in the import lib). When present, hook it so the
+            // overlay redirect + policy apply as they do for CopyFileEx.
+            Real_CopyFile2 = (CopyFile2_t)::GetProcAddress(
+                ::GetModuleHandleW(L"kernelbase.dll"), "CopyFile2");
+            if (Real_CopyFile2 == nullptr)
+            {
+                Real_CopyFile2 = (CopyFile2_t)::GetProcAddress(
+                    ::GetModuleHandleW(L"kernel32.dll"), "CopyFile2");
+            }
+            if (Real_CopyFile2 != nullptr)
+            {
+                error = DetourAttach((PVOID*)&Real_CopyFile2, Detoured_CopyFile2);
+                if (error != ERROR_SUCCESS) {
+                    Dbg(L"Failed to attach to function: CopyFile2");
+                    failed = true;
+                }
+            }
             ATTACH(MoveFileW);
             ATTACH(MoveFileA);
             ATTACH(MoveFileExW);

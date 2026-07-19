@@ -612,6 +612,72 @@ int DoWriteOvStat(const wchar_t* base) {
     return DoFindFile(file.c_str());
 }
 
+// Forward declarations: these composite overlay ops call link/rmdir primitives that
+// are defined further down the file.
+int DoHardlink(const wchar_t* link, const wchar_t* target);
+int DoSymlink(const wchar_t* link, const wchar_t* target);
+int DoRmdir(const wchar_t* path);
+
+// Model W hardlink: write an overlay-only file, hardlink it to another undeclared
+// execroot path, then read back through the link. The whole op stays in the backing
+// store: the new link lands in the overlay (never the real execroot) and the
+// read-back succeeds. Regression-guards the CreateHardLink overlay redirect, which
+// previously leaked the link onto the real disk.
+int DoWriteOvHardlink(const wchar_t* base) {
+    std::wstring target = std::wstring(base) + L"\\ovhl_tgt.txt";
+    std::wstring link = std::wstring(base) + L"\\ovhl_lnk.txt";
+    int w = DoWrite(target.c_str());
+    if (w != kOk) return w;
+    int h = DoHardlink(link.c_str(), target.c_str());
+    if (h != kOk) return h;
+    return DoRead(link.c_str());
+}
+
+// Model W symlink: write an overlay-only target, then create a symlink at another
+// undeclared execroot path pointing to it. The link must resolve into the backing
+// store (never the real execroot). We do NOT read back through the link: a symlink
+// whose target is itself an overlay path cannot be transparently followed (the kernel
+// resolves the reparse target internally, bypassing the detours), so we only assert
+// creation succeeds; the enforce harness separately asserts no real-execroot leak.
+// Symlink creation needs SeCreateSymbolicLinkPrivilege / Developer Mode; when
+// unavailable CreateSymbolicLinkW fails with a privilege error (kOtherError), which
+// the harness treats as inconclusive (skip), not a failure.
+int DoWriteOvSymlink(const wchar_t* base) {
+    std::wstring target = std::wstring(base) + L"\\ovsl_tgt.txt";
+    std::wstring link = std::wstring(base) + L"\\ovsl_lnk.txt";
+    int w = DoWrite(target.c_str());
+    if (w != kOk) return w;
+    return DoSymlink(link.c_str(), target.c_str());  // kOtherError if unprivileged
+}
+
+// Model W ReplaceFile (atomic save): write an overlay-only "replaced" target and a
+// "replacement" file, ReplaceFile the target with the replacement, then read back the
+// replaced path. The replace resolves entirely inside the backing store, so the
+// read-back succeeds and the real execroot is never touched. Regression-guards the
+// ReplaceFile overlay redirect (was previously a no-op stub).
+int DoWriteOvReplace(const wchar_t* base) {
+    std::wstring replaced = std::wstring(base) + L"\\ovrep_dst.txt";
+    std::wstring replacement = std::wstring(base) + L"\\ovrep_src.txt";
+    int w = DoWrite(replaced.c_str());
+    if (w != kOk) return w;
+    w = DoWrite(replacement.c_str());
+    if (w != kOk) return w;
+    int r = DoReplace(replaced.c_str(), replacement.c_str());
+    if (r != kOk) return r;
+    return DoRead(replaced.c_str());
+}
+
+// Model W rmdir: create an overlay-only directory (CreateDirectoryW redirects it into
+// the backing store), then remove it. The rmdir must succeed against the backing
+// dir; without the RemoveDirectory overlay redirect the virtual path has no real
+// directory to remove and the call returns NOT_FOUND. Regression-guards the symmetry
+// with CreateDirectoryW.
+int DoWriteOvRmdir(const wchar_t* base) {
+    std::wstring dir = std::wstring(base) + L"\\ovrmdir";
+    if (!CreateDirectoryW(dir.c_str(), nullptr)) return MapLastError();
+    return DoRmdir(dir.c_str());
+}
+
 // Model W write-overlay, enumeration via GetFileInformationByHandleEx (class
 // FileIdBothDirectoryInfo): write a file into the overlay, then enumerate <dir>
 // through the GetFileInformationByHandleEx path (the .NET Directory / some-CRT
@@ -871,6 +937,25 @@ int DoWriteOvSubdirEnum(const wchar_t* base) {
     if (!found) return kNotFound;
     if (!isDir) return kOtherError;
     return kOk;
+}
+
+// Model W write-overlay: create an overlay-only SUBDIRECTORY (redirected into the
+// backing store, absent from the real disk), write a file INTO it, then enumerate
+// the CONTENTS OF THE SUBDIR via both the Win32 FindFirstFile family and a direct
+// ntdll!NtQueryDirectoryFile call, checking the just-written file is listed. This is
+// the recursive-descent case (a tool that mkdir's a scratch dir then lists it, or
+// `dir /s`): the parent enum shows the dir, and descending into it must reveal its
+// overlay children. kOk iff BOTH enumeration surfaces list the file; otherwise the
+// mapped error / kNotFound of the first surface that misses it.
+int DoWriteOvSubdirInnerEnum(const wchar_t* base) {
+    std::wstring sub = std::wstring(base) + L"\\ovinner";
+    if (!CreateDirectoryW(sub.c_str(), nullptr)) return MapLastError();
+    std::wstring file = sub + L"\\inside.txt";
+    int w = DoWrite(file.c_str());
+    if (w != kOk) return w;
+    int rc = DoEnumFind(sub.c_str(), L"inside.txt");        // Win32 FindFirstFile path
+    if (rc != kOk) return rc;
+    return DoEnumFindNtDirect(sub.c_str(), L"inside.txt");   // direct NtQueryDirectoryFile
 }
 
 int DoCopy(const wchar_t* src, const wchar_t* dst) {
@@ -1379,9 +1464,14 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (op == L"writeenummeta") return DoWriteEnumMeta(argv[2]);
     if (op == L"writeovsubdirenum") return DoWriteOvSubdirEnum(argv[2]);
+    if (op == L"writeovsubdirinnerenum") return DoWriteOvSubdirInnerEnum(argv[2]);
     if (op == L"writeovdelete") return DoWriteOvDelete(argv[2]);
     if (op == L"writeovrename") return DoWriteOvRename(argv[2]);
     if (op == L"writeovstat") return DoWriteOvStat(argv[2]);
+    if (op == L"writeovhardlink") return DoWriteOvHardlink(argv[2]);
+    if (op == L"writeovsymlink") return DoWriteOvSymlink(argv[2]);
+    if (op == L"writeovreplace") return DoWriteOvReplace(argv[2]);
+    if (op == L"writeovrmdir") return DoWriteOvRmdir(argv[2]);
     if (op == L"scratchtree") return DoScratchTree(argv[2]);
     if (op == L"copy") {
         if (argc < 4) {

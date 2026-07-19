@@ -177,6 +177,7 @@ extern CopyFileW_t Real_CopyFileW;
 extern CopyFileA_t Real_CopyFileA;
 extern CopyFileExW_t Real_CopyFileExW;
 extern CopyFileExA_t Real_CopyFileExA;
+extern CopyFile2_t Real_CopyFile2;
 extern CopyFileTransactedW_t Real_CopyFileTransactedW;
 extern CopyFileTransactedA_t Real_CopyFileTransactedA;
 extern MoveFileW_t Real_MoveFileW;

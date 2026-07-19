@@ -2006,6 +2006,11 @@ static bool TryGetFileNameFromFileInformation(
     return true;
 }
 
+// Forward declaration: the Model W overlay resolvers are defined later in this file
+// (near the CreateFile hooks), but the NT-layer link handler below needs to redirect
+// the new-link name into the backing store.
+static std::wstring ResolveOverlayRenameDest(PolicyResult& policyResult);
+
 NTSTATUS HandleFileRenameInformation(
     _In_  HANDLE                 FileHandle,
     _Out_ PIO_STATUS_BLOCK       IoStatusBlock,
@@ -2264,11 +2269,42 @@ NTSTATUS HandleFileLinkInformation(
 
     SetLastError(lastError);
 
+    // Model W (write-overlay): redirect the NEW hard-link NAME into the backing store
+    // so an in-cone hardlink never lands on the real execroot. This is the path cmd's
+    // `mklink /H` (and other tools) actually take - they open the existing file and set
+    // FileLinkInformation naming the new link, bypassing the CreateHardLinkW hook. The
+    // source is the already-open FileHandle (redirected at open time when it is an
+    // overlay file), so only the destination name needs rewriting. We rebuild the info
+    // buffer with RootDirectory=NULL and an NT-form backing path (\??\ + backing).
+    PVOID effInfo = FileInformation;
+    ULONG effLen = Length;
+    std::vector<BYTE> redirectedLinkBuf;
+    if (ShouldWriteOverlay())
+    {
+        std::wstring backing = ResolveOverlayRenameDest(targetPolicyResult);
+        if (!backing.empty())
+        {
+            std::wstring nt = (backing.rfind(L"\\\\?\\", 0) == 0)
+                ? (L"\\??\\" + backing.substr(4))
+                : backing;
+            const ULONG nameBytes = (ULONG)(nt.size() * sizeof(wchar_t));
+            const size_t hdr = FIELD_OFFSET(FILE_LINK_INFORMATION, FileName);
+            redirectedLinkBuf.resize(hdr + nameBytes);
+            memcpy(redirectedLinkBuf.data(), FileInformation, hdr);
+            auto* ni = (PFILE_LINK_INFORMATION)redirectedLinkBuf.data();
+            ni->RootDirectory = NULL;
+            ni->FileNameLength = nameBytes;
+            memcpy(ni->FileName, nt.c_str(), nameBytes);
+            effInfo = redirectedLinkBuf.data();
+            effLen = (ULONG)redirectedLinkBuf.size();
+        }
+    }
+
     NTSTATUS result = Real_ZwSetInformationFile(
         FileHandle,
         IoStatusBlock,
-        FileInformation,
-        Length,
+        effInfo,
+        effLen,
         FileInformationClass);
     lastError = GetLastError();
 
@@ -3280,6 +3316,46 @@ static std::wstring OverlayBackingPath(const std::wstring& virtualPath)
 
 // Create every ancestor directory of a backing FILE path (incremental prefixes).
 // Nested Win32 calls pass through to the real API (DetouredScope disables nested
+// Reverse of OverlayBackingPath: map a physical backing-store path back to the
+// virtual (real cone) path it stands in for, so a tool that canonicalizes an
+// overlay-redirected handle observes the LOGICAL execroot path, not the private
+// backing location. Without this the JVM class loader (which canonicalizes each
+// classpath entry via GetFinalPathNameByHandle and requires the resource's
+// canonical path to stay under the classpath dir's canonical path) rejects every
+// class read out of an overlay-redirected file - because the redirect copies the
+// file up into the backing store and the handle's final path leaks as
+// "\\?\<backingRoot>\...". Handles the primary source-root-strip mapping
+// (backingRoot + rest -> sourceRoot + rest); returns false (no rewrite) for any
+// path not under the backing root. `finalPath` may carry a \\?\ or \??\ prefix,
+// which is preserved on the rewritten result. Kill-switched with the overlay.
+static bool ReverseOverlayFinalPath(const std::wstring& finalPath, std::wstring& out)
+{
+    if (!ShouldWriteOverlay()
+        || g_bazelWriteOverlayRoot == nullptr || g_bazelWriteOverlayRoot[0] == L'\0'
+        || g_bazelOverlaySourceRoot == nullptr || g_bazelOverlaySourceRoot[0] == L'\0')
+    {
+        return false;
+    }
+
+    std::wstring prefix;
+    std::wstring body(finalPath);
+    if (body.compare(0, 4, L"\\\\?\\") == 0) { prefix = L"\\\\?\\"; body.erase(0, 4); }
+    else if (body.compare(0, 4, L"\\??\\") == 0) { prefix = L"\\??\\"; body.erase(0, 4); }
+
+    std::wstring root(g_bazelWriteOverlayRoot);
+    while (!root.empty() && root.back() == L'\\') root.pop_back();
+    const size_t n = root.size();
+    // The final path must be the backing root itself or a descendant of it, at a
+    // full path-segment boundary (so <root> does not match <root>Suffix).
+    if (body.size() < n || _wcsnicmp(body.c_str(), root.c_str(), n) != 0) return false;
+    if (body.size() != n && body[n] != L'\\') return false;
+
+    std::wstring src(g_bazelOverlaySourceRoot);
+    while (!src.empty() && src.back() == L'\\') src.pop_back();
+    out = prefix + src + body.substr(n);   // sourceRoot + "\rest" (or "" at exact match)
+    return true;
+}
+
 // detours on this thread), so no policy is re-applied. Failures are benign
 // (ERROR_ALREADY_EXISTS or a parent that a later step recreates).
 static void EnsureBackingParentDirs(const std::wstring& backingPath)
@@ -4406,18 +4482,48 @@ static BOOL WINAPI DetoursCopyFileEx(
     // Now we can safely try to copy, but note that the corresponding read of the source file may end up disallowed
     // (maybe the source file exists, as CopyFileW requires, but we only allow non-existence probes for this path).
 
+    // Model W (write-overlay): CopyFile(Ex) is a self-contained kernel copy - it
+    // opens the source and destination itself, so unlike the CreateFile paths the
+    // overlay redirect never gets a chance to fire on those inner opens. Left alone
+    // it would (a) fail to find a source that lives only in the backing store (a
+    // file this action wrote via the overlay - Rust std::fs::copy / uutils cp hit
+    // this), and (b) write the DESTINATION straight to the real execroot, leaking a
+    // scratch output onto disk. Swap in the overlay paths before the real call:
+    //   source -> backing copy when one exists (ResolveOverlayProbePath: overlay-only
+    //             or overlay-written source; a real in-cone source stays as-is);
+    //   dest   -> backing store when inside the redirect cone (ResolveOverlayRenameDest
+    //             ensures parent dirs + marks the virtual path created; a declared -w
+    //             output stays on the real path).
+    LPCWSTR effExistingFileName = lpExistingFileName;
+    LPCWSTR effNewFileName = lpNewFileName;
+    std::wstring overlayCopySource;
+    std::wstring overlayCopyDest;
+    if (ShouldWriteOverlay())
+    {
+        overlayCopySource = ResolveOverlayProbePath(sourcePolicyResult);
+        if (!overlayCopySource.empty())
+        {
+            effExistingFileName = overlayCopySource.c_str();
+        }
+        overlayCopyDest = ResolveOverlayRenameDest(destPolicyResult);
+        if (!overlayCopyDest.empty())
+        {
+            effNewFileName = overlayCopyDest.c_str();
+        }
+    }
+
     BOOL result = transacted
         ? Real_CopyFileTransactedW(
-            lpExistingFileName,
-            lpNewFileName,
+            effExistingFileName,
+            effNewFileName,
             lpProgressRoutine,
             lpData,
             pbCancel,
             dwCopyFlags,
             hTransaction)
         : Real_CopyFileExW(
-            lpExistingFileName,
-            lpNewFileName,
+            effExistingFileName,
+            effNewFileName,
             lpProgressRoutine,
             lpData,
             pbCancel,
@@ -4560,6 +4666,115 @@ BOOL WINAPI Detoured_CopyFileTransactedA(
         pbCancel,
         dwCopyFlags,
         hTransaction);
+}
+
+// CopyFile2 (Win8+) is a self-contained kernel copy like CopyFileEx, but unlike
+// CreateFile2 it is NOT backstopped by the NtCreateFile hook (its inner opens do not
+// route through our detours). Without an explicit hook a Model W action's CopyFile2
+// would leak the destination onto the real execroot and fail to find an overlay-only
+// source. Hook it and apply the same overlay redirect + read/write policy as
+// DetoursCopyFileEx. Returns HRESULT (S_OK on success).
+IMPLEMENTED(Detoured_CopyFile2)
+HRESULT WINAPI Detoured_CopyFile2(
+    _In_     PCWSTR                        pwszExistingFileName,
+    _In_     PCWSTR                        pwszNewFileName,
+    _In_opt_ COPYFILE2_EXTENDED_PARAMETERS* pExtendedParameters)
+{
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled() ||
+        IsNullOrEmptyW(pwszExistingFileName) ||
+        IsNullOrEmptyW(pwszNewFileName) ||
+        IsSpecialDeviceName(pwszExistingFileName) ||
+        IsSpecialDeviceName(pwszNewFileName))
+    {
+        return Real_CopyFile2(pwszExistingFileName, pwszNewFileName, pExtendedParameters);
+    }
+
+    FileOperationContext sourceOpContext = FileOperationContext::CreateForRead(L"CopyFile2_Source", pwszExistingFileName);
+    PolicyResult sourcePolicyResult;
+    if (!sourcePolicyResult.Initialize(pwszExistingFileName))
+    {
+        sourcePolicyResult.ReportIndeterminatePolicyAndSetLastError(sourceOpContext);
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    if (!AdjustOperationContextAndPolicyResultWithFullyResolvedPath(sourceOpContext, sourcePolicyResult, true))
+    {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    FileOperationContext destinationOpContext = FileOperationContext(
+        L"CopyFile2_Dest",
+        GENERIC_WRITE,
+        0,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        pwszNewFileName);
+    destinationOpContext.Correlate(sourceOpContext);
+
+    PolicyResult destPolicyResult;
+    if (!destPolicyResult.Initialize(pwszNewFileName))
+    {
+        destPolicyResult.ReportIndeterminatePolicyAndSetLastError(destinationOpContext);
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    if (!AdjustOperationContextAndPolicyResultWithFullyResolvedPath(destinationOpContext, destPolicyResult, true))
+    {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    AccessCheckResult destAccessCheck = destPolicyResult.CheckWriteAccess();
+    if (destAccessCheck.ShouldDenyAccess())
+    {
+        DWORD denyError = destAccessCheck.DenialError();
+        ReportIfNeeded(destAccessCheck, destinationOpContext, destPolicyResult, denyError);
+        destAccessCheck.SetLastErrorToDenialError();
+        return HRESULT_FROM_WIN32(denyError);
+    }
+
+    // Overlay redirect (see DetoursCopyFileEx / FIX #4 for the rationale).
+    PCWSTR effExistingFileName = pwszExistingFileName;
+    PCWSTR effNewFileName = pwszNewFileName;
+    std::wstring overlayCopySource;
+    std::wstring overlayCopyDest;
+    if (ShouldWriteOverlay())
+    {
+        overlayCopySource = ResolveOverlayProbePath(sourcePolicyResult);
+        if (!overlayCopySource.empty())
+        {
+            effExistingFileName = overlayCopySource.c_str();
+        }
+        overlayCopyDest = ResolveOverlayRenameDest(destPolicyResult);
+        if (!overlayCopyDest.empty())
+        {
+            effNewFileName = overlayCopyDest.c_str();
+        }
+    }
+
+    HRESULT hr = Real_CopyFile2(effExistingFileName, effNewFileName, pExtendedParameters);
+    DWORD error = SUCCEEDED(hr) ? ERROR_SUCCESS : (HRESULT_FACILITY(hr) == FACILITY_WIN32 ? HRESULT_CODE(hr) : (DWORD)hr);
+    DWORD reportedError = GetReportedError(SUCCEEDED(hr), error);
+
+    FileReadContext sourceReadContext;
+    sourceReadContext.OpenedDirectory = false;
+    sourceReadContext.InferExistenceFromError(reportedError);
+
+    sourceOpContext.OpenedFileOrDirectoryAttributes = GetAttributesForFileOrDirectory(false);
+    destinationOpContext.OpenedFileOrDirectoryAttributes = GetAttributesForFileOrDirectory(false);
+
+    AccessCheckResult sourceAccessCheck = sourcePolicyResult.CheckReadAccess(RequestedReadAccess::Read, sourceReadContext);
+
+    ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, reportedError, error);
+    ReportIfNeeded(destAccessCheck, destinationOpContext, destPolicyResult, reportedError, error);
+
+    if (sourceAccessCheck.ShouldDenyAccess())
+    {
+        DWORD denied = sourceAccessCheck.DenialError(ShouldDeniedReadsAsNotFound());
+        return HRESULT_FROM_WIN32(denied);
+    }
+
+    return hr;
 }
 
 // Below are detours of various Move functions. Looking up the actual
@@ -4996,19 +5211,131 @@ BOOL WINAPI Detoured_ReplaceFileW(
     __reserved LPVOID  lpExclude,
     __reserved LPVOID  lpReserved)
 {
-    auto path = CanonicalizedPath::Canonicalize(lpReplacedFileName);
-    PolicyResult policyResult;
-    policyResult.Initialize(lpReplacedFileName);
-    PathCache_Invalidate(path.GetPathStringWithoutTypePrefix(), false, policyResult);
+    {
+        DetouredScope scope;
+        if (scope.Detoured_IsDisabled()
+            || IsNullOrEmptyW(lpReplacedFileName)
+            || IsNullOrEmptyW(lpReplacementFileName)
+            || IsSpecialDeviceName(lpReplacedFileName)
+            || IsSpecialDeviceName(lpReplacementFileName))
+        {
+            return Real_ReplaceFileW(
+                lpReplacedFileName,
+                lpReplacementFileName,
+                lpBackupFileName,
+                dwReplaceFlags,
+                lpExclude,
+                lpReserved);
+        }
+    }
 
-    // TODO:implement detours logic
-    return Real_ReplaceFileW(
-        lpReplacedFileName,
-        lpReplacementFileName,
-        lpBackupFileName,
+    // ReplaceFile atomically overwrites lpReplacedFileName with the contents of
+    // lpReplacementFileName (preserving the replaced file's metadata), optionally
+    // saving the old contents to lpBackupFileName. It is the canonical atomic-save
+    // primitive, so getting it right matters for many editors/tools.
+    FileOperationContext replacedOpContext = FileOperationContext(
+        L"ReplaceFile_Replaced",
+        GENERIC_WRITE,
+        0,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        lpReplacedFileName);
+    PolicyResult replacedPolicy;
+    if (!replacedPolicy.Initialize(lpReplacedFileName))
+    {
+        replacedPolicy.ReportIndeterminatePolicyAndSetLastError(replacedOpContext);
+        return FALSE;
+    }
+
+    FileOperationContext replacementOpContext = FileOperationContext::CreateForRead(L"ReplaceFile_Replacement", lpReplacementFileName);
+    PolicyResult replacementPolicy;
+    if (!replacementPolicy.Initialize(lpReplacementFileName))
+    {
+        replacementPolicy.ReportIndeterminatePolicyAndSetLastError(replacementOpContext);
+        return FALSE;
+    }
+
+    const bool hasBackup = !IsNullOrEmptyW(lpBackupFileName);
+    PolicyResult backupPolicy;
+    if (hasBackup && !backupPolicy.Initialize(lpBackupFileName))
+    {
+        backupPolicy.ReportIndeterminatePolicyAndSetLastError(replacedOpContext);
+        return FALSE;
+    }
+
+    PathCache_Invalidate(replacedPolicy.GetCanonicalizedPath().GetPathStringWithoutTypePrefix(), false, replacedPolicy);
+
+    // The replaced target is the destructive write - ensure it is allowed before acting.
+    AccessCheckResult replacedAccess = replacedPolicy.CheckWriteAccess();
+    if (replacedAccess.ShouldDenyAccess())
+    {
+        DWORD denyError = replacedAccess.DenialError();
+        ReportIfNeeded(replacedAccess, replacedOpContext, replacedPolicy, denyError);
+        replacedAccess.SetLastErrorToDenialError();
+        return FALSE;
+    }
+
+    // Model W (write-overlay): ReplaceFile is a self-contained kernel op (opens its
+    // own handles), so the per-open overlay redirect never fires. Left alone it would
+    // mutate/leak the real execroot. Redirect every path into the backing store:
+    //   replacement (source, consumed) -> backing copy when one exists;
+    //   replaced (dest)                -> backing store; since ReplaceFile requires the
+    //                                     target to already exist, copy-up the real
+    //                                     original when we have no backing copy yet;
+    //   backup (dest)                  -> backing store.
+    LPCWSTR effReplaced = lpReplacedFileName;
+    LPCWSTR effReplacement = lpReplacementFileName;
+    LPCWSTR effBackup = lpBackupFileName;
+    std::wstring ovReplaced, ovReplacement, ovBackup;
+    if (ShouldWriteOverlay())
+    {
+        ovReplacement = ResolveOverlayProbePath(replacementPolicy);
+        if (!ovReplacement.empty())
+        {
+            effReplacement = ovReplacement.c_str();
+        }
+
+        if (ShouldRedirectToOverlay(replacedPolicy))
+        {
+            ovReplaced = ResolveOverlayRenameDest(replacedPolicy);
+            if (!ovReplaced.empty())
+            {
+                if (!OverlayPathExists(ovReplaced.c_str()))
+                {
+                    const std::wstring realWide = L"\\\\?\\" + std::wstring(replacedPolicy.GetTranslatedPathWithoutTypePrefix());
+                    if (OverlayPathExists(realWide.c_str()))
+                    {
+                        Real_CopyFileW(realWide.c_str(), ovReplaced.c_str(), FALSE);
+                    }
+                }
+                effReplaced = ovReplaced.c_str();
+            }
+        }
+
+        if (hasBackup && ShouldRedirectToOverlay(backupPolicy))
+        {
+            ovBackup = ResolveOverlayRenameDest(backupPolicy);
+            if (!ovBackup.empty())
+            {
+                effBackup = ovBackup.c_str();
+            }
+        }
+    }
+
+    BOOL result = Real_ReplaceFileW(
+        effReplaced,
+        effReplacement,
+        effBackup,
         dwReplaceFlags,
         lpExclude,
         lpReserved);
+    DWORD error = GetLastError();
+    DWORD reportedError = GetReportedError(result, error);
+
+    ReportIfNeeded(replacedAccess, replacedOpContext, replacedPolicy, reportedError, error);
+
+    SetLastError(error);
+    return result;
 }
 
 BOOL WINAPI Detoured_ReplaceFileA(
@@ -5299,9 +5626,33 @@ BOOL WINAPI Detoured_CreateHardLinkW(
     // (maybe the source file exists, as CreateHardLink requires, but we only allow non-existence probes).
     // Recall that failure of CreateHardLink is orthogonal to access-check failure.
 
+    // Model W (write-overlay): CreateHardLink is a self-contained kernel op, so the
+    // per-open overlay redirect never fires on its inner opens. Left alone the new
+    // link (dest) would be created on the REAL execroot (confirmed leak) and a source
+    // that lives only in the backing store would not be found. Swap in overlay paths:
+    //   source -> backing copy when one exists (ResolveOverlayProbePath);
+    //   dest   -> backing store inside the redirect cone (ResolveOverlayRenameDest).
+    LPCWSTR effExistingFileName = lpExistingFileName;
+    LPCWSTR effFileName = lpFileName;
+    std::wstring overlayLinkSource;
+    std::wstring overlayLinkDest;
+    if (ShouldWriteOverlay())
+    {
+        overlayLinkSource = ResolveOverlayProbePath(sourcePolicyResult);
+        if (!overlayLinkSource.empty())
+        {
+            effExistingFileName = overlayLinkSource.c_str();
+        }
+        overlayLinkDest = ResolveOverlayRenameDest(destPolicyResult);
+        if (!overlayLinkDest.empty())
+        {
+            effFileName = overlayLinkDest.c_str();
+        }
+    }
+
     BOOL result = Real_CreateHardLinkW(
-        lpFileName,
-        lpExistingFileName,
+        effFileName,
+        effExistingFileName,
         lpSecurityAttributes);
     DWORD error = GetLastError();
     DWORD reportedError = GetReportedError(result, error);
@@ -5364,7 +5715,6 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
 {
     DetouredScope scope;
     if (scope.Detoured_IsDisabled() ||
-        IgnoreReparsePoints() ||
         IsNullOrEmptyW(lpSymlinkFileName) ||
         IsNullOrEmptyW(lpTargetFileName) ||
         IsSpecialDeviceName(lpSymlinkFileName) ||
@@ -5372,6 +5722,31 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
     {
         return Real_CreateSymbolicLinkW(
             lpSymlinkFileName,
+            lpTargetFileName,
+            dwFlags);
+    }
+
+    if (IgnoreReparsePoints())
+    {
+        // Reparse-point policy is disabled (our default in-place config), so the full
+        // policy path below is skipped. Model W must STILL keep an in-cone symlink off
+        // the real execroot: redirect the link LOCATION into the backing store. The
+        // link TARGET string is stored verbatim in the reparse point (never opened
+        // here), so it is left unchanged. Note: a symlink whose target is itself an
+        // overlay-only path cannot be transparently read back - the kernel resolves the
+        // reparse target internally, bypassing the detours - but the essential
+        // guarantee (no real-execroot leak) holds.
+        std::wstring ovDest;
+        if (ShouldWriteOverlay())
+        {
+            PolicyResult pr;
+            if (pr.Initialize(lpSymlinkFileName))
+            {
+                ovDest = ResolveOverlayRenameDest(pr);
+            }
+        }
+        return Real_CreateSymbolicLinkW(
+            ovDest.empty() ? lpSymlinkFileName : ovDest.c_str(),
             lpTargetFileName,
             dwFlags);
     }
@@ -5423,8 +5798,18 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
         return FALSE;
     }
 
+    // Model W (write-overlay): redirect the symlink LOCATION (dest) into the backing
+    // store so creating an in-cone symlink never lands on the real execroot. The link
+    // TARGET string is stored verbatim in the reparse point (never opened here), so it
+    // is left unchanged. Mirrors the CreateHardLink dest redirect.
+    std::wstring overlaySymlinkDest;
+    if (ShouldWriteOverlay())
+    {
+        overlaySymlinkDest = ResolveOverlayRenameDest(policyResultSrc);
+    }
+
     BOOLEAN result = Real_CreateSymbolicLinkW(
-        lpSymlinkFileName,
+        overlaySymlinkDest.empty() ? lpSymlinkFileName : overlaySymlinkDest.c_str(),
         lpTargetFileName,
         dwFlags);
     error = GetLastError();
@@ -5931,6 +6316,18 @@ static void EnsureOverlayEnumSnapshot(const std::wstring& enumDir, HandleOverlay
     }
     std::vector<std::wstring>& names = overlay->OverlayEnumSnapshot;
     names.clear();
+    // Overlay-only directory: when the enumerated dir is ABSENT from the real disk,
+    // the handle was redirected to (and the OS just enumerated) the backing dir
+    // itself, so its children are already present in the OS result. Splicing them
+    // would double-list every entry. Mirrors the InsertOverlayEntries guard for the
+    // NT path; also covers the Win32 Find handle synthesized for an overlay-only
+    // directory search. (The gap #2 synthesize path always enumerates a REAL dir, so
+    // this guard never suppresses it.)
+    if (!enumDir.empty() && !OverlayIsDirectory(L"\\\\?\\" + enumDir))
+    {
+        overlay->OverlayEnumStarted = true;
+        return;
+    }
     if (!enumDir.empty())
     {
         ListBackingChildren(enumDir, names);
@@ -6430,12 +6827,64 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
         }
     }
 
+    // Model W (write-overlay): the enumerated DIRECTORY itself may be overlay-only -
+    // created via CreateDirectoryW into the backing store and absent from the real
+    // disk (e.g. a tool that mkdir's a scratch subdir then lists it, or a recursive
+    // walk such as `dir /s` descending into it). Real_FindFirstFileExW on the
+    // original path fails with PATH_NOT_FOUND, and the nested Nt open that would
+    // redirect (ResolveOverlayOpenPath's directory branch) is shielded by the
+    // DetouredScope of this Win32 wrapper. Redirect the whole search into the backing
+    // directory so its children enumerate directly. All children of an overlay-only
+    // dir live in the backing store, so no separate splice is needed - the
+    // EnsureOverlayEnumSnapshot guard suppresses the FindNextFile append for this
+    // handle to avoid double-listing. Only when we did not already redirect to an
+    // exact backing probe above.
+    std::wstring overlayDirSearch;
+    if (ShouldWriteOverlay() && findTarget == lpFileName)
+    {
+        const std::wstring dirVirtual(directoryPolicyResult.GetTranslatedPathWithoutTypePrefix());
+        if (!dirVirtual.empty())
+        {
+            const std::wstring realWideDir = L"\\\\?\\" + dirVirtual;
+            const std::wstring backingDir = OverlayBackingPath(dirVirtual);
+            if (!backingDir.empty() && !OverlayIsDirectory(realWideDir) && OverlayIsDirectory(backingDir))
+            {
+                wchar_t const* lastComp = canonicalizedPathIncludingFilter.GetLastComponent();
+                overlayDirSearch = JoinDirAndName(backingDir, (lastComp != nullptr && *lastComp) ? lastComp : L"*");
+                findTarget = overlayDirSearch.c_str();
+            }
+        }
+    }
+
     HANDLE searchHandle = Real_FindFirstFileExW(findTarget, fInfoLevelId, lpFindFileData, fSearchOp, lpSearchFilter, dwAdditionalFlags);
     error = GetLastError();
 
     // Note that we check success via the returned handle. This function does not call SetLastError(ERROR_SUCCESS) on success. We stash
     // and restore the error code anyway so as to not perturb things.
     bool success = searchHandle != INVALID_HANDLE_VALUE;
+
+    // Model W (write-overlay): when we redirected an exact (non-wildcard) probe to a
+    // backing-store path, Real_FindFirstFileExW filled cFileName with the BACKING
+    // entry's name, which differs from the virtual name wherever the mapping is not
+    // 1:1 - most importantly for the cone ROOT itself, whose virtual last component
+    // (e.g. the working-dir name) maps to the backing root's last component ("overlay").
+    // A tool that uses FindFirstFile to recover a path component's canonical CASE (the
+    // JVM class loader canonicalizes every classpath entry this way) would otherwise
+    // substitute the backing name and resolve in-cone paths to the backing location,
+    // breaking its "resource under classpath dir" check. Restore the caller's requested
+    // last component so the returned name reflects the VIRTUAL path. (For a normal
+    // overlay file the names already coincide, so this is a no-op there.)
+    if (success && !overlayFindProbe.empty() && findFileDataAtLevel != nullptr)
+    {
+        wchar_t const* virtualLast = canonicalizedPathIncludingFilter.GetLastComponent();
+        if (virtualLast != nullptr && *virtualLast)
+        {
+            wcsncpy_s(findFileDataAtLevel->cFileName,
+                      _countof(findFileDataAtLevel->cFileName),
+                      virtualLast, _TRUNCATE);
+            findFileDataAtLevel->cAlternateFileName[0] = L'\0';
+        }
+    }
 
     // ERROR_DIRECTORY means we had an lpFileName like X:\a\b where X:\a is a file rather than a directory.
     // In other words, this access is equivalent to a non-enumerating probe on a file X:\a.
@@ -6699,9 +7148,22 @@ static bool TryAppendOverlayFindDataW(HANDLE hFindFile, LPWIN32_FIND_DATAW lpFin
         return false;
     }
 
+    // Building this handle's overlay snapshot below calls Win32 APIs that clobber
+    // the thread's last error: ListBackingChildren (FindFirstFile), OverlayBackingPath
+    // (GetEnvironmentVariableW -> ERROR_ENVVAR_NOT_FOUND/203 when the overlay-dir var
+    // is absent), and GetFileAttributesW on not-yet-existing paths. Our callers invoke
+    // us only after the real enumeration ended with ERROR_NO_MORE_FILES and rely on
+    // that error SURVIVING when we produce no entry - a stat/scandir loop (e.g. CPython
+    // importlib's os.scandir) treats any error other than ERROR_NO_MORE_FILES as a hard
+    // failure and raised OSError [WinError 203] on every overlay-enabled run. Preserve
+    // and restore the incoming last error on the no-entry path so the caller's
+    // end-of-enumeration contract holds; only the produced-entry path sets SUCCESS.
+    const DWORD savedError = GetLastError();
+
     HandleOverlayRef ov = TryLookupHandleOverlay(hFindFile);
     if (ov == nullptr || ov->Type != HandleType::Find)
     {
+        SetLastError(savedError);
         return false;
     }
 
@@ -6712,6 +7174,7 @@ static bool TryAppendOverlayFindDataW(HANDLE hFindFile, LPWIN32_FIND_DATAW lpFin
         return true;
     }
 
+    SetLastError(savedError);
     return false;
 }
 
@@ -7649,7 +8112,35 @@ BOOL WINAPI Detoured_RemoveDirectoryW(_In_ LPCWSTR lpPathName)
 
     PathCache_Invalidate(policyResult.GetCanonicalizedPath().GetPathStringWithoutTypePrefix(), true, policyResult);
 
-    BOOL result = Real_RemoveDirectoryW(lpPathName);
+    // Model W (write-overlay): mirror DeleteFileW. Without this the real execroot
+    // would be mutated - an overlay-only scratch dir (created via CreateDirectoryW,
+    // which Model W redirects into the backing store) has no real directory, so
+    // Real_RemoveDirectoryW on the virtual path would fail NOT_FOUND; and a real
+    // in-cone directory would be deleted from disk. Redirect the removal to the
+    // backing store (overlay-only dir) or deny/no-op it (real in-cone dir) so the
+    // real tree is never touched. See §6.3.1 (symmetric with CreateDirectoryW).
+    LPCWSTR removeTarget = lpPathName;
+    std::wstring overlayBacking;
+    if (ShouldRedirectToOverlay(policyResult))
+    {
+        switch (ResolveOverlayDelete(policyResult, overlayBacking))
+        {
+        case OverlayDeleteAction::DenyAccess:
+            ReportIfNeeded(accessCheck, opContext, policyResult, ERROR_ACCESS_DENIED);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        case OverlayDeleteAction::NotFound:
+            SetLastError(ERROR_FILE_NOT_FOUND);
+            return FALSE;
+        case OverlayDeleteAction::RedirectToBacking:
+            removeTarget = overlayBacking.c_str();
+            break;
+        case OverlayDeleteAction::PassThrough:
+            break;
+        }
+    }
+
+    BOOL result = Real_RemoveDirectoryW(removeTarget);
     DWORD error = GetLastError();
     DWORD reportedError = GetReportedError(result, error);
 
@@ -7873,12 +8364,8 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
         return length;
     }
 
-    if (g_pManifestTranslatePathTuples->empty())
-    {
-        // No translation tuples, no need to do anything.
-        return length;
-    }
-
+    // Materialize the full final path (handling the buffer-too-small case where
+    // lpszFilePath was not filled and `length` is the required size).
     wstring nonNormalizedPath;
     if (length < cchFilePath)
     {
@@ -7898,6 +8385,23 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
         }
 
         nonNormalizedPath.assign(buffer.get());
+    }
+
+    // Model W (write-overlay): if this handle was redirected into the backing store,
+    // GetFinalPathNameByHandle honestly reports the physical backing path. Map it back
+    // to the virtual (real cone) path so canonicalization-based tools (e.g. the JVM's
+    // class loader) see the logical execroot location. Done before path-translation
+    // tuples and independent of them.
+    wstring overlayVirtual;
+    if (ReverseOverlayFinalPath(nonNormalizedPath, overlayVirtual))
+    {
+        nonNormalizedPath.swap(overlayVirtual);
+    }
+    else if (g_pManifestTranslatePathTuples->empty() && length < cchFilePath)
+    {
+        // No overlay rewrite and no translation tuples: the caller's buffer already
+        // holds the correct result, so return it unchanged (shipped fast path).
+        return length;
     }
 
     wstring normalizedPath;

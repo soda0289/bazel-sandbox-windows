@@ -170,6 +170,12 @@ typedef BOOL (WINAPI *CopyFileExA_t)(
     __in      DWORD dwCopyFlags
     );
 
+typedef HRESULT (WINAPI *CopyFile2_t)(
+    __in      PCWSTR pwszExistingFileName,
+    __in      PCWSTR pwszNewFileName,
+    __in_opt  COPYFILE2_EXTENDED_PARAMETERS* pExtendedParameters
+    );
+
 typedef BOOL(WINAPI* CopyFileTransactedW_t)(
     __in      LPCWSTR lpExistingFileName,
     __in      LPCWSTR lpNewFileName,
