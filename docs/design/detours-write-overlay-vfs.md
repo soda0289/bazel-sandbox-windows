@@ -797,7 +797,7 @@ behind `--write-overlay`:
   stable emit-once cursor. A test-only synthetic-name source
   (`BAZEL_SANDBOX_OVERLAY_TEST_NAMES`) is retained (unioned) only for
   isolated enumeration tests.
-* **Coverage.** `tests/enforce/overlay.ps1` grows to 20 cases (real write-redirect,
+* **Coverage.** `tests/enforce/overlay_test.cc` grows to 20 cases (real write-redirect,
   read-back, no-clobber of pre-existing bytes, index-sourced enumeration, a
   kill-switch control, cross-process enumeration, and a multi-call cursor stress)
   via new `writeenum` / `writespawnenum` / `writeenummulti` probe ops. Full suite
@@ -1209,7 +1209,7 @@ subtractive path is byte-for-byte unchanged.
 
 1. **[done] Vertical slice.** Write/read redirect into the per-action backing store
    + index-sourced enumeration insertion for the direct ntdll path; `CREATE_NEW`
-   merged-view + filter-aware parity (§5.6). Pinned by `tests/enforce/overlay.ps1`.
+   merged-view + filter-aware parity (§5.6). Pinned by `tests/enforce/overlay_test.cc`.
 2. **[done] Enumeration by merge (retires the index scan).** Replaced index-sourced
    insertion (`ListOverlayChildren` scanning the created-set SHM) with a **real +
    backing directory merge**: `InsertOverlayEntries` now sources overlay names from
@@ -1239,7 +1239,7 @@ subtractive path is byte-for-byte unchanged.
    (`FILE_FLAG_DELETE_ON_CLOSE`, `FileDispositionInfo`, `FileRenameInfo`) already
    redirect naturally: `DELETE` counts as write access (`WantsWriteAccess`), so the
    opening `CreateFile` is routed through `ResolveOverlayOpenPath` onto the backing
-   handle. Enforce cases in `tests/enforce/overlay.ps1` (`writeovdelete`,
+   handle. Enforce cases in `tests/enforce/overlay_test.cc` (`writeovdelete`,
    `writeovrename`, plus filter/permissive lower-file delete) — suite now 39 cases.
    Directory moves are deferred to phase 5 (pass through unchanged).
 5. **Broaden API coverage + redirect explicit `CreateDirectoryW`.**
@@ -1322,7 +1322,7 @@ subtractive path is byte-for-byte unchanged.
      reparse target internally, past the detours), but the no-leak guarantee holds; the
      symlink hook also had to move its overlay redirect ahead of the default
      `IgnoreReparsePoints` early-return. Pinned by new probe ops (`writeovhardlink`,
-     `writeovsymlink`, `writeovreplace`, `writeovrmdir`) + `tests/enforce/overlay.ps1`
+     `writeovsymlink`, `writeovreplace`, `writeovrmdir`) + `tests/enforce/overlay_test.cc`
      cases (including a real-in-cone `rmdir` denial) and `tests/e2e/realtools.ps1`
      `mklink /H` and `mkdir`+`rmdir` cases.
      - **Deliberately deferred (no leak observed, lower priority):**

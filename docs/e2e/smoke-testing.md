@@ -354,7 +354,7 @@ branch (it self-guards on `IsReadOnlyAccess()`, so it is a no-op on writes). A
 follow-up **consistency review of every read/probe hook** found the same masking gap
 in the `CopyFileW` and `CreateHardLinkW` *source*-read paths and fixed those too.
 Regression cover: a new `statex` probe op plus a **data-driven consistency matrix**
-in `tests/enforce/modes.ps1` that asserts every read/probe variant
+in `tests/enforce/modes_test.cc` that asserts every read/probe variant
 (`read`/`ntread`/`reada`/`stat`/`stata`/`statex`/`statbyname`/`findfile` +
 `copy`/`hardlink` source) masks identically across undeclared / absent /
 absent-nested / declared states — so any future per-hook divergence is caught

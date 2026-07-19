@@ -60,3 +60,12 @@ to build it. Use this folder for the deeper design, comparison, and testing docs
   `windows-sandbox`, plus the results tables (regressions + timing).
 * [`rules_js-windows-runfiles.md`](e2e/rules_js-windows-runfiles.md) — notes on
   the rules_js / runfiles behavior on Windows.
+
+## `testing/` — test-suite architecture
+
+* [`test-suite-migration.md`](testing/test-suite-migration.md) — proposal +
+  migration plan for restructuring the tests: keep `probe.cpp` as the sandboxed
+  child, port the PowerShell **enforce** suite to **GoogleTest** (`cc_test`, direct
+  `CreateProcessW`, fixtures, parametrized cases), and split the **e2e** real-tool
+  matrix into a hermetic lane (node/python/java/dotnet/uutils/pwsh7 via Bazel
+  rules + `http_archive`) and an opt-in native-OS lane. Not started.

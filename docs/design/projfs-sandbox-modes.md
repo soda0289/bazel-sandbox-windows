@@ -391,8 +391,8 @@ Parity is the whole point, so it must be *tested*, not asserted.
   undeclared-output write, an out-of-execroot write, an out-of-execroot read),
   record the outcome under: Linux default, Linux hermetic, Windows Mode 1/2/3.
   Each Windows mode's column must equal its Linux analog's column.
-* **Extend the probe suite.** Add a `enforce/projfs.ps1` (and mode-crossed cases
-  in `enforce/modes.ps1`) that runs `probe.exe` through the ProjFS execroot:
+* **Extend the probe suite.** Add a `enforce/projfs_test.cc` (and mode-crossed cases
+  in `enforce/modes_test.cc`) that runs `probe.exe` through the ProjFS execroot:
   undeclared-input read → absent (Mode 1/2/3); out-of-execroot write → denied
   (Mode 2/3); out-of-execroot read → allowed (Mode 2) / denied (Mode 3);
   declared-input read via virtual symlink → allowed with **no hydration** (assert

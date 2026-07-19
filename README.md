@@ -386,11 +386,12 @@ disallowed access was denied) or when the timeout fires.
 bazel test //...
 ```
 
-The suite is one unit test plus seven end-to-end categories, each a separate
-Bazel test target (`//tests:manifest_unit` and `//tests:enforce_<category>`) so
-a failure names the exact area. The enforcement tests are `rules_powershell`
-`pwsh_test` targets that carry the launcher/probe binaries as runfiles; the
-shared harness resolves their runfiles rlocationpaths (`tests/lib/harness.ps1`).
+The suite is one unit test plus the end-to-end categories, each a separate
+Bazel test target (`//tests:manifest_unit` and `//tests:enforce_<category>_cc`)
+so a failure names the exact area. The enforcement tests are **GoogleTest**
+`cc_test` targets that carry the launcher/probe binaries as runfiles; a shared
+C++ fixture (`tests/enforce/enforce_harness.{h,cc}`) resolves their runfiles
+rlocationpaths and spawns the launcher directly via `CreateProcessW`.
 Tests run serially (`--local_test_jobs=1` in `.bazelrc`): each spawns many real
 sandboxed child processes, and running the categories in parallel thrashes
 process creation enough to blow the timeouts.
@@ -403,10 +404,11 @@ The categories:
   and checks the blob header, determinism, and that scopes/flags affect output.
 * **`enforce.<category>`** — end-to-end tests that run the real launcher against
   a small `probe` helper (`tests/probe.cpp`, exit code `0` = allowed, `10` =
-  denied, `20` = other error). Each category is one script under
-  `tests/enforce/`, and they share `tests/lib/harness.ps1` (setup/teardown,
-  assertions, per-case named results — no test numbering, zero external
-  dependencies, no Pester). The categories:
+  denied, `20` = other error). Each category is one `*_test.cc` under
+  `tests/enforce/`, and they share the C++ fixture
+  `tests/enforce/enforce_harness.{h,cc}` (per-test setup/teardown, seeded
+  workspaces, `RunProbe`/`RunProbeRaw`, assertions via GoogleTest — one
+  `TEST_F` per case). The categories:
   * **`scopes`** — the read-only root, blocked working directory, and
     `-r`/`-w`/`-b` scopes (including the `-w` + `-b` override and sibling
     isolation); a **read-only `-r` scope is truly read-only** (it permits reads
@@ -570,13 +572,14 @@ src/
   detours_compat.h        no-op DetourInit() shim for upstream Detours
   dll_export_anchor.cpp   ensures DetoursServices.dll has an export for injection
 tests/
-  BUILD.bazel             test targets: manifest_unit, probe(_lpa), pwsh_test's
+  BUILD.bazel             test targets: manifest_unit, probe(_lpa), enforce cc_test's
   manifest_builder_test.cpp unit tests for the manifest serializer + path hash
   probe.cpp               file-op / connect / native / stdio helper for the tests
   probe_lpa.manifest      longPathAware manifest for the long-path-aware probe build
   stdio_launcher.cpp      reproduces Bazel's std-handle setup (regression harness)
-  lib/harness.ps1         shared PowerShell harness (setup/teardown, assertions)
-  enforce/*.ps1           per-category allow/deny scenarios (one test each)
+  enforce/
+    enforce_harness.{h,cc}  shared GoogleTest fixture (setup/teardown, RunProbe, asserts)
+    *_test.cc               per-category allow/deny scenarios (one TEST_F each)
 vendor/
   BUILD.bazel             //vendor:detours_services cc_library (the vendored engine)
   detours-services/       vendored BuildXL DetoursServices engine (+ small hooks

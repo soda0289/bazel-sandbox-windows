@@ -1,5 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
-load("@rules_powershell//powershell:defs.bzl", "pwsh_library", "pwsh_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -65,20 +64,92 @@ cc_test(
 )
 
 # ---------------------------------------------------------------------------
-# Integration tests: one PowerShell script per category, each dot-sourcing the
-# shared harness. The launcher/probe binaries are carried as runfiles and their
-# rlocationpaths are passed in; the harness resolves them (see tests/lib/harness.ps1).
-# BazelSandbox carries DetoursServices.dll in its own runfiles, co-located with
-# the exe so the launcher finds the hook DLL next to itself.
+# GoogleTest enforcement suite (pilot). Ports tests/enforce/*.ps1 to cc_test:
+# each case spawns the real launcher (BazelSandbox -- probe <op>) via
+# CreateProcessW and asserts the child's exit code. The launcher + probe
+# binaries ride as `data`; their runfiles rlocationpaths are handed to the test
+# via env vars (resolved through the rules_cc runfiles library). BazelSandbox
+# carries DetoursServices.dll in its runfiles co-located with the exe.
 # ---------------------------------------------------------------------------
-pwsh_library(
-    name = "harness",
-    srcs = ["lib/harness.ps1"],
+cc_library(
+    name = "enforce_harness_cc",
+    testonly = True,
+    srcs = ["enforce/enforce_harness.cc"],
+    hdrs = ["enforce/enforce_harness.h"],
+    linkopts = ["advapi32.lib"],
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@googletest//:gtest",
+        "@rules_cc//cc/runfiles",
+    ],
 )
 
+_ENFORCE_ENV = {
+    "ENFORCE_SANDBOX": "$(rlocationpath //:BazelSandbox)",
+    "ENFORCE_PROBE": "$(rlocationpath :probe)",
+    "ENFORCE_PROBE_LPA": "$(rlocationpath :probe_lpa)",
+    "ENFORCE_STDIO": "$(rlocationpath :stdio_launcher)",
+}
+
+_ENFORCE_DATA = [
+    ":probe",
+    ":probe_lpa",
+    ":stdio_launcher",
+    "//:BazelSandbox",
+]
+
+# The sandboxed children need the standard Windows variables to initialize and
+# be found on PATH under `bazel test`'s scrubbed environment.
+_ENFORCE_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+cc_test(
+    name = "enforce_filesystem_cc",
+    size = "small",
+    srcs = ["enforce/filesystem_test.cc"],
+    data = _ENFORCE_DATA,
+    env = _ENFORCE_ENV,
+    env_inherit = _ENFORCE_ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        ":enforce_harness_cc",
+        "@googletest//:gtest_main",
+    ],
+)
+
+
+# ---------------------------------------------------------------------------
+# GoogleTest enforcement suite: one cc_test per category, ported 1:1 from the
+# former tests/enforce/*.ps1 scripts. Each case spawns the real launcher via
+# CreateProcessW and asserts the sandboxed probe's exit code; the launcher +
+# probe binaries ride as `data` and are resolved through the rules_cc runfiles
+# library from the env-var rlocationpaths (see enforce_harness.cc).
+# ---------------------------------------------------------------------------
 _ENFORCE_CATEGORIES = [
     "scopes",
-    "filesystem",
     "network",
     "launcher",
     "pathforms",
@@ -89,54 +160,18 @@ _ENFORCE_CATEGORIES = [
 ]
 
 [
-    pwsh_test(
-        name = "enforce_{}".format(category),
+    cc_test(
+        name = "enforce_{}_cc".format(category),
         size = "small",
-        srcs = ["enforce/{}.ps1".format(category)],
-        args = [
-            "-Sandbox",
-            "$(rlocationpath //:BazelSandbox)",
-            "-Probe",
-            "$(rlocationpath :probe)",
-            "-StdioLauncher",
-            "$(rlocationpath :stdio_launcher)",
+        srcs = ["enforce/{}_test.cc".format(category)],
+        data = _ENFORCE_DATA,
+        env = _ENFORCE_ENV,
+        env_inherit = _ENFORCE_ENV_INHERIT,
+        local_defines = _HELPER_DEFINES,
+        deps = [
+            ":enforce_harness_cc",
+            "@googletest//:gtest_main",
         ],
-        data = [
-            ":probe",
-            ":probe_lpa",
-            ":stdio_launcher",
-            "//:BazelSandbox",
-        ],
-        # `bazel test` runs with a scrubbed environment. The sandboxed children
-        # (probe.exe, cmd.exe, whoami.exe) and the scripts' bare-name tool
-        # invocations need the standard Windows variables to initialize and be
-        # found on PATH; without them children hang or fail to launch.
-        env_inherit = [
-            "ALLUSERSPROFILE",
-            "APPDATA",
-            "CommonProgramFiles",
-            "ComSpec",
-            "HOMEDRIVE",
-            "HOMEPATH",
-            "LOCALAPPDATA",
-            "NUMBER_OF_PROCESSORS",
-            "OS",
-            "PATH",
-            "PATHEXT",
-            "PROCESSOR_ARCHITECTURE",
-            "ProgramData",
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "ProgramW6432",
-            "PUBLIC",
-            "SystemDrive",
-            "SystemRoot",
-            "TEMP",
-            "TMP",
-            "USERPROFILE",
-            "WINDIR",
-        ],
-        deps = [":harness"],
     )
     for category in _ENFORCE_CATEGORIES
 ]

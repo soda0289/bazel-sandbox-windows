@@ -508,7 +508,7 @@ detail (flag bits, hooked surfaces, buffer rewrites).
      (they never hard-deny).
    - Launcher: `--filter-inputs` sets both extra flags and implies `-H`.
    - Probe tool gained exit code `11` (not-found) distinct from `10` (denied);
-     `tests/enforce/modes.ps1` asserts masking for `read`/`ntread`/`stat`/`findfile`,
+     `tests/enforce/modes_test.cc` asserts masking for `read`/`ntread`/`stat`/`findfile`,
      that a declared `-r` still reads, and that undeclared **writes** still return `10`.
    - **`GetFileInformationByName` stat-masking fix.** Modern libuv (Node 18+, here
      Node 24 / libuv 1.51) implements `fs.stat`/`fs.lstat` via the handle-less
@@ -586,7 +586,7 @@ detail (flag bits, hooked surfaces, buffer rewrites).
        variants) are filtered directly in the wrapper, mapping the handle info class
        to the equivalent Nt layout. This covers the .NET `Directory` APIs and some
        CRTs.
-   - Tests: `tests/enforce/modes.ps1` runs the full matrix (declared file visible,
+   - Tests: `tests/enforce/modes_test.cc` runs the full matrix (declared file visible,
      undeclared file hidden, ancestor dir visible, undeclared dir hidden) across all
      three probe ops: `enumfind` (Win32), `enumfindnt`
      (`GetFileInformationByHandleEx`), and `enumfindntdirect` (direct

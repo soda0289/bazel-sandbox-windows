@@ -374,7 +374,7 @@ if behavior changes.
   `GetFileInformationByName`, `FindFirstFileEx`, and the `CreateFile`/`NtCreateFile`
   read-open paths — so an undeclared file reports `NOT_FOUND` rather than
   `ACCESS_DENIED` (matching linux-sandbox; see the consistency matrix in
-  `tests/enforce/modes.ps1`). However the two *handle-less* NT attribute syscalls,
+  `tests/enforce/modes_test.cc`). However the two *handle-less* NT attribute syscalls,
   `NtQueryAttributesFile` and `NtQueryFullAttributesFile` (`ntdll`), are **not
   hooked**. A process that calls them directly — bypassing the Win32 and
   `NtCreateFile` layers — can therefore learn the existence/attributes of an
@@ -393,7 +393,7 @@ if behavior changes.
   `STATUS_OBJECT_NAME_NOT_FOUND` when the read denial should be masked). This is
   the same divergence class as the `GetFileAttributesEx` masking regression — a
   hook-variant that was never exercised — so any implementation should also gain a
-  probe op + a row in the `tests/enforce/modes.ps1` consistency matrix.
+  probe op + a row in the `tests/enforce/modes_test.cc` consistency matrix.
 * **Test:** none yet (no probe op exercises the raw `Nt*` attribute syscalls).
 
 ---
@@ -479,9 +479,10 @@ Recently resolved (moved off this list):
 
 ## Where the tests live
 
-* `tests/enforce/*.ps1` — per-category probe-driven suites
+* `tests/enforce/*_test.cc` — per-category probe-driven GoogleTest suites
   (`scopes`, `filesystem`, `network`, `launcher`, `pathforms`, `reparse`,
-  `limitations`), each dot-sourcing `tests/lib/harness.ps1`.
+  `limitations`, `modes`, `overlay`), each using the shared
+  `tests/enforce/enforce_harness.{h,cc}` fixture.
 * `tests/probe.cpp` — the probe helper; exit codes: `0`=allowed, `10`=denied,
   `20`=other error, `30`=usage.
 * Run: `bazel test //tests:all --test_output=errors` (prepend
