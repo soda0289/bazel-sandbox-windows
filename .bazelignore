@@ -1,0 +1,5 @@
+# Per-scenario end-to-end test modules are self-contained Bazel modules
+# (module-per-scenario). They consume this repo via local_path_override and are
+# run explicitly from their own directory (e.g. `cd tests/e2e/coreutils && bazel
+# test //...`); the root workspace must not descend into them.
+tests/e2e/coreutils

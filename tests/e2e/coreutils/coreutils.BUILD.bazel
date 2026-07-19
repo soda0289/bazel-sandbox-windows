@@ -1,0 +1,6 @@
+# BUILD file overlaid onto the uutils/coreutils Windows release archive by the
+# http_archive in MODULE.bazel. The archive ships one .exe per utility at its
+# root (after strip_prefix), e.g. cp.exe, ls.exe, cat.exe, mkdir.exe.
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob(["*.exe"]))

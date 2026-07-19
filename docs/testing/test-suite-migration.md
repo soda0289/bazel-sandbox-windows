@@ -5,7 +5,9 @@ GoogleTest `cc_test` targets (`//tests:enforce_<category>_cc`) and the PowerShel
 enforce suite has been retired — `tests/lib/harness.ps1` and every
 `tests/enforce/*.ps1` are deleted, and the `rules_powershell` `pwsh_test`/
 `pwsh_library` wiring for enforcement is removed from `tests/BUILD.bazel`. The
-e2e real-tool suites (`tests/e2e/*.ps1`) remain PowerShell for now.
+e2e real-tool suites (`tests/e2e/*.ps1`) remain PowerShell for the non-hermetic
+native-OS lane; a **hermetic gtest lane** has been started as one Bazel module
+per scenario under `tests/e2e/<tool>/` (first: `tests/e2e/coreutils`) — see §4.
 
 ## 0. Result
 
@@ -274,8 +276,7 @@ The real-tool matrix splits cleanly into "can be hermetic" vs "must stay OS-nati
 Two lanes:
 
 1. **Hermetic e2e lane** — node / python / java / dotnet / uutils / pwsh7, all
-   Bazel-downloaded. This half can finally join `bazel test` (or a dedicated
-   `//tests:e2e_hermetic` target) and run in CI without machine setup.
+   Bazel-downloaded. This half can finally run in CI without machine setup.
 2. **Native-OS lane** — cmd / PowerShell 5.1 / mklink / xcopy / System32 curl /
    msys2 — discovery-based, opt-in, skipped when absent (today's `realtools.ps1`
    model). These are the highest-signal cases (they caught the `mklink /H`
@@ -283,6 +284,26 @@ Two lanes:
    un-hermetic real Windows tools.
 
 `smoke.ps1` (real external repos) stays exactly as-is — non-hermetic by nature.
+
+> **Status (hermetic lane started).** The hermetic lane is implemented as
+> **one Bazel module per scenario** under `tests/e2e/<tool>/` (the
+> module-per-scenario pattern `rules_js` / `rules_python` / Bazel use for their
+> `e2e/` dirs) rather than as extra targets in the root module. Rationale: each
+> scenario pins its own tool toolchain/version independently, the heavy tool
+> deps stay out of the root `MODULE.bazel`, and `bazel test //tests:all` stays
+> fast (the root `.bazelignore` excludes the scenario dirs). Each scenario
+> consumes the sandbox + shared harness from this repo via `local_path_override`
+> and drives a gtest `cc_test` through `tests/e2e/e2e_harness.{h,cc}` (runs one
+> `--write-overlay` invocation, captures stdout, asserts read-after-write +
+> enumeration splice + unchanged execroot). **Landed:** `tests/e2e/coreutils`
+> (uutils coreutils via `http_archive`, `cp`/`ls`/`cat`/`mkdir`). Next candidate:
+> a `rules_js` module that materializes `node_modules` (thousands of overlay
+> writes) as an overlay perf + correctness stress test. Running a scenario:
+> `cd tests/e2e/<tool> && bazel test //...`. See `tests/e2e/README.md`.
+>
+> This also fixed a cross-module portability bug: `//:BazelSandbox` hardcoded
+> `/MANIFESTINPUT:src/BazelSandbox.manifest` (only valid as the main workspace);
+> now `$(execpath …)` so it links when consumed as `@bazel_sandbox_windows+`.
 
 ## 5. Recommended order
 

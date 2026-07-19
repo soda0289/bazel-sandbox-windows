@@ -1,0 +1,41 @@
+"""End-to-end write-overlay VFS tests against hermetic uutils/coreutils.
+
+This is its own Bazel module (module-per-scenario pattern): it pins its own
+tool toolchain independently of the root repo and is excluded from the root
+workspace via the root .bazelignore. It consumes the sandbox under test from
+this repo via local_path_override.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_coreutils",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# The system under test: BazelSandbox.exe + DetoursServices.dll + the shared
+# e2e harness, consumed from this repo.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# Hermetic tool under test: Microsoft/uutils coreutils, prebuilt Windows MSVC
+# release from GitHub (ships one .exe per utility). Bump version + sha256 to
+# refresh.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "uutils_coreutils",
+    build_file = "//:coreutils.BUILD.bazel",
+    sha256 = "77b4cad20258b654a75c4cde7f4f7033ea896a71a700f68072ee44599c1d76d4",
+    strip_prefix = "coreutils-0.9.0-x86_64-pc-windows-msvc",
+    urls = ["https://github.com/uutils/coreutils/releases/download/0.9.0/coreutils-0.9.0-x86_64-pc-windows-msvc.zip"],
+)

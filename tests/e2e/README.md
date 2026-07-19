@@ -1,13 +1,19 @@
 # End-to-end tests (opt-in)
 
 These tests exercise the sandbox end-to-end in ways the probe-based enforcement
-suites under `tests/enforce/` cannot. There are two flavours:
+suites under `tests/enforce/` cannot. There are three flavours:
 
+* **Hermetic gtest modules** (`tests/e2e/<tool>/`) drive the sandbox against a
+  **Bazel-fetched, pinned real tool** and assert the **write-overlay VFS** with
+  the same GoogleTest harness the enforcement suite uses. Reproducible and
+  CI-friendly (the tool is downloaded + version-pinned by Bazel). See
+  [Hermetic tool modules](#hermetic-tool-modules-teste2etool) below.
 * **`realtools.ps1`** drives the sandbox binary *directly* against a broad matrix of
   **real third-party tools** (native shells/utilities, PowerShell 7 + 5.1,
   Microsoft/uutils coreutils, msys2 GNU coreutils, and the python/node/java/dotnet
   toolchains) to validate the **write-overlay VFS** against the OS-API patterns the
-  synthetic `probe` cannot replicate. No Bazel required.
+  synthetic `probe` cannot replicate. Non-hermetic: tools are discovered at
+  machine paths and skipped if absent. No Bazel required.
 * **`mode2.ps1` / `smoke.ps1`** drive the sandbox through a **real Bazel build** to
   validate the **Bazel <-> sandbox integration layer** (that `windows-sandbox`
   passes `--filter-inputs`, grants declared inputs, hides undeclared ones).
@@ -15,6 +21,55 @@ suites under `tests/enforce/` cannot. There are two flavours:
 They are **not** part of `bazel test //tests:all`: they need real tools / a patched
 Bazel / a network+cert environment, and they are comparatively slow. Run them
 manually (or in a CI job that has the prerequisites).
+
+## Hermetic tool modules (`tests/e2e/<tool>/`)
+
+Each hermetic scenario is **its own Bazel module** (a `MODULE.bazel` per folder,
+the same module-per-scenario pattern `rules_js` / `rules_python` / Bazel itself
+use for their `e2e/` dirs). This lets each scenario pin its own tool toolchain
+independently, keeps the heavy tool deps out of the root `MODULE.bazel`, and
+keeps `bazel test //tests:all` fast. The root `.bazelignore` excludes these
+dirs so the root workspace never descends into them.
+
+How a scenario module works:
+
+* It fetches the tool under test hermetically — e.g. `tests/e2e/coreutils`
+  `http_archive`s the pinned Microsoft/uutils coreutils Windows release from
+  GitHub (bump the version + `sha256` in its `MODULE.bazel` to refresh).
+* It consumes the sandbox under test from this repo via `local_path_override`
+  (`bazel_dep(name = "bazel_sandbox_windows")` → `path = "../../.."`), depending
+  on `@bazel_sandbox_windows//:BazelSandbox` and the shared harness
+  `@bazel_sandbox_windows//tests/e2e:e2e_harness`.
+* The tool binaries + the launcher (with its co-located `DetoursServices.dll`)
+  ride as `data`; the test resolves them from **runfiles** via env-var
+  rlocationpaths (`E2E_SANDBOX`, `E2E_UU_*`, …) — no `PATH` discovery, no pwsh.
+
+The shared harness (`tests/e2e/e2e_harness.{h,cc}`, built in the root module,
+`testonly` + public) runs one `BazelSandbox --write-overlay -W <ws> -- <tool>`
+invocation, captures the tool's stdout, and asserts the three overlay
+invariants: (1) read-after-write, (2) enumeration splice, (3) an unchanged real
+execroot. Multi-op cases sequence the tool ops inside one `cmd /c` batch because
+the overlay backing store is per invocation (cmd is only the sequencer, not the
+tool under test).
+
+### Running
+
+```powershell
+cd tests/e2e/coreutils
+bazel test //...
+```
+
+The first run fetches + verifies the tool archive and builds the sandbox from
+this repo. Behind a TLS-inspecting proxy the module's `.bazelrc` already trusts
+the Windows cert store (matches the root repo).
+
+### Adding a new hermetic tool module
+
+Copy `tests/e2e/coreutils/` to `tests/e2e/<tool>/`, then: point its
+`http_archive` (or ruleset `bazel_dep`, e.g. `rules_js` for a node_modules
+overlay stress test) at the new tool, wire the tool binaries into the
+`cc_test`'s `data` + `env` rlocationpaths, write the `*_test.cc` against the
+shared harness, and add `tests/e2e/<tool>` to the root `.bazelignore`.
 
 ## `realtools.ps1` — write-overlay VFS against real tools
 

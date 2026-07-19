@@ -4,6 +4,9 @@
 # Bazel
 /bazel-*
 /user.bazelrc
+# Convenience symlinks created inside nested e2e scenario modules
+# (tests/e2e/<tool>/bazel-*); the root-anchored rule above doesn't cover these.
+bazel-*
 
 # Upstream sources fetched/cloned for reference or building
 /_upstream/

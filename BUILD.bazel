@@ -92,10 +92,13 @@ cc_binary(
     includes = ["src"],
     # Embed the application manifest (asInvoker + longPathAware). MSVC's linker
     # embeds it via these options; the path is relative to the execroot (where
-    # the linker runs).
+    # the linker runs). Use $(execpath) rather than a hardcoded relative path so
+    # the target stays correct when this repo is consumed as an external module
+    # (e.g. the tests/e2e/<tool>/ scenario modules), where the source lives under
+    # external/bazel_sandbox_windows+/src/ instead of src/.
     linkopts = [
         "/MANIFEST:EMBED",
-        "/MANIFESTINPUT:src/BazelSandbox.manifest",
+        "/MANIFESTINPUT:$(execpath src/BazelSandbox.manifest)",
     ],
     local_defines = [
         "UNICODE",

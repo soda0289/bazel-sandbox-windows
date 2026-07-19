@@ -1,0 +1,70 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (cmd + coreutils) need the standard Windows variables to
+# initialize and be found on PATH under `bazel test`'s scrubbed environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Write-overlay VFS e2e: drives BazelSandbox --write-overlay against real uutils
+# coreutils (mkdir/cp/ls/cat) and asserts overlay read-after-write, enumeration
+# splice, and an unchanged real execroot. The launcher (with its co-located
+# DetoursServices.dll) and each coreutils .exe ride as `data`; their runfiles
+# rlocationpaths are handed to the test via env vars.
+cc_test(
+    name = "overlay_coreutils",
+    size = "small",
+    srcs = ["overlay_coreutils_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        "@uutils_coreutils//:cat.exe",
+        "@uutils_coreutils//:cp.exe",
+        "@uutils_coreutils//:ls.exe",
+        "@uutils_coreutils//:mkdir.exe",
+    ],
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_UU_CAT": "$(rlocationpath @uutils_coreutils//:cat.exe)",
+        "E2E_UU_CP": "$(rlocationpath @uutils_coreutils//:cp.exe)",
+        "E2E_UU_LS": "$(rlocationpath @uutils_coreutils//:ls.exe)",
+        "E2E_UU_MKDIR": "$(rlocationpath @uutils_coreutils//:mkdir.exe)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)

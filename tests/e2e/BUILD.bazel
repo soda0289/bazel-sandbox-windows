@@ -1,0 +1,30 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//:defs.bzl", "WIN10_DEFINES")
+
+# Public so the per-scenario e2e modules under tests/e2e/<tool>/ (each its own
+# Bazel module, consuming this repo via local_path_override) can depend on the
+# shared harness as @bazel_sandbox_windows//tests/e2e:e2e_harness.
+package(default_visibility = ["//visibility:public"])
+
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+] + WIN10_DEFINES
+
+# Shared GoogleTest harness for the write-overlay real-tool e2e suites. Drives
+# "BazelSandbox --write-overlay -W <ws> -- <tool>" and captures stdout so tests
+# can assert overlay read-after-write, enumeration splice, and an unchanged
+# real execroot. See e2e_harness.h.
+cc_library(
+    name = "e2e_harness",
+    testonly = True,
+    srcs = ["e2e_harness.cc"],
+    hdrs = ["e2e_harness.h"],
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@googletest//:gtest",
+        "@rules_cc//cc/runfiles",
+    ],
+)
