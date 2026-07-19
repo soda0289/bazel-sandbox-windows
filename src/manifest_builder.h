@@ -79,6 +79,10 @@ enum FileAccessManifestExtraFlag : uint32_t {
     ExtraFlag_DeniedReadsAsNotFound = 0x400,
     // Remove undeclared (non-read-allowed) children from directory enumerations.
     ExtraFlag_FilterDirectoryEnumeration = 0x800,
+    // Model W write-overlay (experimental kill-switch). Enables enumeration
+    // INSERTION of process-private overlay files. Off by default; the shipped
+    // subtractive path is unchanged. See docs/design/detours-write-overlay-vfs.md.
+    ExtraFlag_WriteOverlay = 0x1000,
 };
 
 // Builds the FileAccessManifest blob for a single sandboxed process.
@@ -110,6 +114,22 @@ public:
     // size-0 block (no created-files tracking). CODESYNC: g_bazelCreatedShmName /
     // ParseFileAccessManifest in the DLL.
     void SetCreatedShmName(std::wstring name);
+
+    // Sets the Model W write-overlay backing-store root (absolute path). Serialized
+    // into the manifest payload as a padded WCHAR block right after the created-shm
+    // block (and before the manifest tree), so it reaches every child through the
+    // re-copied payload rather than the environment. An empty path (the default)
+    // emits a size-0 block (no overlay). CODESYNC: g_bazelWriteOverlayRoot /
+    // ParseFileAccessManifest in the DLL.
+    void SetWriteOverlayRoot(std::wstring root);
+
+    // Sets the Model W write-overlay SOURCE root (absolute path): the real
+    // directory subtree whose undeclared writes are redirected into the backing
+    // store. The DLL strips this prefix from a virtual path to compute the backing
+    // path. Serialized as a padded WCHAR block right after the backing-root block
+    // (and before the manifest tree). An empty path (the default) emits a size-0
+    // block. CODESYNC: g_bazelOverlaySourceRoot / ParseFileAccessManifest in the DLL.
+    void SetOverlaySourceRoot(std::wstring root);
 
     // Applies a cone scope policy at the given absolute path (and its subtree).
     // The path is canonicalized with GetFullPathNameW to match the DLL's runtime
@@ -162,6 +182,8 @@ private:
     std::string dllX64_;
     std::wstring reportPath_;
     std::wstring createdShmName_;
+    std::wstring writeOverlayRoot_;
+    std::wstring overlaySourceRoot_;
     Node root_;
 };
 

@@ -26,7 +26,8 @@ struct HandleOverlay {
     // Constructs a handle overlay for a handle, wrapping the creating operation's policy / access check.
     // The policy represents what operations should be allowed via operations on this handle.
     HandleOverlay(AccessCheckResult const& accessCheck, PolicyResult const& policy, HandleType type)
-        : Policy(policy), AccessCheck(accessCheck), Type(type), EnumerationHasBeenReported(false) { }
+        : Policy(policy), AccessCheck(accessCheck), Type(type), EnumerationHasBeenReported(false),
+          OverlayEnumStarted(false), OverlayEnumCursor(0), OverlayEnumFilterSet(false) { }
 
     HandleOverlay(const HandleOverlay& other) = default;
     HandleOverlay& operator=(const HandleOverlay&) = default;
@@ -39,6 +40,39 @@ struct HandleOverlay {
     // by NtQueryDirectoryFile. It prevents multiple reports for the same directory
     // (some big enumerations require multiple calls to NtQueryDirectoryFile).
     bool EnumerationHasBeenReported;
+
+    // Model W write-overlay (experimental): per-handle enumeration insertion state.
+    // A directory enumeration is a POINT-IN-TIME snapshot spanning one or more
+    // NtQueryDirectoryFile calls. OverlayEnumSnapshot is the set of process-private
+    // overlay entries to splice into this handle's listing, captured ONCE at the
+    // start of the scan (first call, or after RestartScan) so that concurrent writes
+    // to the same directory by other processes/threads in the action tree cannot
+    // shift the entry ordering mid-scan (which would make the cursor skip/duplicate).
+    // OverlayEnumCursor is how many of those snapshot entries have already been
+    // emitted, so each is returned exactly once. OverlayEnumStarted distinguishes
+    // "snapshot not yet taken" from "snapshot taken, possibly empty". All three are
+    // reset on RestartScan and only consulted when ShouldWriteOverlay().
+    //
+    // NOTE: this state is per-HANDLE and is NOT synchronized. Concurrent enumeration
+    // of the SAME handle from multiple threads is unsupported (and races the internal
+    // OS scan position regardless) - this matches the existing single-threaded-per-
+    // handle assumption behind EnumerationHasBeenReported above. Distinct handles on
+    // the same directory (the common cross-thread/cross-process case) each get their
+    // own overlay and snapshot, so they are independent and safe.
+    bool OverlayEnumStarted;
+    std::vector<std::wstring> OverlayEnumSnapshot;
+    size_t OverlayEnumCursor;
+
+    // Model W write-overlay: the caller's enumeration wildcard (e.g. "*.txt"),
+    // captured ONCE at the start of the scan - like usvfs's Searches::Info::searchPattern -
+    // so overlay entries spliced at exhaustion honor the same pattern the OS applied to
+    // the real entries. Empty / "*" means match-all. The pattern is only supplied on the
+    // first NtQueryDirectoryFile call (and is NULL on continuation calls), so it must be
+    // remembered here. For the SYNTHESIZED Win32 FindFirstFile handle (the narrow-filter
+    // gap fix) the real entries are consumed up-front, so only the overlay tail (filtered
+    // by this pattern) is ever returned from that handle.
+    std::wstring OverlayEnumFilter;
+    bool OverlayEnumFilterSet;
 };
 
 // Sets up structures for recording handle overlays.

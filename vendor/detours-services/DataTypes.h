@@ -120,7 +120,14 @@ inline bool CheckReportAnyAccess(FileAccessManifestFlag flags, bool accessDenied
     m(DeniedReadsAsNotFound,                       0x400) \
     /* Remove undeclared (non-read-allowed) children from directory */ \
     /* enumerations so the process cannot see them. */ \
-    m(FilterDirectoryEnumeration,                  0x800)
+    m(FilterDirectoryEnumeration,                  0x800) \
+    /* Model W write-overlay (experimental, revertable kill-switch). When set, */ \
+    /* the directory-enumeration path may INSERT synthetic entries for files */ \
+    /* that live only in a process-private write overlay, so a tool sees files */ \
+    /* it created even though they were redirected off the real execroot. Off */ \
+    /* by default: the shipped subtractive-filter path is byte-for-byte */ \
+    /* unchanged. See docs/design/detours-write-overlay-vfs.md. */ \
+    m(WriteOverlay,                                0x1000)
 
 enum class FileAccessManifestExtraFlag {
     FOR_ALL_FAM_EXTRA_FLAGS(GEN_FAM_FLAG_ENUM_NAME_VALUE)

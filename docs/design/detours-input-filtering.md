@@ -331,8 +331,8 @@ Why it is appealing:
 * Conceptually the same as the Linux symlink forest (return real handles behind a
   curated namespace).
 
-Why it is a large, risky lift (and why not now):
-* **You must remap paths on *every* API that consumes or returns a path**, not
+Why it is a large, risky lift, and why it is deferred:
+* **Every API that consumes or returns a path must be remapped**, not
   just opens: `Create/NtCreate/NtOpen`, `GetFileAttributes*`, `Delete`, `Move`,
   `CreateDirectory`, `GetFullPathName`, `SetCurrentDirectory`, section/mapping
   opens, etc. A single un-hooked path-consuming API means a valid input becomes
@@ -403,7 +403,7 @@ via `--filter-inputs`.
 | Writes outside execroot | denied (RO FS) | denied (no write bit) |
 | Declared output collection | copied out of throwaway execroot | already in place (in-place execution) |
 
-Divergence to keep honest: this is **hide-in-place, not construct**. The file
+A divergence to state plainly: this is **hide-in-place, not construct**. The file
 physically exists, so isolation is only as strong as our API coverage — a tool
 using an un-hooked syscall or a pre-opened handle could still reach a hidden file
 (**fail-open**). That is the same trust model the Detours sandbox already has, and

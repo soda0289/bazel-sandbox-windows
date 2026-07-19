@@ -289,6 +289,10 @@ bool g_ProcessExecutionShimAllProcesses;
 
 // Bazel fork: created-files SHM region name (see globals.h).
 wchar_t* g_bazelCreatedShmName = nullptr;
+// Bazel fork (Model W): overlay backing-store root (see globals.h).
+wchar_t* g_bazelWriteOverlayRoot = nullptr;
+// Bazel fork (Model W): overlay source root, stripped to map virtual->backing.
+wchar_t* g_bazelOverlaySourceRoot = nullptr;
 wchar_t* g_SubstituteProcessExecutionPluginDllPath = nullptr;
 HMODULE g_SubstituteProcessExecutionPluginDllHandle;
 SubstituteProcessExecutionPluginFunc g_SubstituteProcessExecutionPluginFunc;

@@ -273,12 +273,28 @@ forest.
   deterministically in the post-build execroot state (a fresh create passes). The
   *mechanism* is proven; the specific overlapping writer for that one action is not
   pinned down.
+* **The safe discriminator is build provenance, not "declared vs. undeclared."**
+  A tempting shortcut — "deny clobbering only declared `-r` inputs; treat any other
+  pre-existing cone path as clobberable scratch" — is **unsafe and rejected**. It
+  cannot tell a sibling action's transient scratch from a **real undeclared source
+  file** reached through the `execroot/_main` symlink; both are merely "not a
+  declared input." Allowing writes on that basis would let one action **overwrite —
+  or worse, delete —** a pre-existing undeclared file that a later build depends on,
+  silently changing that build's inputs with no cache key to catch it. Deleting is
+  the worst case: e.g. removing a `package.json` an action happened to reach
+  permanently changes Node module resolution for every later action. That `local`
+  (no sandbox) also mutates such files is latent non-hermeticity we tolerate there,
+  not a behavior to reproduce deliberately. **The only file the sandbox may safely
+  write or delete is one that some action provably created *during this build*.**
 * **Fix directions (any one closes the class):**
-  * **(a) Narrow the no-clobber guard to declared inputs.** Deny clobbering only
-    paths that are declared `-r` **inputs**; treat any *other* pre-existing cone
-    path as clobberable scratch. Makes the shared in-place execroot behave like a
-    throwaway one for undeclared scratch while preserving the no-clobber guarantee
-    for real inputs.
+  * **(a) Build-scoped created-set (provenance).** Promote the per-action
+    created-set to a set shared by every `BazelSandbox.exe` in the same build, and
+    allow a write/delete of a pre-existing cone path **only if that path is in the
+    build-scoped created-set** (created this build by some action). Discard stays
+    keyed to the *per-action* set so nothing pre-existing is ever a delete
+    candidate. This closes A8 — the action that created `y.output` this build may
+    rewrite it; a real undeclared source, created by no action, stays fully
+    protected — without weakening the no-clobber guarantee.
   * **(b) Pre-clean undeclared root scratch before the action** (belt-and-braces
     with A7's discard-on-exit, covering leftovers from non-discarding paths such as
     a `local` fallback).
@@ -289,7 +305,9 @@ forest.
     virtual-execroot / VFS direction in `docs/design/detours-input-filtering.md` §4,
     and the full design study in
     [`docs/design/detours-write-overlay-vfs.md`](design/detours-write-overlay-vfs.md)
-    (which recommends fix (a) now and this overlay only against a demonstrated need).
+    (which recommends the build-scoped created-set (a) now, and — only against a
+    demonstrated need — a full write-redirection overlay rather than the
+    placeholder/junction shortcuts it evaluates and rejects).
 * **Status:** Open. Tracked as a P1 gap below.
 
 ---
@@ -408,10 +426,12 @@ denied) is met on every repo smoke-tested to date.
 1. **P1 - A8: concurrent actions collide on fixed-name undeclared scratch.** In the
    shared in-place execroot, two parallel actions writing the same undeclared cwd
    path (e.g. `goyacc`'s `y.output`) can hit an `ERROR_ACCESS_DENIED` no-clobber
-   denial. Narrow the no-clobber guard to deny only declared **inputs** (`-r`),
-   treating other pre-existing cone paths as clobberable scratch; or move to a
-   per-action write overlay (see §6 of `comparison/linux-sandbox-comparison.md`).
-   See A8.
+   denial. Fix by **build provenance**: share the created-set across all
+   `BazelSandbox.exe` of one build and allow writing/deleting a pre-existing cone
+   path only if some action created it this build (never by "declared vs.
+   undeclared" — that would allow clobbering/deleting real undeclared source); or
+   move to a per-action write overlay (see §6 of
+   `comparison/linux-sandbox-comparison.md`). See A8.
 2. **P1 - B2: junction-in-`-w` write escape.** Resolve write targets through
    reparse points before allowing, or refuse writes that traverse an untrusted
    junction inside a writable scope. Applies in **all** modes (writes are always

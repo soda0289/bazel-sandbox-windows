@@ -67,6 +67,41 @@ namespace {
             AppendToShared(path);
         }
 
+        // Return the immediate child component names of `dir` for every indexed path
+        // strictly under `dir`. For C:\ws\pkg\a.txt and C:\ws\pkg\sub\b.txt with
+        // dir==C:\ws\pkg this yields {"a.txt","sub"}. Matching is case-insensitive on
+        // the "<dir>\" prefix; the returned component is the substring up to the next
+        // separator. De-duplicated (case-insensitively).
+        void ListChildren(const std::wstring& dir, std::vector<std::wstring>& out) {
+            SyncFromShared();
+            std::wstring prefix = dir;
+            while (!prefix.empty() && (prefix.back() == L'\\' || prefix.back() == L'/')) {
+                prefix.pop_back();
+            }
+            prefix.push_back(L'\\');
+            const size_t prefixLen = prefix.size();
+            std::unordered_set<std::wstring, CaseInsensitiveStringHasher, CaseInsensitiveStringComparer> seen;
+            std::shared_lock<std::shared_mutex> lock(m_lock);
+            for (const std::wstring& p : m_set) {
+                if (p.size() <= prefixLen) {
+                    continue;
+                }
+                if (_wcsnicmp(p.c_str(), prefix.c_str(), prefixLen) != 0) {
+                    continue;
+                }
+                size_t sep = p.find_first_of(L"\\/", prefixLen);
+                std::wstring comp = (sep == std::wstring::npos)
+                    ? p.substr(prefixLen)
+                    : p.substr(prefixLen, sep - prefixLen);
+                if (comp.empty()) {
+                    continue;
+                }
+                if (seen.insert(comp).second) {
+                    out.push_back(comp);
+                }
+            }
+        }
+
     private:
         CreatedFilesTracker() { InitShared(); }
         CreatedFilesTracker(const CreatedFilesTracker&) = delete;
@@ -300,6 +335,17 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
         const std::wstring path(GetTranslatedPathWithoutTypePrefix());
         CreatedFilesTracker& tracker = CreatedFilesTracker::GetInstance();
 
+        // Backing store is the source of truth (design doc §6.3): if this action
+        // already has a shadow of the path in its write-overlay backing store, it was
+        // created/redirected by this run, so re-writes are allowed. This is consulted
+        // BEFORE the SHM created-set (which is retained only as the legacy
+        // --execroot-writable fallback until it is removed): under --write-overlay a
+        // file's presence in the backing store, not an index entry, is what makes it
+        // "created this run".
+        if (OverlayBackingExists(path)) {
+            return true;
+        }
+
         if (tracker.WasCreated(path)) {
             // We already saw this path not exist and created it; allow re-writes.
             return true;
@@ -310,8 +356,18 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
         SetLastError(error);
 
         if (fileExists) {
-            // Pre-existing file that this process did not create: deny the write so an
-            // undeclared input / source file is never clobbered.
+            // Pre-existing file that this process did not create.
+            if (ShouldWriteOverlay()) {
+                // Model W: the write will be REDIRECTED to a process-private overlay
+                // backing store (see ResolveOverlayOpenPath in DetouredFunctions.cpp),
+                // so the real pre-existing file is never mutated. Allow it and record
+                // the path so reads redirect to the overlay copy and enumeration keeps
+                // showing it. This is the structural A8 fix: an undeclared input can
+                // be "written" without ever being clobbered on disk.
+                tracker.MarkCreated(path);
+                return true;
+            }
+            // Deny the write so an undeclared input / source file is never clobbered.
             return false;
         }
 
@@ -324,11 +380,25 @@ bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {
 }
 
 bool PolicyResult::WasCreatedInThisProcess() const {
-    return CreatedFilesTracker::GetInstance().WasCreated(
-        std::wstring(GetTranslatedPathWithoutTypePrefix()));
+    const std::wstring path(GetTranslatedPathWithoutTypePrefix());
+    // Backing store is the source of truth (design doc §6.3): a path shadowed in the
+    // write-overlay backing store was created/redirected by this action, so it stays
+    // visible to reads and enumeration (the IsEnumChildVisible / CheckReadAccess
+    // carve-outs) even though its static policy denies undeclared reads. Checked
+    // before the SHM created-set, which remains only as the legacy fallback.
+    if (OverlayBackingExists(path)) {
+        return true;
+    }
+    return CreatedFilesTracker::GetInstance().WasCreated(path);
 }
 
 void PolicyResult::MarkCreatedInThisProcess() const {
     CreatedFilesTracker::GetInstance().MarkCreated(
         std::wstring(GetTranslatedPathWithoutTypePrefix()));
 }
+
+#if _WIN32
+void ListOverlayChildren(const std::wstring& dir, std::vector<std::wstring>& outNames) {
+    CreatedFilesTracker::GetInstance().ListChildren(dir, outNames);
+}
+#endif // _WIN32

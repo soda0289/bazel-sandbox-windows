@@ -133,6 +133,14 @@ void ManifestBuilder::SetCreatedShmName(std::wstring name) {
     createdShmName_ = std::move(name);
 }
 
+void ManifestBuilder::SetWriteOverlayRoot(std::wstring root) {
+    writeOverlayRoot_ = std::move(root);
+}
+
+void ManifestBuilder::SetOverlaySourceRoot(std::wstring root) {
+    overlaySourceRoot_ = std::move(root);
+}
+
 void ManifestBuilder::AddRootScope(uint32_t mask, uint32_t values) {
     // ApplyConeFileAccess on the root node.
     root_.coneMask = mask & root_.coneMask;
@@ -352,7 +360,36 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 12. Manifest tree
+    // 11.6 Model W write-overlay backing-store root (Bazel fork). Same padded
+    // WCHAR block layout as block 11.5, serialized right after it so the manifest
+    // tree stays 4-byte aligned. Empty root => size 0 (no overlay). CODESYNC:
+    // g_bazelWriteOverlayRoot / ParseFileAccessManifest in the DLL.
+    if (writeOverlayRoot_.empty()) {
+        PutU32(out, 0);
+    } else {
+        const uint32_t rawBytes =
+            static_cast<uint32_t>((writeOverlayRoot_.size() + 1) * sizeof(wchar_t));
+        const uint32_t paddedBytes = (rawBytes + 3u) & ~3u;
+        PutU32(out, paddedBytes);
+        const auto* pb = reinterpret_cast<const uint8_t*>(writeOverlayRoot_.c_str());
+        out.insert(out.end(), pb, pb + rawBytes);
+        out.insert(out.end(), paddedBytes - rawBytes, 0u);
+    }
+    // 11.7 Model W write-overlay SOURCE root (Bazel fork). Same padded WCHAR block
+    // layout as block 11.6, serialized right after it so the manifest tree stays
+    // 4-byte aligned. Empty root => size 0 (no source root). CODESYNC:
+    // g_bazelOverlaySourceRoot / ParseFileAccessManifest in the DLL.
+    if (overlaySourceRoot_.empty()) {
+        PutU32(out, 0);
+    } else {
+        const uint32_t rawBytes =
+            static_cast<uint32_t>((overlaySourceRoot_.size() + 1) * sizeof(wchar_t));
+        const uint32_t paddedBytes = (rawBytes + 3u) & ~3u;
+        PutU32(out, paddedBytes);
+        const auto* pb = reinterpret_cast<const uint8_t*>(overlaySourceRoot_.c_str());
+        out.insert(out.end(), pb, pb + rawBytes);
+        out.insert(out.end(), paddedBytes - rawBytes, 0u);
+    }
     SerializeNode(&root_, out);
 
     return out;

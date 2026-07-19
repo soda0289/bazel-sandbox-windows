@@ -71,6 +71,17 @@ struct Options {
     // stay freely overwritable; -r inputs stay read-only. Enforced via the execroot
     // cone's OverrideAllowWriteForExistingFiles policy bit (see PolicyResult::AllowWrite).
     bool execrootWritable = false;
+    // --write-overlay: EXPERIMENTAL Model W write-overlay kill-switch. Enables the
+    // enumeration-insertion path in the DLL so a tool sees files that live only in
+    // its process-private write overlay. Off by default (the shipped subtractive
+    // path is unchanged). See docs/design/detours-write-overlay-vfs.md.
+    bool writeOverlay = false;
+    // Model W write-overlay: optional explicit location for the overlay backing
+    // store (where redirected undeclared writes physically land). Empty => the
+    // launcher auto-creates one under %TMP%. A configurable location lets the
+    // caller co-locate the backing store on the source-root volume (avoiding
+    // cross-volume promotion copies) or point it at a RAM-backed disk.
+    std::wstring overlayDir;
     std::vector<std::wstring> args;  // tool + arguments
 };
 
@@ -137,6 +148,12 @@ void PrintUsage(int exitCode) {
         L"  --execroot-writable  allow creating NEW files/dirs anywhere in the\n"
         L"             working dir (and re-writing files created this run) while still\n"
         L"             denying overwrites of pre-existing undeclared/input files\n"
+        L"  --write-overlay  EXPERIMENTAL Model W kill-switch: allow directory\n"
+        L"             listings to include files that live only in a process-private\n"
+        L"             write overlay (off by default; see design doc)\n"
+        L"  --overlay-dir <dir>  location for the write-overlay backing store (a\n"
+        L"             per-invocation subdir is created under it); default: %%TMP%%.\n"
+        L"             Co-locate on the working-dir volume or a RAM disk for speed\n"
         L"  -D <file>  write launcher diagnostics to a file\n"
         L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
         L"  -S <file>  write child resource-usage statistics (protobuf) to a file\n"
@@ -221,6 +238,10 @@ Options ParseOptions(std::vector<std::wstring> args) {
                 o.hermetic = true;
             } else if (name == L"-execroot-writable") {
                 o.execrootWritable = true;
+            } else if (name == L"-write-overlay") {
+                o.writeOverlay = true;
+            } else if (name == L"-overlay-dir") {
+                o.overlayDir = ToAbsolute(next());
             } else if (name == L"D") {
                 o.debugPath = ToAbsolute(next());
             } else if (name == L"-trace") {
@@ -468,6 +489,83 @@ void CleanupCreatedScratch(HANDLE mapping) {
         if (!DeleteFileW(p.c_str())) {
             RemoveDirectoryW(p.c_str());
         }
+    }
+}
+
+// Model W write-overlay: create a fresh per-invocation backing-store root and
+// return its absolute path, or "" on failure. When `explicitDir` is empty the
+// wrapper dir is created under the temp dir (e.g. %TMP%\bzlsbx-<pid>-<tick>);
+// otherwise it is created under `explicitDir` (which may be a fast/RAM-backed
+// volume or the source-root volume). The final layout is
+// <base>\bzlsbx-<pid>-<tick>\overlay in both cases, so cleanup logic is uniform.
+// Undeclared writes in the source-root cone are redirected under here by the DLL
+// (mapping the virtual path), so the real source tree is never touched and each
+// action's scratch is isolated. Fresh per invocation ⇒ a retried action starts
+// clean (structurally, not by cleanup).
+std::wstring SetupWriteOverlayRoot(const std::wstring& explicitDir) {
+    std::wstring base;
+    if (explicitDir.empty()) {
+        wchar_t tmp[MAX_PATH];
+        DWORD n = GetTempPathW(MAX_PATH, tmp);
+        if (n == 0 || n >= MAX_PATH) return std::wstring();
+        base.assign(tmp, n);
+    } else {
+        base = explicitDir;
+        // Create the caller-provided dir if it does not exist yet.
+        if (!CreateDirectoryW(base.c_str(), nullptr) &&
+            GetLastError() != ERROR_ALREADY_EXISTS) {
+            return std::wstring();
+        }
+    }
+    if (!base.empty() && base.back() != L'\\') base.push_back(L'\\');
+    base += L"bzlsbx-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+            std::to_wstring(GetTickCount64());
+    std::wstring root = base + L"\\overlay";
+    // Create base then overlay (CreateDirectory does not make intermediates).
+    if (!CreateDirectoryW(base.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        return std::wstring();
+    }
+    if (!CreateDirectoryW(root.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        return std::wstring();
+    }
+    return root;
+}
+
+// Recursively delete the overlay backing store on tree exit (linux-sandbox throws
+// away its writable execroot after every action). Kept under -D for inspection.
+// Removes both the overlay root and its parent bzlsbx-* wrapper dir. Uses a
+// manual FindFirstFile walk (no shell32 dependency).
+void RemoveTreeRecursive(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name = fd.cFileName;
+            if (name == L"." || name == L"..") continue;
+            const std::wstring child = dir + L"\\" + name;
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                RemoveTreeRecursive(child);
+            } else {
+                // Clear read-only so DeleteFile succeeds; ignore failures.
+                SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(child.c_str());
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.c_str());
+}
+
+void CleanupWriteOverlay(const std::wstring& root) {
+    if (root.empty()) return;
+    RemoveTreeRecursive(root);
+    // Remove the now-empty parent wrapper (…\bzlsbx-<pid>-<tick>).
+    size_t sep = root.find_last_of(L'\\');
+    if (sep != std::wstring::npos) {
+        RemoveDirectoryW(root.substr(0, sep).c_str());
     }
 }
 
@@ -740,6 +838,10 @@ int wmain(int argc, wchar_t** argv) {
         extraFlags |= ExtraFlag_DeniedReadsAsNotFound |
                       ExtraFlag_FilterDirectoryEnumeration;
     }
+    // --write-overlay: enable the experimental Model W enumeration-insertion path.
+    if (o.writeOverlay) {
+        extraFlags |= ExtraFlag_WriteOverlay;
+    }
 
     // --trace <file>: turn on the DLL's report channel (otherwise fully inert).
     // We report both expected and unexpected accesses so the trace is a complete
@@ -784,7 +886,7 @@ int wmain(int argc, wchar_t** argv) {
     // files. Read bits are unchanged (still hidden under a hermetic/filter-inputs
     // execroot). Declared -w outputs (AllowAll) and -r inputs are applied as more
     // specific scopes below and are unaffected.
-    if (o.execrootWritable) {
+    if (o.execrootWritable || o.writeOverlay) {
         workingDirPolicy |= Policy_AllowWrite | Policy_AllowCreateDirectory |
                             Policy_OverrideAllowWriteForExistingFiles;
     }
@@ -855,9 +957,27 @@ int wmain(int argc, wchar_t** argv) {
     // sole mode that consults the created-files tracker. The handles are kept open
     // until the tree exits (region lifetime == action).
     CreatedShmHandles createdShm;
-    if (o.execrootWritable) {
+    if (o.execrootWritable || o.writeOverlay) {
         createdShm = SetupCreatedFilesShm();
         mb.SetCreatedShmName(createdShm.name);
+    }
+
+    // Model W write-overlay: create the per-invocation backing store, grant it as
+    // an AllowAll cone (so the DLL's nested access checks on redirected backing
+    // paths pass), and embed its root in the manifest payload. Set up BEFORE
+    // Build() like the created-set region above.
+    std::wstring writeOverlayRoot;
+    if (o.writeOverlay) {
+        writeOverlayRoot = SetupWriteOverlayRoot(o.overlayDir);
+        if (writeOverlayRoot.empty()) Die(L"cannot create write-overlay backing store");
+        if (!mb.AddScope(writeOverlayRoot, Policy_MaskAll, Policy_AllowAll))
+            Die(L"bad write-overlay root: " + writeOverlayRoot);
+        mb.SetWriteOverlayRoot(writeOverlayRoot);
+        // The overlay source root is the redirect cone == the working dir. The DLL
+        // strips it from a virtual path to compute the backing path.
+        mb.SetOverlaySourceRoot(o.workingDir);
+        dbg(L"ov", writeOverlayRoot);
+        dbg(L"ovsrc", o.workingDir);
     }
 
     std::vector<uint8_t> manifest = mb.Build(/*injectionTimeoutMins*/ 10);
@@ -1042,6 +1162,11 @@ int wmain(int argc, wchar_t** argv) {
     // the SHM mapping (the created-set lives there) and after the tree has exited.
     if (o.execrootWritable && o.debugPath.empty()) {
         CleanupCreatedScratch(createdShm.mapping);
+    }
+    // Model W: discard the overlay backing store on tree exit (linux-sandbox
+    // parity). Kept under -D for inspection; its path was printed via dbg("ov").
+    if (o.writeOverlay && o.debugPath.empty()) {
+        CleanupWriteOverlay(writeOverlayRoot);
     }
 
     if (hStdOutFile) CloseHandle(hStdOutFile);

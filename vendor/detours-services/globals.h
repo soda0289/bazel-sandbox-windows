@@ -123,6 +123,24 @@ extern bool g_ProcessExecutionShimAllProcesses;
 // independent of the child's environment block). Null when the launcher did not
 // request created-files tracking. CODESYNC: ManifestBuilder::SetCreatedShmName.
 extern wchar_t* g_bazelCreatedShmName;
+
+// Bazel fork (Model W write-overlay): absolute path to the launcher-created
+// per-invocation overlay backing directory. Undeclared writes in the execroot
+// cone are redirected under here (mirroring the virtual path) instead of touching
+// the real execroot, giving per-action write isolation. Parsed from the manifest
+// payload (rides the re-copied payload like g_bazelCreatedShmName). Null unless
+// --write-overlay was passed. CODESYNC: ManifestBuilder::SetWriteOverlayRoot.
+extern wchar_t* g_bazelWriteOverlayRoot;
+
+// Bazel fork (Model W write-overlay): absolute path to the overlay SOURCE root -
+// the real directory subtree whose undeclared writes are redirected into the
+// backing store (g_bazelWriteOverlayRoot). Today this equals the launcher working
+// directory (-W). It is stripped from a virtual path to compute the backing path,
+// e.g. with source root C:\ws and backing \\?\<root>, C:\ws\a\b.txt maps to
+// \\?\<root>\a\b.txt (no redundant drive-letter mirror). Parsed from the manifest
+// payload (rides the re-copied payload like g_bazelWriteOverlayRoot). Null unless
+// --write-overlay was passed. CODESYNC: ManifestBuilder::SetOverlaySourceRoot.
+extern wchar_t* g_bazelOverlaySourceRoot;
 extern wchar_t* g_SubstituteProcessExecutionPluginDllPath;
 extern HMODULE g_SubstituteProcessExecutionPluginDllHandle;
 extern SubstituteProcessExecutionPluginFunc g_SubstituteProcessExecutionPluginFunc;

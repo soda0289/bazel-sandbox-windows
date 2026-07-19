@@ -15,6 +15,8 @@
 //                                 (FileStatBasicByNameInfo) -- the handle-less fast path
 //                                 modern libuv/Node use for fs.stat; 0 visible, 11 hidden
 //   probe write <path>            create/overwrite <path>
+//   probe createnew <path>        CreateFileW(CREATE_NEW): 0 if newly created, 20
+//                                 if it already exists (merged-view fail-if-exists)
 //   probe delete <path>           delete <path>
 //   probe deleteh <path>          delete <path> via SetFileInformationByHandle
 //   probe delonclose <path>       delete <path> via FILE_FLAG_DELETE_ON_CLOSE
@@ -31,6 +33,11 @@
 //                                 create <path> in this process, then spawn
 //                                 <childExe> delete <path>; returns the child's code
 //                                 (JavaBuilder create-here / clean-there parity)
+//   probe writespawnenum <dir> <name> <childExe>
+//                                 create <dir>\<name> in this process, then spawn
+//                                 <childExe> enumfindntdirect <dir> <name>; returns
+//                                 the child's code (verifies the overlay index is
+//                                 shared cross-process and inserted into enumeration)
 //   probe connect <host> <port>   attempt an outbound TCP connect
 //                                 (used to verify -N / -n network sandboxing)
 //   probe stdio                   verify all three std handles are usable
@@ -39,6 +46,10 @@
 //   probe cwdis <dir>             0 iff the current directory equals <dir>
 //   probe tempfile <dir>          GetTempFileNameW in <dir> (intercepted API)
 //   probe ntread <path>           open <path> for read via native NtCreateFile
+//   probe ntwriteread <base>      create+write <base>\ntov.txt via native NtCreateFile
+//                                 (bypassing Win32), then read it back the same way;
+//                                 0 iff both direct-NtCreateFile opens redirect to the
+//                                 backing store (real execroot never gets the path)
 //   probe findfile <path>         FindFirstFileEx on an EXACT file path (single-file
 //                                 existence probe, as cmd `type` does); 0 if visible,
 //                                 11 if absent/hidden, 10 if denied
@@ -49,6 +60,30 @@
 //   probe enumfindntdirect <dir> <name>
 //                                 same, via a direct ntdll!NtQueryDirectoryFile
 //                                 call (the path Node/libuv use)
+//   probe writeenum <dir> <name>  create <dir>\<name> in this process, then
+//                                 enumerate <dir> via ntdll!NtQueryDirectoryFile;
+//                                 0 iff <name> is listed (Model W overlay insertion)
+//   probe writeenummulti <dir> <bufBytes> <name1> [name2 ...]
+//                                 write each name into the overlay, then enumerate
+//                                 <dir> with a SMALL <bufBytes> buffer forcing many
+//                                 NtQueryDirectoryFile calls; 0 iff every name is
+//                                 listed EXACTLY once (multi-call cursor: 11 if any
+//                                 skipped, 20 if any duplicated)
+//   probe writeovdirenum <base>   write <base>\ovsub\f.txt (redirected into the
+//                                 overlay so <base>\ovsub exists only in the backing
+//                                 store), then enumerate the overlay-only directory
+//                                 <base>\ovsub via ntdll!NtQueryDirectoryFile; 0 iff
+//                                 f.txt is listed (overlay-only-dir open + enum)
+//   probe writeovdelete <base>    write <base>\ovdel.txt into the overlay then delete
+//                                 it; 0 iff the delete of the process's own overlay
+//                                 file succeeds (backing removed, real untouched)
+//   probe writeovrename <base>    write <base>\ovr_src.txt into the overlay, rename it
+//                                 to <base>\ovr_dst.txt, read the dest back; 0 iff the
+//                                 whole move stays inside the backing store
+//   probe writeovstat <base>      write <base>\ovstat.txt into the overlay then stat it
+//                                 via GetFileAttributes(Ex)/GetFileInformationByName/
+//                                 exact FindFirstFileEx; 0 iff every metadata API sees
+//                                 the backing file (stat of own scratch works)
 
 #include <windows.h>
 #include <winternl.h>
@@ -120,6 +155,25 @@ int DoWriteRead(const wchar_t* path) {
 int DoDelete(const wchar_t* path) {
     if (DeleteFileW(path)) return kOk;
     return MapLastError();
+}
+
+// Open <path> with CREATE_NEW (create-if-absent, fail-if-exists) and report the
+// mapped result: kOk if a brand-new file was created; kOtherError if it already
+// exists (ERROR_FILE_EXISTS/ERROR_ALREADY_EXISTS - the fail-if-exists contract);
+// kDenied/kNotFound per the usual mapping. Under --write-overlay this pins the
+// merged-view semantics: CREATE_NEW must fail if the target exists in the real
+// execroot OR the action's overlay, and must NOT silently succeed by creating an
+// empty backing file over a pre-existing (undeclared) real file.
+int DoCreateNew(const wchar_t* path) {
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        if (e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS) return kOtherError;
+        return MapLastError();
+    }
+    CloseHandle(h);
+    return kOk;
 }
 
 // Create a NEW file, then delete it within the SAME process. Under execroot-writable
@@ -408,6 +462,417 @@ int DoEnumFindNtDirect(const wchar_t* dir, const wchar_t* name) {
     return found ? kOk : kNotFound;
 }
 
+// Model W write-overlay: create <dir>\<name> in THIS process (redirected into the
+// process-private overlay backing store, so it does not appear on the real disk),
+// then enumerate <dir> via the direct ntdll!NtQueryDirectoryFile path and report
+// whether <name> is listed. Under --write-overlay the DLL must splice the overlay
+// entry into the enumeration so the tool sees the file it just "wrote". Returns kOk
+// iff the write succeeds AND the name is subsequently enumerated.
+int DoWriteEnum(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return DoEnumFindNtDirect(dir, name);
+}
+
+// Enumerate <dir> via ntdll!NtQueryDirectoryFile using a CALLER-SPECIFIED buffer
+// size (deliberately small) so the multi-call enumeration cursor protocol is
+// exercised, and count how many times each name in <names> appears across the
+// whole scan. This is the analogue of usvfs's NtQueryDirectoryFileExVirtualFile
+// test (small buffer + several varying-length virtual entries), extended to also
+// catch DUPLICATES: with a point-in-time snapshot cursor each spliced overlay
+// entry must appear EXACTLY once even when the listing spans many calls. Returns
+// via outCounts (parallel to names). Result: kOk on a completed scan, else error.
+int EnumCountNames(const wchar_t* dir, ULONG bufBytes,
+                   const std::vector<std::wstring>& names,
+                   std::vector<int>& outCounts) {
+    outCounts.assign(names.size(), 0);
+    HANDLE h = CreateFileW(
+        dir, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+
+    auto pNtQuery = reinterpret_cast<NtQueryDirectoryFile_fn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
+    if (pNtQuery == nullptr) { CloseHandle(h); return kOtherError; }
+
+    const ULONG FileNamesInformation = 12;
+    if (bufBytes < 64) bufBytes = 64;
+    std::vector<char> buf(bufBytes);
+    BOOLEAN restart = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK iosb{};
+        NTSTATUS st = pNtQuery(
+            h, nullptr, nullptr, nullptr, &iosb,
+            buf.data(), (ULONG)buf.size(),
+            (FILE_INFORMATION_CLASS)FileNamesInformation,
+            FALSE, nullptr, restart);
+        restart = FALSE;
+        if (st != 0) break; // STATUS_NO_MORE_FILES or an error terminates the scan
+        char* p = buf.data();
+        for (;;) {
+            ULONG next = *reinterpret_cast<ULONG*>(p + 0);
+            ULONG nameLen = *reinterpret_cast<ULONG*>(p + 8);
+            const wchar_t* nm = reinterpret_cast<const wchar_t*>(p + 12);
+            std::wstring n(nm, nameLen / sizeof(wchar_t));
+            for (size_t i = 0; i < names.size(); ++i) {
+                if (_wcsicmp(n.c_str(), names[i].c_str()) == 0) outCounts[i]++;
+            }
+            if (next == 0) break;
+            p += next;
+        }
+    }
+    CloseHandle(h);
+    return kOk;
+}
+
+// Model W write-overlay, multi-call cursor stress: write several files (which are
+// redirected into the overlay backing store) into <dir>, then enumerate <dir> with
+// a SMALL buffer that forces NtQueryDirectoryFile to return across MANY calls, and
+// verify every written name appears EXACTLY once (no skip from a shifting index, no
+// duplicate from re-inserting on each call). This is the test the 64KB-buffer
+// enumfindntdirect op cannot provide. argv: <dir> <bufBytes> <name1> [name2 ...].
+// Returns kOk iff all writes succeed and every name is enumerated exactly once;
+// kNotFound if any name is missing; kOtherError if any name is duplicated.
+int DoWriteEnumMulti(const wchar_t* dir, ULONG bufBytes,
+                     const std::vector<std::wstring>& names) {
+    for (const std::wstring& nm : names) {
+        std::wstring path = std::wstring(dir) + L"\\" + nm;
+        int w = DoWrite(path.c_str());
+        if (w != kOk) return w;
+    }
+    std::vector<int> counts;
+    int rc = EnumCountNames(dir, bufBytes, names, counts);
+    if (rc != kOk) return rc;
+    for (int c : counts) {
+        if (c == 0) return kNotFound;   // cursor skipped an entry
+        if (c > 1) return kOtherError;  // cursor emitted an entry more than once
+    }
+    return kOk;
+}
+
+// Model W write-overlay, OVERLAY-ONLY directory: write a file into a subdirectory
+// that does NOT exist on the real disk. The redirected file write creates the
+// subdirectory only in the backing store (EnsureBackingParentDirs), so <base>\<sub>
+// exists solely in the overlay. Then enumerate that overlay-only directory via the
+// direct ntdll!NtQueryDirectoryFile path: opening it must redirect the handle to the
+// backing directory (there is no real directory to open) and the enumeration must
+// list the file. Returns kOk iff the write succeeds AND the file is enumerated from
+// the overlay-only directory. (This exercises overlay-only-dir open+enum without a
+// CreateDirectoryW redirect, which is deferred to the enumeration-class work.)
+int DoWriteOvDirEnum(const wchar_t* base) {
+    std::wstring sub = std::wstring(base) + L"\\ovsub";
+    std::wstring file = sub + L"\\f.txt";
+    int w = DoWrite(file.c_str());
+    if (w != kOk) return w;
+    return DoEnumFindNtDirect(sub.c_str(), L"f.txt");
+}
+
+// Model W delete: write a brand-new undeclared file into the overlay, then delete
+// it within the same process. The delete must succeed (the backing copy is removed)
+// and the real execroot is never touched. Regression-guards the delete redirect: a
+// process must be able to delete a file it just created in the overlay.
+int DoWriteOvDelete(const wchar_t* base) {
+    std::wstring file = std::wstring(base) + L"\\ovdel.txt";
+    int w = DoWrite(file.c_str());
+    if (w != kOk) return w;
+    return DoDelete(file.c_str());
+}
+
+// Model W rename: write a brand-new undeclared file into the overlay, rename it to
+// another undeclared execroot path, then read back the destination. The whole move
+// stays inside the backing store, so the read-back succeeds and neither real path is
+// created. Regression-guards the rename source+dest redirect.
+int DoWriteOvRename(const wchar_t* base) {
+    std::wstring src = std::wstring(base) + L"\\ovr_src.txt";
+    std::wstring dst = std::wstring(base) + L"\\ovr_dst.txt";
+    int w = DoWrite(src.c_str());
+    if (w != kOk) return w;
+    int r = DoRename(src.c_str(), dst.c_str());
+    if (r != kOk) return r;
+    return DoRead(dst.c_str());
+}
+
+// Model W metadata: write a brand-new undeclared file into the overlay, then stat it
+// through every path-based metadata API (GetFileAttributesW, GetFileAttributesExW,
+// GetFileInformationByName, and exact FindFirstFileEx). Each must observe the backing
+// file the action just wrote (the real execroot has no such path), so a process can
+// stat its own scratch. Returns the first non-kOk result; kOk iff all four succeed.
+int DoWriteOvStat(const wchar_t* base) {
+    std::wstring file = std::wstring(base) + L"\\ovstat.txt";
+    int w = DoWrite(file.c_str());
+    if (w != kOk) return w;
+    int rc = DoStat(file.c_str());
+    if (rc != kOk) return rc;
+    rc = DoStatEx(file.c_str());
+    if (rc != kOk) return rc;
+    rc = DoStatByName(file.c_str());
+    if (rc != kOk) return rc;
+    return DoFindFile(file.c_str());
+}
+
+// Model W write-overlay, enumeration via GetFileInformationByHandleEx (class
+// FileIdBothDirectoryInfo): write a file into the overlay, then enumerate <dir>
+// through the GetFileInformationByHandleEx path (the .NET Directory / some-CRT
+// path, whose Win32 wrapper shields the inner NtQueryDirectoryFileEx from the
+// Nt-level hook) and report whether <name> is spliced in. kOk iff write succeeds
+// AND the name is enumerated.
+int DoWriteEnumGfibhe(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return DoEnumFindNt(dir, name);
+}
+
+// Model W write-overlay, enumeration via the Win32 FindFirstFile/FindNextFile
+// family: write a file into the overlay, then enumerate <dir> via FindFirstFileW +
+// FindNextFileW (the classic Win32 path) and report whether <name> is spliced in.
+// kOk iff write succeeds AND the name is enumerated.
+int DoWriteEnumFind(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return DoEnumFind(dir, name);
+}
+
+typedef NTSTATUS (NTAPI* NtQueryDirectoryFileEx_fn)(
+    HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, ULONG, PUNICODE_STRING);
+
+// Enumerate <dir> via a direct ntdll!NtQueryDirectoryFileEx call (the modern
+// successor hooked separately from NtQueryDirectoryFile) and report whether <name>
+// is visible. Exercises the Ex hook's overlay insertion path directly.
+int DoEnumFindNtDirectEx(const wchar_t* dir, const wchar_t* name) {
+    HANDLE h = CreateFileW(
+        dir, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    auto pEx = reinterpret_cast<NtQueryDirectoryFileEx_fn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFileEx"));
+    if (pEx == nullptr) { CloseHandle(h); return kOtherError; }
+
+    const ULONG FileNamesInformation = 12;
+    const ULONG SL_RESTART_SCAN = 0x01;
+    std::vector<char> buf(64 * 1024);
+    bool found = false;
+    ULONG flags = SL_RESTART_SCAN;
+    for (;;) {
+        IO_STATUS_BLOCK iosb{};
+        NTSTATUS st = pEx(
+            h, nullptr, nullptr, nullptr, &iosb,
+            buf.data(), (ULONG)buf.size(),
+            (FILE_INFORMATION_CLASS)FileNamesInformation, flags, nullptr);
+        flags = 0;
+        if (st != 0) break;
+        char* p = buf.data();
+        for (;;) {
+            ULONG next = *reinterpret_cast<ULONG*>(p + 0);
+            ULONG nameLen = *reinterpret_cast<ULONG*>(p + 8);
+            const wchar_t* nm = reinterpret_cast<const wchar_t*>(p + 12);
+            std::wstring n(nm, nameLen / sizeof(wchar_t));
+            if (_wcsicmp(n.c_str(), name) == 0) { found = true; break; }
+            if (next == 0) break;
+            p += next;
+        }
+        if (found) break;
+    }
+    CloseHandle(h);
+    return found ? kOk : kNotFound;
+}
+
+int DoWriteEnumEx(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return DoEnumFindNtDirectEx(dir, name);
+}
+
+// Model W write-overlay, wildcard filtering (gap #1): enumerate <dir>\<wildcard> via
+// Win32 FindFirstFileW/FindNextFileW and report whether <match> (should match the
+// wildcard) and <nomatch> (should NOT) appear. kOk iff <match> is listed and
+// <nomatch> is not; kOtherError if <nomatch> leaked (over-inclusion bug); kNotFound
+// if <match> was dropped.
+int EnumFilterFind(const wchar_t* dir, const wchar_t* wildcard,
+                   const wchar_t* match, const wchar_t* nomatch) {
+    std::wstring pattern = std::wstring(dir) + L"\\" + wildcard;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    bool foundMatch = false, foundNomatch = false;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (_wcsicmp(fd.cFileName, match) == 0) foundMatch = true;
+            if (_wcsicmp(fd.cFileName, nomatch) == 0) foundNomatch = true;
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (foundNomatch) return kOtherError;
+    return foundMatch ? kOk : kNotFound;
+}
+
+// As EnumFilterFind but via a direct ntdll!NtQueryDirectoryFile call carrying the
+// wildcard as the FileName expression on the first (restart) call. Exercises the
+// native enumeration filter's overlay-splice wildcard honoring.
+int EnumFilterNtDirect(const wchar_t* dir, const wchar_t* wildcard,
+                       const wchar_t* match, const wchar_t* nomatch) {
+    HANDLE h = CreateFileW(
+        dir, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    auto pNtQuery = reinterpret_cast<NtQueryDirectoryFile_fn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryDirectoryFile"));
+    if (pNtQuery == nullptr) { CloseHandle(h); return kOtherError; }
+
+    UNICODE_STRING us{};
+    us.Buffer = const_cast<PWSTR>(wildcard);
+    us.Length = (USHORT)(wcslen(wildcard) * sizeof(wchar_t));
+    us.MaximumLength = us.Length;
+
+    const ULONG FileNamesInformation = 12;
+    std::vector<char> buf(64 * 1024);
+    bool foundMatch = false, foundNomatch = false;
+    BOOLEAN restart = TRUE;
+    for (;;) {
+        IO_STATUS_BLOCK iosb{};
+        NTSTATUS st = pNtQuery(
+            h, nullptr, nullptr, nullptr, &iosb,
+            buf.data(), (ULONG)buf.size(),
+            (FILE_INFORMATION_CLASS)FileNamesInformation,
+            FALSE, restart ? &us : nullptr, restart);
+        restart = FALSE;
+        if (st != 0) break;
+        char* p = buf.data();
+        for (;;) {
+            ULONG next = *reinterpret_cast<ULONG*>(p + 0);
+            ULONG nameLen = *reinterpret_cast<ULONG*>(p + 8);
+            const wchar_t* nm = reinterpret_cast<const wchar_t*>(p + 12);
+            std::wstring n(nm, nameLen / sizeof(wchar_t));
+            if (_wcsicmp(n.c_str(), match) == 0) foundMatch = true;
+            if (_wcsicmp(n.c_str(), nomatch) == 0) foundNomatch = true;
+            if (next == 0) break;
+            p += next;
+        }
+    }
+    CloseHandle(h);
+    if (foundNomatch) return kOtherError;
+    return foundMatch ? kOk : kNotFound;
+}
+
+// Write <match> and <nomatch> into the overlay, then check that a wildcard
+// enumeration lists only the matching one (gap #1, Win32 FindFirstFile path).
+int DoWriteEnumFilterFind(const wchar_t* dir, const wchar_t* wildcard,
+                          const wchar_t* match, const wchar_t* nomatch) {
+    std::wstring p1 = std::wstring(dir) + L"\\" + match;
+    std::wstring p2 = std::wstring(dir) + L"\\" + nomatch;
+    int w = DoWrite(p1.c_str()); if (w != kOk) return w;
+    w = DoWrite(p2.c_str()); if (w != kOk) return w;
+    return EnumFilterFind(dir, wildcard, match, nomatch);
+}
+
+// As DoWriteEnumFilterFind but via the direct NtQueryDirectoryFile path.
+int DoWriteEnumFilterNt(const wchar_t* dir, const wchar_t* wildcard,
+                        const wchar_t* match, const wchar_t* nomatch) {
+    std::wstring p1 = std::wstring(dir) + L"\\" + match;
+    std::wstring p2 = std::wstring(dir) + L"\\" + nomatch;
+    int w = DoWrite(p1.c_str()); if (w != kOk) return w;
+    w = DoWrite(p2.c_str()); if (w != kOk) return w;
+    return EnumFilterNtDirect(dir, wildcard, match, nomatch);
+}
+
+// Model W write-overlay, narrow-filter synthesis (gap #2): write only <name> into
+// the overlay, then FindFirstFileW(<dir>\<wildcard>) where NO real entry matches the
+// wildcard. The OS would return not-found; the synthesize path must return our
+// overlay-only file as the FIRST result. kOk iff the first result is <name>;
+// kOtherError if some other entry came first; otherwise the mapped error.
+int DoWriteEnumSynth(const wchar_t* dir, const wchar_t* wildcard, const wchar_t* name) {
+    std::wstring p = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(p.c_str()); if (w != kOk) return w;
+    std::wstring pattern = std::wstring(dir) + L"\\" + wildcard;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    bool firstIsOurs = (_wcsicmp(fd.cFileName, name) == 0);
+    FindClose(h);
+    return firstIsOurs ? kOk : kOtherError;
+}
+
+// Model W write-overlay, synthetic-record METADATA correctness: write a file of
+// KNOWN length and create a subdirectory (both redirected into the overlay), then
+// enumerate <base> via GetFileInformationByHandleEx(FileIdBothDirectoryInfo) and
+// verify the spliced records carry real metadata: the file's EndOfFile equals the
+// bytes written, and the directory entry has FILE_ATTRIBUTE_DIRECTORY set (so tools
+// recurse into overlay-only subdirs). kOk iff both hold; kNotFound if the file
+// entry is missing/wrong-size; kOtherError if the dir entry lacks the directory bit.
+int DoWriteEnumMeta(const wchar_t* base) {
+    const char* content = "hello-overlay"; // 13 bytes
+    const DWORD clen = 13;
+    std::wstring file = std::wstring(base) + L"\\meta.txt";
+    HANDLE hf = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) return MapLastError();
+    DWORD wr = 0;
+    if (!WriteFile(hf, content, clen, &wr, nullptr)) { CloseHandle(hf); return kOtherError; }
+    CloseHandle(hf);
+
+    std::wstring subdir = std::wstring(base) + L"\\metadir";
+    if (!CreateDirectoryW(subdir.c_str(), nullptr)) return MapLastError();
+
+    HANDLE h = CreateFileW(
+        base, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+
+    bool fileOk = false, dirOk = false;
+    std::vector<char> buf(64 * 1024);
+    while (GetFileInformationByHandleEx(h, FileIdBothDirectoryInfo, buf.data(), (DWORD)buf.size())) {
+        auto* info = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(buf.data());
+        for (;;) {
+            std::wstring n(info->FileName, info->FileNameLength / sizeof(wchar_t));
+            if (_wcsicmp(n.c_str(), L"meta.txt") == 0) {
+                fileOk = (info->EndOfFile.QuadPart == (LONGLONG)clen);
+            } else if (_wcsicmp(n.c_str(), L"metadir") == 0) {
+                dirOk = (info->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            }
+            if (info->NextEntryOffset == 0) break;
+            info = reinterpret_cast<FILE_ID_BOTH_DIR_INFO*>(
+                reinterpret_cast<char*>(info) + info->NextEntryOffset);
+        }
+    }
+    CloseHandle(h);
+    if (!fileOk) return kNotFound;
+    if (!dirOk) return kOtherError;
+    return kOk;
+}
+
+// Model W write-overlay, CreateDirectoryW redirect + Win32 parent splice: create a
+// subdirectory that does NOT exist on the real disk (redirected into the backing
+// store), then enumerate the PARENT via the Win32 FindFirstFile family and verify
+// the overlay-only subdir appears WITH the directory attribute set. kOk iff present
+// as a directory; kNotFound if missing; kOtherError if not flagged a directory.
+int DoWriteOvSubdirEnum(const wchar_t* base) {
+    std::wstring sub = std::wstring(base) + L"\\ovsubdir";
+    if (!CreateDirectoryW(sub.c_str(), nullptr)) return MapLastError();
+    std::wstring pattern = std::wstring(base) + L"\\*";
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    bool found = false, isDir = false;
+    do {
+        if (_wcsicmp(fd.cFileName, L"ovsubdir") == 0) {
+            found = true;
+            isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            break;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    if (!found) return kNotFound;
+    if (!isDir) return kOtherError;
+    return kOk;
+}
+
 int DoCopy(const wchar_t* src, const wchar_t* dst) {
     if (CopyFileW(src, dst, FALSE)) return kOk;
     return MapLastError();
@@ -582,6 +1047,43 @@ int DoWriteSpawnDelete(const wchar_t* path, const wchar_t* childExe) {
     return RunChildOp(childExe, L"delete", path);
 }
 
+// Like RunChildOp but forwards a two-argument child op (e.g. "enumfindntdirect
+// <dir> <name>"). Returns the child's exit code, or kOtherError if spawn failed.
+int RunChildOp2(const wchar_t* exe, const wchar_t* op,
+                const wchar_t* arg1, const wchar_t* arg2) {
+    std::wstring cmd = L"\"";
+    cmd += exe; cmd += L"\" "; cmd += op;
+    cmd += L" \""; cmd += arg1; cmd += L"\"";
+    cmd += L" \""; cmd += arg2; cmd += L"\"";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, nullptr, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// Model W write-overlay, CROSS-PROCESS enumeration: create <dir>\<name> in THIS
+// (parent) process - redirected into the shared per-action overlay backing store -
+// then spawn a SEPARATE child that enumerates <dir> via ntdll!NtQueryDirectoryFile.
+// The child must SEE the parent's overlay file spliced into its listing (0), which
+// only works if the overlay index propagates cross-process (manifest-carried SHM)
+// and each process independently inserts from it. This is the enumeration analogue
+// of writespawnread/writespawndelete. Returns the CHILD's exit code.
+int DoWriteSpawnEnum(const wchar_t* dir, const wchar_t* name, const wchar_t* childExe) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return RunChildOp2(childExe, L"enumfindntdirect", dir, name);
+}
+
 int DoSpawn(int argc, wchar_t** argv) {
     // argv[2] = exe, argv[3..] = args. Rebuild a command line.
     std::wstring cmd;
@@ -704,6 +1206,51 @@ int DoNtRead(const wchar_t* path) {
     return kOtherError;
 }
 
+#ifndef FILE_OVERWRITE_IF
+#define FILE_OVERWRITE_IF 0x00000005
+#endif
+
+// Model W NT-layer redirect: create + write <base>\ntov.txt via the native
+// NtCreateFile syscall (bypassing Win32 CreateFileW), then read it back the same way.
+// Both opens must be redirected to the backing store (the real execroot never gets the
+// path), so the read-back succeeds. Exercises the OBJECT_ATTRIBUTES rewrite in
+// Detoured_NtCreateFile that Win32-layer redirection alone cannot cover.
+int DoNtWriteRead(const wchar_t* base) {
+    using NtCreateFileFn = NTSTATUS(NTAPI*)(
+        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+        PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    auto ntCreateFile = reinterpret_cast<NtCreateFileFn>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile"));
+    if (ntCreateFile == nullptr) return kOtherError;
+
+    std::wstring path = std::wstring(base) + L"\\ntov.txt";
+    std::wstring nt = L"\\??\\";
+    nt += path;
+    UNICODE_STRING us;
+    us.Buffer = const_cast<wchar_t*>(nt.c_str());
+    us.Length = static_cast<USHORT>(nt.size() * sizeof(wchar_t));
+    us.MaximumLength = static_cast<USHORT>((nt.size() + 1) * sizeof(wchar_t));
+
+    OBJECT_ATTRIBUTES oa;
+    InitializeObjectAttributes(&oa, &us, OBJ_CASE_INSENSITIVE, nullptr, nullptr);
+
+    HANDLE h = nullptr;
+    IO_STATUS_BLOCK iosb{};
+    NTSTATUS st = ntCreateFile(
+        &h, FILE_WRITE_DATA | SYNCHRONIZE, &oa, &iosb, nullptr,
+        FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OVERWRITE_IF,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, nullptr, 0);
+    if (st != 0) {
+        if (st == static_cast<NTSTATUS>(0xC0000022L)) return kDenied;
+        return kOtherError;
+    }
+    DWORD written = 0;
+    WriteFile(h, "x", 1, &written, nullptr);
+    CloseHandle(h);
+
+    return DoNtRead(path.c_str());
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -715,6 +1262,7 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring op = argv[1];
     if (op == L"read") return DoRead(argv[2]);
     if (op == L"write") return DoWrite(argv[2]);
+    if (op == L"createnew") return DoCreateNew(argv[2]);
     if (op == L"rewrite") return DoRewrite(argv[2]);
     if (op == L"writeread") return DoWriteRead(argv[2]);
     if (op == L"writedelete") return DoWriteDelete(argv[2]);
@@ -725,6 +1273,13 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"writespawndelete") {
         if (argc < 4) return kBadUsage;
         return DoWriteSpawnDelete(argv[2], argv[3]);
+    }
+    if (op == L"writespawnenum") {
+        if (argc < 5) {
+            fwprintf(stderr, L"usage: probe writespawnenum <dir> <name> <childExe>\n");
+            return kBadUsage;
+        }
+        return DoWriteSpawnEnum(argv[2], argv[3], argv[4]);
     }
     if (op == L"delete") return DoDelete(argv[2]);
     if (op == L"deleteh") return DoDeleteByHandle(argv[2]);
@@ -779,7 +1334,54 @@ int wmain(int argc, wchar_t** argv) {
         }
         return DoEnumFindNtDirect(argv[2], argv[3]);
     }
+    if (op == L"writeenum") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe writeenum <dir> <name>\n");
+            return kBadUsage;
+        }
+        return DoWriteEnum(argv[2], argv[3]);
+    }
+    if (op == L"writeenummulti") {
+        if (argc < 5) {
+            fwprintf(stderr, L"usage: probe writeenummulti <dir> <bufBytes> <name1> [name2 ...]\n");
+            return kBadUsage;
+        }
+        ULONG bufBytes = (ULONG)_wtoi(argv[3]);
+        std::vector<std::wstring> names;
+        for (int i = 4; i < argc; ++i) names.emplace_back(argv[i]);
+        return DoWriteEnumMulti(argv[2], bufBytes, names);
+    }
     if (op == L"rmdir") return DoRmdir(argv[2]);
+    if (op == L"writeovdirenum") return DoWriteOvDirEnum(argv[2]);
+    if (op == L"writeenumgfibhe") {
+        if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumgfibhe <dir> <name>\n"); return kBadUsage; }
+        return DoWriteEnumGfibhe(argv[2], argv[3]);
+    }
+    if (op == L"writeenumfind") {
+        if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumfind <dir> <name>\n"); return kBadUsage; }
+        return DoWriteEnumFind(argv[2], argv[3]);
+    }
+    if (op == L"writeenumex") {
+        if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumex <dir> <name>\n"); return kBadUsage; }
+        return DoWriteEnumEx(argv[2], argv[3]);
+    }
+    if (op == L"writeenumfilterfind") {
+        if (argc < 6) { fwprintf(stderr, L"usage: probe writeenumfilterfind <dir> <wildcard> <match> <nomatch>\n"); return kBadUsage; }
+        return DoWriteEnumFilterFind(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (op == L"writeenumfilternt") {
+        if (argc < 6) { fwprintf(stderr, L"usage: probe writeenumfilternt <dir> <wildcard> <match> <nomatch>\n"); return kBadUsage; }
+        return DoWriteEnumFilterNt(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (op == L"writeenumsynth") {
+        if (argc < 5) { fwprintf(stderr, L"usage: probe writeenumsynth <dir> <wildcard> <name>\n"); return kBadUsage; }
+        return DoWriteEnumSynth(argv[2], argv[3], argv[4]);
+    }
+    if (op == L"writeenummeta") return DoWriteEnumMeta(argv[2]);
+    if (op == L"writeovsubdirenum") return DoWriteOvSubdirEnum(argv[2]);
+    if (op == L"writeovdelete") return DoWriteOvDelete(argv[2]);
+    if (op == L"writeovrename") return DoWriteOvRename(argv[2]);
+    if (op == L"writeovstat") return DoWriteOvStat(argv[2]);
     if (op == L"scratchtree") return DoScratchTree(argv[2]);
     if (op == L"copy") {
         if (argc < 4) {
@@ -816,6 +1418,7 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"cwdis") return DoCwdIs(argv[2]);
     if (op == L"tempfile") return DoTempFile(argv[2]);
     if (op == L"ntread") return DoNtRead(argv[2]);
+    if (op == L"ntwriteread") return DoNtWriteRead(argv[2]);
     fwprintf(stderr, L"probe: unknown op '%s'\n", argv[1]);
     return kBadUsage;
 }

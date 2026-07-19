@@ -1016,6 +1016,33 @@ bool ParseFileAccessManifest(
         }
     }
 
+    // Bazel fork (Model W write-overlay): overlay backing-store root. Same padded
+    // WCHAR block layout as the created-files SHM block above, serialized right
+    // after it and before the manifest tree so the tree stays 4-byte aligned. The
+    // length word is the padded byte count of the path region; 0 means no overlay
+    // (--write-overlay not passed). CODESYNC: ManifestBuilder::SetWriteOverlayRoot.
+    {
+        uint32_t rootBytes = ParseUint32(payloadBytes, offset);
+        if (rootBytes != 0) {
+            g_bazelWriteOverlayRoot = _wcsdup(reinterpret_cast<const wchar_t*>(&payloadBytes[offset]));
+            offset += rootBytes;
+        }
+    }
+
+    // Bazel fork (Model W write-overlay): overlay SOURCE root. Same padded WCHAR
+    // block layout, serialized right after the backing-root block and before the
+    // manifest tree so the tree stays 4-byte aligned. The length word is the
+    // padded byte count of the path region; 0 means no source root. This is the
+    // virtual subtree stripped to compute a backing path. CODESYNC:
+    // ManifestBuilder::SetOverlaySourceRoot.
+    {
+        uint32_t rootBytes = ParseUint32(payloadBytes, offset);
+        if (rootBytes != 0) {
+            g_bazelOverlaySourceRoot = _wcsdup(reinterpret_cast<const wchar_t*>(&payloadBytes[offset]));
+            offset += rootBytes;
+        }
+    }
+
     g_manifestTreeRoot = reinterpret_cast<PCManifestRecord>(&payloadBytes[offset]);
     VerifyManifestRoot(g_manifestTreeRoot);
 

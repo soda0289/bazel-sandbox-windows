@@ -286,3 +286,24 @@ private:
     AccessCheckResult CreateAccessCheckResult(ResultAction result, ReportLevel reportLevel) const;
     AccessCheckResult CreateAccessCheckResult(bool isAllowed) const;
 };
+
+#if _WIN32
+// Model W write-overlay support. Returns the immediate child names of directory
+// `dir` (case-insensitive prefix match) that exist in the per-process created-files
+// index but may be absent from the real on-disk listing. For an index path strictly
+// under `dir`, the FIRST path component after `dir` is returned (so both directly
+// written files and the synthetic intermediate directories that contain deeper
+// overlay files surface in enumeration). Names are de-duplicated. `dir` is a plain
+// translated path with no type prefix (e.g. C:\ws\pkg), no trailing separator.
+void ListOverlayChildren(const std::wstring& dir, std::vector<std::wstring>& outNames);
+
+// Model W "backing store is the source of truth" (design doc §6.3). True if the
+// virtual path `virtualPathNoPrefix` (plain "X:\..." form, no type prefix) has a
+// shadow in THIS action's write-overlay backing store. Defined in
+// DetouredFunctions.cpp (needs the backing-path mangling + overlay root). Used by
+// PolicyResult::AllowWrite / WasCreatedInThisProcess so the rewrite-vs-clobber and
+// read/enumeration-visibility decisions are answered from the (cross-process)
+// backing store rather than the created-set SHM. Returns false when the overlay is
+// inactive, so legacy --execroot-writable is unaffected.
+bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix);
+#endif // _WIN32

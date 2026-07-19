@@ -85,6 +85,7 @@ _ENFORCE_CATEGORIES = [
     "reparse",
     "limitations",
     "modes",
+    "overlay",
 ]
 
 [

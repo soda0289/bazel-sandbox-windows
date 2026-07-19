@@ -115,7 +115,7 @@ So the mode names below line up with Bazel's model.
 
 * **`sandboxed` is an alias, not an implementation.** Whichever OS sandbox is
   supported registers under `sandboxed` and becomes what it resolves to on that
-  platform. You force a specific one with `--spawn_strategy=<name>` (global,
+  platform. A specific one is forced with `--spawn_strategy=<name>` (global,
   first-applicable wins) or `--strategy=<Mnemonic>=<name>` (per-mnemonic).
 * **`processwrapper-sandbox` does not exist on Windows today** — it is gated on
   `OS.isPosixCompatible()`. On Windows, `sandboxed` resolves to `windows-sandbox`
@@ -174,9 +174,9 @@ police the *boundary* (writes always; reads in hermetic mode).
 
 ProjFS (Windows Projected File System, `ProjectedFSLib.dll`, the technology
 behind VFS-for-Git) lets a user-mode **provider** back a directory subtree with
-callbacks. You designate an empty dir as the *virtualization root*, call
-`PrjStartVirtualizing`, and respond to enumeration / placeholder / file-data
-callbacks. Entries you don't create simply don't exist in that tree.
+callbacks. The provider designates an empty dir as the *virtualization root*, calls
+`PrjStartVirtualizing`, and responds to enumeration / placeholder / file-data
+callbacks. Entries the provider does not create simply do not exist in that tree.
 
 * **Availability:** optional Windows feature ("Windows Projected File System",
   `Client-ProjFS`). Present on Windows 10 1809+ / Server 2019+.
@@ -315,7 +315,7 @@ matching `linux-sandbox` configuration** (see §8 parity contract).
 * **Linux analog:** `processwrapper-sandbox` (constructive, no isolation).
 * **Use case:** fast fallback; environments where Detours injection is
   undesirable; correctness-of-inputs checking without boundary enforcement.
-* **Honesty note:** like Linux `processwrapper-sandbox`, this is a *weak* sandbox
+* **Limitation:** like Linux `processwrapper-sandbox`, this is a *weak* sandbox
   — a determined action can still write outside. Documented as such.
 
 ### 6.2 Mode 2 — `windows-sandbox` (ProjFS + Detours write-deny) — the default
@@ -582,11 +582,11 @@ granularity deliberately:
   2. When only some files in a directory are declared, either accept the coarse
      exposure (matches today's permissive default) or fall back to per-file
      projection for that directory (slow but precise) — a per-action policy knob.
-* **Why not just use a real NTFS symlink forest (like Linux)?** That is the
-  current approach we are moving away from: it needs `SeCreateSymbolicLinkPrivilege`
+* **Real NTFS symlink forest (the Linux approach), and why it is rejected.** That is the
+  current approach being moved away from: it needs `SeCreateSymbolicLinkPrivilege`
   / `--windows_enable_symlinks`, physically materializes a forest, and has the
-  reparse-handling issues (findings A1/A2/B4). ProjFS's win is *no privilege and no
-  physical forest* — but only coarse projection preserves that win at acceptable
+  reparse-handling issues (findings A1/A2/B4). ProjFS's advantage is *no privilege and no
+  physical forest* — but only coarse projection preserves that advantage at acceptable
   read speed. This trade-off is the central engineering decision for Mode 1.
 
 ### 12.4 Behavioral caveats discovered
