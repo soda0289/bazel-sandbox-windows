@@ -3,6 +3,17 @@ load("//:defs.bzl", "WIN10_DEFINES")
 
 package(default_visibility = ["//visibility:public"])
 
+# Project-owned write-overlay engine sources, compiled INTO the vendored
+# //vendor:detours_services library (they need stdafx.h + vendored types, so they
+# cannot be a standalone stdafx-free library like //:network_detours). Exported so
+# //vendor can reference them across the package boundary; the -I src include path
+# reaches that compile transitively via the //:network_detours / //:detours_compat
+# deps. See src/overlay_engine.h.
+exports_files([
+    "src/overlay_engine.cpp",
+    "src/overlay_engine.h",
+])
+
 # ---------------------------------------------------------------------------
 # File-access manifest serializer. Reimplements BuildXL's FileAccessManifest
 # wire format + path hash (see src/manifest_builder.cpp). Used by the launcher

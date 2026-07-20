@@ -29,6 +29,14 @@ _DETOURS_SERVICES_SRCS = [
     "detours-services/TreeNode.cpp",
 ]
 
+# Project-owned (NOT vendored) write-overlay engine, compiled into this library
+# because it needs stdafx.h + the vendored types. Lives in //src; see
+# //:overlay_engine exports_files and src/overlay_engine.h.
+_PROJECT_OVERLAY_SRCS = [
+    "//:src/overlay_engine.cpp",
+    "//:src/overlay_engine.h",
+]
+
 # ---------------------------------------------------------------------------
 # The vendored BuildXL enforcement engine, as its own static library.
 #
@@ -46,7 +54,7 @@ _DETOURS_SERVICES_SRCS = [
 # ---------------------------------------------------------------------------
 cc_library(
     name = "detours_services",
-    srcs = _DETOURS_SERVICES_SRCS + glob([
+    srcs = _DETOURS_SERVICES_SRCS + _PROJECT_OVERLAY_SRCS + glob([
         "detours-services/*.h",
         "sandbox-common/*.h",
     ]),

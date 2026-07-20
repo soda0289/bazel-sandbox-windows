@@ -25,7 +25,7 @@ removed.)
 ## Divergence from upstream
 
 The vendored engine is kept as close to upstream as possible. As of the pinned
-commit, **eleven vendored files diverge from upstream**; every other file is
+commit, **twelve vendored files diverge from upstream**; every other file is
 byte-identical. The changes are all additive parity work for this project (they
 extend behaviour, they do not rewrite BuildXL's enforcement) and fall into a few
 groups:
@@ -87,9 +87,28 @@ index or shared-memory region:
   `OverrideAllowWriteForExistingFiles` in `AllowWrite` (create-new allowed,
   rewrite-own allowed, clobber-existing redirected), and `HasOverlayBackingShadow`
   (backing-store-authoritative read/enumeration visibility).
-- `DetouredFunctions.cpp` — the redirect/enumeration helpers `OverlayBackingExists`,
-  `ListBackingChildren`, `ResolveOverlayOpenPath`, `ResolveOverlayDelete`,
-  `ResolveOverlayRenameDest`, and the enumeration-splice (`InsertOverlayEntries`).
+- `DetouredFunctions.cpp` — call-site grafts that invoke the redirect/enumeration
+  helpers (`OverlayBackingExists`, `ListBackingChildren`, `ResolveOverlayOpenPath`,
+  `ResolveOverlayDelete`, `ResolveOverlayRenameDest`, and the enumeration-splice
+  `InsertOverlayEntries`). The helper *bodies* live outside the vendored tree in
+  `src/overlay_engine.{h,cpp}` (see the note below); the vendored file only holds the
+  grafts and the `#include "overlay_engine.h"`.
+- `HandleOverlay.h` — five per-handle enumeration-snapshot fields on the
+  `HandleOverlay` struct (`OverlayEnumStarted`, `OverlayEnumSnapshot`,
+  `OverlayEnumCursor`, `OverlayEnumFilter`, `OverlayEnumFilterSet`) so a directory
+  enumeration splices its overlay children exactly once, in wildcard order, across
+  the multiple `NtQueryDirectoryFile` calls a single scan may take.
+
+**Project-authored helpers moved out of the vendored tree** — the write-overlay
+(Model W) redirect logic and the directory-enumeration input-filter / overlay-splice
+logic are original to this project (no upstream counterpart). Their bodies now live
+in `src/overlay_engine.{h,cpp}` (project-owned; see that file's header) rather than
+inline in the vendored `DetouredFunctions.cpp`. That translation unit is compiled
+into the vendored `//vendor:detours_services` library (it needs `stdafx.h` + the
+vendored types), so the only remaining edits to `DetouredFunctions.cpp` are the
+call-site grafts that invoke those helpers plus a single `#include`. This keeps the
+`DetouredFunctions.cpp` hunk in `detours-services.patch` roughly a third smaller and
+makes the project/upstream licensing boundary explicit.
 
 The exact diff is captured in [`detours-services.patch`](./detours-services.patch)
 (unified diff, paths relative to a BuildXL checkout root). It applies cleanly to
@@ -102,8 +121,8 @@ git apply --check /path/to/vendor/detours-services.patch
 
 Note the patch documents *only* the in-place edits to the vendored files. It does
 not include the new files this project adds (`src/network_detours.*`,
-`src/manifest_builder.cpp`, `src/main.cpp`, etc.), which are original to this
-repository, nor any files removed from the vendored copy (see below).
+`src/overlay_engine.*`, `src/manifest_builder.cpp`, `src/main.cpp`, etc.), which are
+original to this repository, nor any files removed from the vendored copy (see below).
 
 ## Removed / not-vendored upstream files
 
