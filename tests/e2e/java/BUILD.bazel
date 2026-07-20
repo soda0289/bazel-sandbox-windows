@@ -1,0 +1,105 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_java//java:defs.bzl", "java_binary")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (the java launcher + hermetic JVM) need the standard
+# Windows variables to initialize and be found on PATH under `bazel test`'s
+# scrubbed environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Java program exercising read/write/rename/move/delete through java.nio.file.
+# Run UNDER the sandbox by the cc_test; takes the execroot as argv[0] and
+# mutates <execroot>/wd. rules_java emits a native launcher (.exe) that runs the
+# classpath jar on the hermetic remote JDK; the JDK runtime + jars ride along in
+# its runfiles.
+java_binary(
+    name = "fs_ops",
+    srcs = ["FsOps.java"],
+    main_class = "FsOps",
+    visibility = ["//visibility:public"],
+)
+
+# Java program exercising the enumeration splice: a directory listing that
+# merges real on-disk entries with overlay-only ones, hides deleted/renamed-away
+# entries, and honors a glob filter. Same launcher shape as fs_ops.
+java_binary(
+    name = "enum_ops",
+    srcs = ["EnumOps.java"],
+    main_class = "EnumOps",
+    visibility = ["//visibility:public"],
+)
+
+# Java program exercising input-filtering: a declared -r input is fully visible
+# (listed + readable) while an undeclared sibling is masked NOT_FOUND (absent
+# from the listing, Files.readString throws NoSuchFileException). Same launcher
+# shape as fs_ops.
+java_binary(
+    name = "filter_ops",
+    srcs = ["FilterOps.java"],
+    main_class = "FilterOps",
+    visibility = ["//visibility:public"],
+)
+
+# Write-overlay VFS e2e: drives BazelSandbox against the hermetic Java binaries
+# and asserts overlay read-after-write, enumeration splice, an unchanged real
+# execroot, and input-filtering (declared visible / undeclared masked). The
+# launchers (with the hermetic JDK runtime) and BazelSandbox (with its
+# co-located DetoursServices.dll) ride as `data`; their runfiles rlocationpaths
+# are handed to the test via env vars.
+cc_test(
+    name = "overlay_java",
+    # JVM startup dominates; ~10s for all three cases run serially.
+    size = "small",  # 60s timeout
+    srcs = ["overlay_java_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        ":enum_ops",
+        ":filter_ops",
+        ":fs_ops",
+    ],
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_JAVA_FSOPS": "$(rlocationpath :fs_ops)",
+        "E2E_JAVA_ENUMOPS": "$(rlocationpath :enum_ops)",
+        "E2E_JAVA_FILTEROPS": "$(rlocationpath :filter_ops)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)

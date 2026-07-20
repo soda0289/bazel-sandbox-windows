@@ -61,6 +61,17 @@ csharp_binary(
     visibility = ["//visibility:public"],
 )
 
+# .NET 10 C# program exercising input-filtering: a declared -r input is fully
+# visible (listed + readable) while an undeclared sibling is masked NOT_FOUND
+# (absent from the listing, ReadAllText throws FileNotFoundException). Same
+# launcher shape as fs_ops.
+csharp_binary(
+    name = "filter_ops",
+    srcs = ["filter_ops.cs"],
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
 # Write-overlay VFS e2e: drives BazelSandbox --write-overlay against the .NET 10
 # fs_ops binary and asserts overlay read-after-write, enumeration splice, and an
 # unchanged real execroot. The launcher (with the hermetic dotnet runtime) and
@@ -74,12 +85,14 @@ cc_test(
     data = [
         "@bazel_sandbox_windows//:BazelSandbox",
         ":enum_ops",
+        ":filter_ops",
         ":fs_ops",
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
         "E2E_DOTNET_FSOPS": "$(rlocationpath :fs_ops)",
         "E2E_DOTNET_ENUMOPS": "$(rlocationpath :enum_ops)",
+        "E2E_DOTNET_FILTEROPS": "$(rlocationpath :filter_ops)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

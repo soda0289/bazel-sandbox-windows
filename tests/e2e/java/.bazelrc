@@ -1,0 +1,40 @@
+# Build settings for the java e2e module. Mirrors the root repo's .bazelrc
+# for the bits that affect building BazelSandbox/DetoursServices (which are
+# consumed from this repo via local_path_override) plus this module's tests.
+
+common --enable_bzlmod
+
+# Trust the Windows cert store when fetching modules / the remote JDK archive
+# behind a TLS-inspecting proxy (see root README).
+startup --host_jvm_args=-Djavax.net.ssl.trustStoreType=Windows-ROOT
+
+# Inherit the client PATH for repository rules.
+common --repo_env=PATH
+
+# Materialize a real runfiles tree so BazelSandbox.exe and its injected
+# DetoursServices.dll stay co-located at runtime (the launcher loads the DLL
+# from its own directory), and so the java_binary launcher can resolve the
+# hermetic JDK runtime + its classpath jars from runfiles.
+build --enable_runfiles
+
+# Fully hermetic Java: pin BOTH the target and tool JDKs to a downloaded remote
+# JDK so nothing falls back to a (missing) local_jdk - without this the default
+# toolchain's bootclasspath step shells out to local_jdk and fails
+# ("local_jdk/lib/jrt-fs.jar not exist").
+common --java_language_version=21
+common --tool_java_language_version=21
+common --java_runtime_version=remotejdk_21
+common --tool_java_runtime_version=remotejdk_21
+
+# CRITICAL: static release CRT for the vendored DetoursServices engine (see root
+# README / manifest_builder.cpp). Required to build the BazelSandbox dep.
+build --features=static_link_msvcrt
+
+build --cxxopt=/std:c++17
+build --host_cxxopt=/std:c++17
+
+test --test_output=errors
+
+# Each test spawns real sandboxed children (DLL injection + job object); run
+# serially to avoid process-creation thrash blowing the timeouts.
+test --local_test_jobs=1

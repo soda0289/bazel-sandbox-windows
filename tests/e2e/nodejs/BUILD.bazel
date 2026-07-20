@@ -72,6 +72,7 @@ cc_test(
         "E2E_JS_FSREADBACK": "$(rlocationpath scripts/fs_readback.js)",
         "E2E_JS_FSOPS": "$(rlocationpath scripts/fs_ops.js)",
         "E2E_JS_ENUMOPS": "$(rlocationpath scripts/enum_ops.js)",
+        "E2E_JS_FILTEROPS": "$(rlocationpath scripts/filter_ops.js)",
         "E2E_JS_NODEMODULES": "$(rlocationpath scripts/node_modules_stress.js)",
         "E2E_VITE_REACT": "$(rlocationpath //apps/react_app:build)",
         "E2E_NGC_ANGULAR": "$(rlocationpath //apps/ng_app:build)",

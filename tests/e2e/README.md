@@ -162,6 +162,18 @@ the Windows cert store (matches the root repo).
   `FindFirstFile`/`FindNextFile`) — deliberately, because `realtools.ps1`'s
   header flags `os.scandir` as the overlay's historical enumeration trouble spot
   (a stale last-error / `WinError 203` leaking out of the merged enumeration).
+* **`java`** — pins a fully hermetic **JDK** via `rules_java` (a downloaded
+  `remotejdk_21` for both the target and tool runtimes — `.bazelrc` sets
+  `--java_runtime_version`/`--tool_java_runtime_version=remotejdk_21` so nothing
+  falls back to a missing `local_jdk`) and compiles three `java_binary`
+  programs run **directly under the sandbox** (the native `.exe` launcher
+  resolves the JDK + classpath jars from the cc_test runfiles). `JavaFsMutationOps`
+  (`FsOps.java`) drives write/read-back/rename/move/delete and
+  `JavaEnumerationSplice` (`EnumOps.java`) the enumeration-splice case, both
+  through **`java.nio.file`** (`Files.move`/`Files.list`/`Files.newDirectoryStream`
+  → `MoveFileEx`/`FindFirstFile`) — a distinct caller from .NET/node/python.
+  Fully hermetic (JDK is Bazel-fetched), so no machine Java and no network after
+  the first fetch.
 * **`native`** — fetches **no tool**: it exercises the overlay against Windows'
   own always-present built-ins, so it always runs (no download, no skip).
   `cmd.exe`'s internal commands (`mkdir`/`del`/`rmdir`/`dir`/`type`, resolved by
@@ -181,6 +193,23 @@ the Windows cert store (matches the root repo).
   (This fixed a bug where the destination name was left as the virtual execroot
   path, so a handle rename leaked the moved file onto real disk; a real `-r`
   input still cannot be renamed/moved — the source open for `DELETE` is denied.)
+
+### Input-filtering coverage (`*FilterInputsHidesUndeclared`)
+
+Besides the write-overlay invariants above, every module carries a
+**`--filter-inputs`** case driven through the shared harness's `RunFiltered` /
+`RunFilteredBat` helpers (which emit `--filter-inputs -W <ws> -r <in> …` instead
+of `--write-overlay`). This is the mode Bazel relies on in production: only the
+declared `-r` inputs are visible to the tool; every other real file under the
+execroot is masked `NOT_FOUND` and hidden from enumeration. Each case seeds a
+declared `decl.txt` and an undeclared `secret.txt`, then asserts through the
+*real tool's own* enumeration + read APIs that `decl.txt` is listed and readable
+while `secret.txt` is absent from the listing and unreadable (masked
+`NOT_FOUND`, not access-denied): coreutils/msys2 `ls`+`cat`, cmd `dir`+`if exist`,
+python `os.scandir`+`open`, node `readdirSync`+`readFileSync`, .NET
+`GetFileSystemEntries`+`ReadAllText`, and Java `Files.list`+`Files.readString`.
+The enforce suite already covers the masking mechanism against the synthetic
+probe; these prove each *real runtime's* API surface observes it identically.
 
 ### Adding a new hermetic tool module
 

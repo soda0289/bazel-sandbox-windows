@@ -57,6 +57,7 @@ cc_test(
         "E2E_PYTHON": "$(rlocationpath @python_3_13_host//:python)",
         "E2E_PY_FSOPS": "$(rlocationpath scripts/fs_ops.py)",
         "E2E_PY_ENUMOPS": "$(rlocationpath scripts/enum_ops.py)",
+        "E2E_PY_FILTEROPS": "$(rlocationpath scripts/filter_ops.py)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

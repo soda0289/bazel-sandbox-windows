@@ -181,11 +181,7 @@ std::wstring OverlayTest::Join(const std::wstring& dir, const std::wstring& name
     return (std::filesystem::path(dir) / name).make_preferred().wstring();
 }
 
-RunResult OverlayTest::RunOverlay(const std::wstring& ws,
-                                  const std::vector<std::wstring>& toolCmd) {
-    std::vector<std::wstring> args = {L"--write-overlay", L"-W", ws, L"--"};
-    for (const auto& a : toolCmd) args.push_back(a);
-
+RunResult OverlayTest::RunArgs(const std::vector<std::wstring>& args) {
     std::wstring cmd = EscapeArg(SandboxPath());
     for (const auto& a : args) {
         cmd.push_back(L' ');
@@ -196,26 +192,55 @@ RunResult OverlayTest::RunOverlay(const std::wstring& ws,
     return r;
 }
 
+std::wstring OverlayTest::WriteBat(const std::vector<std::wstring>& lines) {
+    // @echo off keeps the transcript clean so assertions only see tool output.
+    // Each line runs regardless of the previous one's success (matches a plain
+    // script); tests assert on content.
+    std::wstring bat =
+        (tempRoot_ / (L"run_" + std::to_wstring(++counter_) + L".bat")).wstring();
+    std::ofstream f(std::filesystem::path(bat), std::ios::binary | std::ios::trunc);
+    f << "@echo off\r\n";
+    for (const auto& line : lines) {
+        std::string u;
+        int n = WideCharToMultiByte(CP_UTF8, 0, line.data(), (int)line.size(),
+                                    nullptr, 0, nullptr, nullptr);
+        u.resize(n);
+        WideCharToMultiByte(CP_UTF8, 0, line.data(), (int)line.size(), u.data(), n,
+                            nullptr, nullptr);
+        f << u << "\r\n";
+    }
+    return bat;
+}
+
+RunResult OverlayTest::RunOverlay(const std::wstring& ws,
+                                  const std::vector<std::wstring>& toolCmd) {
+    std::vector<std::wstring> args = {L"--write-overlay", L"-W", ws, L"--"};
+    for (const auto& a : toolCmd) args.push_back(a);
+    return RunArgs(args);
+}
+
+RunResult OverlayTest::RunFiltered(const std::wstring& ws,
+                                   const std::vector<std::wstring>& declaredInputs,
+                                   const std::vector<std::wstring>& toolCmd) {
+    std::vector<std::wstring> args = {L"--filter-inputs", L"-W", ws};
+    for (const auto& in : declaredInputs) {
+        args.push_back(L"-r");
+        args.push_back(in);
+    }
+    args.push_back(L"--");
+    for (const auto& a : toolCmd) args.push_back(a);
+    return RunArgs(args);
+}
+
 RunResult OverlayTest::RunOverlayBat(const std::wstring& ws,
                                      const std::vector<std::wstring>& lines) {
-    // Write a .bat that sequences the ops. @echo off keeps the transcript clean
-    // so assertions only see tool output. Each line runs regardless of the
-    // previous one's success (matches a plain script); tests assert on content.
-    std::wstring bat = (tempRoot_ / (L"run_" + std::to_wstring(++counter_) + L".bat")).wstring();
-    {
-        std::ofstream f(std::filesystem::path(bat), std::ios::binary | std::ios::trunc);
-        f << "@echo off\r\n";
-        for (const auto& line : lines) {
-            std::string u;
-            int n = WideCharToMultiByte(CP_UTF8, 0, line.data(), (int)line.size(),
-                                        nullptr, 0, nullptr, nullptr);
-            u.resize(n);
-            WideCharToMultiByte(CP_UTF8, 0, line.data(), (int)line.size(), u.data(), n,
-                                nullptr, nullptr);
-            f << u << "\r\n";
-        }
-    }
-    return RunOverlay(ws, {CmdExe(), L"/c", bat});
+    return RunOverlay(ws, {CmdExe(), L"/c", WriteBat(lines)});
+}
+
+RunResult OverlayTest::RunFilteredBat(const std::wstring& ws,
+                                      const std::vector<std::wstring>& declaredInputs,
+                                      const std::vector<std::wstring>& lines) {
+    return RunFiltered(ws, declaredInputs, {CmdExe(), L"/c", WriteBat(lines)});
 }
 
 bool OverlayTest::Exists(const std::wstring& p) {

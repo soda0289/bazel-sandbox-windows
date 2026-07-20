@@ -15,6 +15,16 @@
 // invocation, a write and its read-back must share one invocation - so a case
 // that needs several ops sequences them inside one cmd .bat.
 //
+// A second mode, RunFiltered / RunFilteredBat, drives the *input-filtering*
+// path Bazel relies on in production:
+//
+//     BazelSandbox --filter-inputs -W <execroot> -r <in> ... -- <tool> <args>
+//
+// Only the declared -r inputs are visible to the tool; every other real file
+// under the execroot is masked NOT_FOUND and hidden from enumeration. Filtering
+// cases assert a real tool reads its declared inputs but neither reads nor
+// enumerates undeclared siblings.
+//
 // The launcher rides as `data` on the cc_test and its runfiles rlocationpath is
 // handed in via E2E_SANDBOX; real tools are handed in via their own env vars
 // (each test TU knows its own names) and resolved through the rules_cc runfiles
@@ -83,6 +93,24 @@ class OverlayTest : public ::testing::Test {
     RunResult RunOverlay(const std::wstring& ws,
                          const std::vector<std::wstring>& toolCmd);
 
+    // Runs "BazelSandbox --filter-inputs -W <ws> -r <in> ... -- <toolCmd...>"
+    // and returns the exit code plus captured stdout+stderr. This drives the
+    // *input-filtering* mode Bazel relies on in production: `declaredInputs`
+    // are the only real in-cone files a tool may see - every other real file
+    // under the execroot is masked NOT_FOUND and hidden from enumeration. Use
+    // it to assert a real tool observes declared inputs but not undeclared
+    // siblings. Public so free helpers in the test TUs can drive it.
+    RunResult RunFiltered(const std::wstring& ws,
+                          const std::vector<std::wstring>& declaredInputs,
+                          const std::vector<std::wstring>& toolCmd);
+
+    // Writes `lines` to a .bat and runs it under the input-filtering mode via
+    // cmd.exe (/c) - the RunFiltered analogue of RunOverlayBat, for sequencing
+    // several tool ops in one filtered invocation.
+    RunResult RunFilteredBat(const std::wstring& ws,
+                             const std::vector<std::wstring>& declaredInputs,
+                             const std::vector<std::wstring>& lines);
+
     // Writes `lines` to a .bat in the temp root and runs it under the overlay
     // via cmd.exe (/c). Each entry becomes its own line (written verbatim, so
     // the caller controls "&&"/errorlevel sequencing). Public so free helpers
@@ -104,6 +132,12 @@ class OverlayTest : public ::testing::Test {
     const std::filesystem::path& TempRoot() const { return tempRoot_; }
 
    private:
+    // Builds the launcher command line from a full arg vector (everything after
+    // the exe, including "--" and the tool tail) and runs it, capturing output.
+    RunResult RunArgs(const std::vector<std::wstring>& args);
+    // Writes `lines` to a fresh .bat under the temp root and returns its path.
+    std::wstring WriteBat(const std::vector<std::wstring>& lines);
+
     std::filesystem::path tempRoot_;
     unsigned counter_ = 0;
 };

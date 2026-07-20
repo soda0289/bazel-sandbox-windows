@@ -222,5 +222,40 @@ TEST_F(OverlayTest, NativeEnumerationSplice) {
     EXPECT_FALSE(Exists(Join(mix, L"ovsub"))) << "overlay subdir leaked to the real disk";
 }
 
+// Input-filtering (the mode Bazel uses in production): only declared -r inputs
+// are visible. Driven through cmd's own paths - `dir /b` (FindFirstFile) for
+// enumeration, `type`/`if exist` for reads/probes - the declared input is fully
+// visible while the undeclared sibling is masked NOT_FOUND (`if exist` reports
+// it absent, and it never appears in the `dir` listing). With @echo off the
+// command lines are not echoed, so only their output reaches the transcript -
+// which is why the masked path never appears as a literal in the output.
+TEST_F(OverlayTest, NativeFilterInputsHidesUndeclared) {
+    auto ws = NewWorkspace();
+    auto decl = Join(ws, L"decl.txt");
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(decl, "DECLARED-VISIBLE");
+    WriteText(secret, "TOP-SECRET");
+
+    auto r = RunFilteredBat(ws, {decl}, {
+        // Enumeration: the listing must show decl.txt but not secret.txt.
+        L"dir /b " + Q(ws),
+        // Read-back of the declared input.
+        L"type " + Q(decl),
+        // Visibility probe of the undeclared sibling (masked NOT_FOUND). `type`
+        // is deliberately avoided here: its error text would echo the path.
+        L"if exist " + Q(secret) + L" (echo SECRETVISIBLE) else (echo SECRETHIDDEN)",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // Declared input: name in the listing, content via type.
+    EXPECT_TRUE(Contains(r.out, "decl.txt")) << "declared input missing from listing:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "DECLARED-VISIBLE")) << "declared input not readable:\n" << r.out;
+    // Undeclared sibling: absent from the listing and probed as not-existing.
+    EXPECT_FALSE(Contains(r.out, "secret.txt")) << "undeclared file leaked into listing:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "SECRETHIDDEN")) << "undeclared file was visible to `if exist`:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "SECRETVISIBLE")) << r.out;
+    EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
+}
+
 }  // namespace
 }  // namespace bsxe2e

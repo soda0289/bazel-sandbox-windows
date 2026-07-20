@@ -110,5 +110,33 @@ TEST_F(OverlayTest, PythonEnumerationSplice) {
     EXPECT_FALSE(Exists(Join(mix, L"ovsub"))) << "overlay subdir leaked to the real disk";
 }
 
+// Input-filtering (the mode Bazel uses in production): only declared -r inputs
+// are visible. Driven through CPython's own APIs - os.scandir for enumeration
+// and open() for reads - the declared input is fully visible while the
+// undeclared sibling is masked NOT_FOUND (open raises FileNotFoundError, and it
+// never appears in the scandir listing).
+TEST_F(OverlayTest, PythonFilterInputsHidesUndeclared) {
+    std::wstring py = PythonExe();
+    if (py.empty()) GTEST_SKIP() << "python missing from runfiles (E2E_PYTHON)";
+    std::wstring script = Script("E2E_PY_FILTEROPS");
+    if (script.empty()) GTEST_SKIP() << "filter_ops.py missing (E2E_PY_FILTEROPS)";
+
+    auto ws = NewWorkspace();
+    auto decl = Join(ws, L"decl.txt");
+    WriteText(decl, "DECLARED-VISIBLE");
+    WriteText(Join(ws, L"secret.txt"), "TOP-SECRET");
+
+    auto r = RunFiltered(ws, {decl}, {py, script, ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // Enumeration: declared input present, undeclared sibling hidden.
+    EXPECT_TRUE(Contains(r.out, "decl.txt")) << "declared input missing from scandir:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "secret.txt")) << "undeclared file leaked into scandir:\n" << r.out;
+    // Reads: declared input readable; undeclared sibling masked NOT_FOUND.
+    EXPECT_TRUE(Contains(r.out, "READDECL=DECLARED-VISIBLE")) << "declared input not readable:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READSECRET=ERR:NotFound")) << "undeclared read not masked NOT_FOUND:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
+}
+
 }  // namespace
 }  // namespace bsxe2e

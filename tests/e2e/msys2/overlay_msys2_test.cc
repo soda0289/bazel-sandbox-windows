@@ -162,5 +162,32 @@ TEST_F(OverlayTest, Msys2MixedRealOverlayEnumerated) {
     EXPECT_FALSE(Exists(ovsub)) << "overlay subdir leaked onto real disk";
 }
 
+// Input-filtering (the mode Bazel uses in production): only declared -r inputs
+// are visible. Driven through the msys2 applets' POSIX file ops - ls for
+// enumeration, cat for reads - the declared input is fully visible while the
+// undeclared sibling is masked NOT_FOUND. Each op runs in its own invocation so
+// cat's error text for the masked path cannot contaminate the ls listing check.
+TEST_F(OverlayTest, Msys2FilterInputsHidesUndeclared) {
+    REQUIRE_MSYS(ls, "E2E_MSYS_LS");
+    REQUIRE_MSYS(cat, "E2E_MSYS_CAT");
+
+    auto ws = NewWorkspace();
+    auto decl = Join(ws, L"decl.txt");
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(decl, "DECLARED-VISIBLE");
+    WriteText(secret, "TOP-SECRET");
+
+    // Enumeration: declared input present, undeclared sibling hidden.
+    auto lsr = RunFiltered(ws, {decl}, {ls, Fwd(ws)});
+    EXPECT_TRUE(Contains(lsr.out, "decl.txt")) << "declared input missing from listing:\n" << lsr.out;
+    EXPECT_FALSE(Contains(lsr.out, "secret.txt")) << "undeclared file leaked into listing:\n" << lsr.out;
+
+    // Content: declared input reads back; undeclared sibling is masked NOT_FOUND.
+    auto declR = RunFiltered(ws, {decl}, {cat, Fwd(decl)});
+    EXPECT_TRUE(Contains(declR.out, "DECLARED-VISIBLE")) << "declared input not readable:\n" << declR.out;
+    auto secR = RunFiltered(ws, {decl}, {cat, Fwd(secret)});
+    EXPECT_FALSE(Contains(secR.out, "TOP-SECRET")) << "undeclared file was readable:\n" << secR.out;
+}
+
 }  // namespace
 }  // namespace bsxe2e

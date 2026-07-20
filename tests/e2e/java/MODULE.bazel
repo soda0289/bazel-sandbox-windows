@@ -1,0 +1,35 @@
+"""End-to-end write-overlay VFS tests against a hermetic Java (JDK) binary.
+
+This is its own Bazel module (module-per-scenario pattern): it pins its own JDK
+toolchain via rules_java (which auto-registers a hermetic remote JDK, so no
+system Java install is required), independently of the root repo, and is
+excluded from the root workspace via the root .bazelignore. It consumes the
+sandbox under test from this repo via local_path_override.
+
+The Java programs (FsOps/EnumOps/FilterOps) drive the same read/write/rename/
+move/delete + enumeration + input-filtering sequences as the dotnet lane, but
+through java.nio.file, so the overlay is validated against the JVM's OS-API
+patterns (CreateFileW / MoveFileEx / DeleteFile / FindFirstFile).
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_java",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_java", version = "8.11.0")
+
+# The system under test: BazelSandbox.exe + DetoursServices.dll + the shared
+# e2e harness, consumed from this repo.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)

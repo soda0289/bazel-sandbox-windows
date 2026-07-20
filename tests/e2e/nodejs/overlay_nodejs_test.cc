@@ -250,5 +250,33 @@ TEST_F(OverlayTest, NgcAngularBuildVirtualizedIntoOverlay) {
         L"out/app.component.js");
 }
 
+// Input-filtering (the mode Bazel uses in production): only declared -r inputs
+// are visible. Driven through node's own fs APIs - readdirSync for enumeration
+// and readFileSync for reads - the declared input is fully visible while the
+// undeclared sibling is masked NOT_FOUND (readFileSync fails ENOENT, and it
+// never appears in the readdir listing).
+TEST_F(OverlayTest, NodeFilterInputsHidesUndeclared) {
+    std::wstring node = NodeExe();
+    if (node.empty()) GTEST_SKIP() << "node.exe missing from runfiles (E2E_NODE)";
+    std::wstring script = Script("E2E_JS_FILTEROPS");
+    if (script.empty()) GTEST_SKIP() << "filter_ops.js missing (E2E_JS_FILTEROPS)";
+
+    auto ws = NewWorkspace();
+    auto decl = Join(ws, L"decl.txt");
+    WriteText(decl, "DECLARED-VISIBLE");
+    WriteText(Join(ws, L"secret.txt"), "TOP-SECRET");
+
+    auto r = RunFiltered(ws, {decl}, {node, script, ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // Enumeration: declared input present, undeclared sibling hidden.
+    EXPECT_TRUE(Contains(r.out, "decl.txt")) << "declared input missing from readdir:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "secret.txt")) << "undeclared file leaked into readdir:\n" << r.out;
+    // Reads: declared input readable; undeclared sibling masked NOT_FOUND.
+    EXPECT_TRUE(Contains(r.out, "READDECL=DECLARED-VISIBLE")) << "declared input not readable:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READSECRET=ERR:ENOENT")) << "undeclared read not masked NOT_FOUND:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
+}
+
 }  // namespace
 }  // namespace bsxe2e

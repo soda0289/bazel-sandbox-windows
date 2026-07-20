@@ -147,5 +147,35 @@ TEST_F(OverlayTest, CoreutilsMixedRealOverlayEnumerated) {
     EXPECT_FALSE(Exists(ovsub)) << "overlay subdir leaked onto real disk";
 }
 
+// Input-filtering (the mode Bazel uses in production): only declared -r inputs
+// are visible. A real tool reading + listing the execroot must see the declared
+// input (both its content via cat and its name via ls) but NEITHER read nor
+// enumerate an undeclared sibling - it is masked NOT_FOUND and hidden from the
+// directory listing.
+TEST_F(OverlayTest, CoreutilsFilterInputsHidesUndeclared) {
+    REQUIRE_TOOL(ls, "E2E_UU_LS");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    auto ws = NewWorkspace();
+    auto decl = Join(ws, L"decl.txt");
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(decl, "DECLARED-VISIBLE");
+    WriteText(secret, "TOP-SECRET");
+
+    // Enumeration: the declared input appears, the undeclared sibling does not.
+    // (ls runs alone so its listing can't be contaminated by cat's error text,
+    // which necessarily echoes the masked path.)
+    auto lsr = RunFiltered(ws, {decl}, {ls, ws});
+    EXPECT_TRUE(Contains(lsr.out, "decl.txt")) << "declared input missing from listing:\n" << lsr.out;
+    EXPECT_FALSE(Contains(lsr.out, "secret.txt")) << "undeclared file leaked into listing:\n" << lsr.out;
+
+    // Content: the declared input reads back; the undeclared sibling is masked
+    // NOT_FOUND, so its content never appears.
+    auto declR = RunFiltered(ws, {decl}, {cat, decl});
+    EXPECT_TRUE(Contains(declR.out, "DECLARED-VISIBLE")) << "declared input not readable:\n" << declR.out;
+    auto secR = RunFiltered(ws, {decl}, {cat, secret});
+    EXPECT_FALSE(Contains(secR.out, "TOP-SECRET")) << "undeclared file was readable:\n" << secR.out;
+}
+
 }  // namespace
 }  // namespace bsxe2e
