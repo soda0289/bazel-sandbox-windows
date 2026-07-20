@@ -129,10 +129,6 @@ void ManifestBuilder::SetReportPath(std::wstring reportPath) {
     reportPath_ = std::move(reportPath);
 }
 
-void ManifestBuilder::SetCreatedShmName(std::wstring name) {
-    createdShmName_ = std::move(name);
-}
-
 void ManifestBuilder::SetWriteOverlayRoot(std::wstring root) {
     writeOverlayRoot_ = std::move(root);
 }
@@ -342,27 +338,12 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
     // 11. Substitute process shim: ShimAllProcesses 0, WriteChars(null)
     PutU32(out, 0);
     PutChars(out, nullptr);
-    // 11.5 Created-files SHM region name (Bazel fork). Padded WCHAR block laid
-    // out exactly like the report block (block 9): a size word (padded byte count
-    // of the NUL-terminated WCHAR name region) followed by the name + padding, so
-    // the following manifest tree stays 4-byte aligned. Empty name => size 0 (no
-    // created-files tracking). Carried in the payload rather than an environment
-    // variable so it reaches every child robustly. CODESYNC: ParseFileAccessManifest
-    // in the DLL reads this block right before g_manifestTreeRoot.
-    if (createdShmName_.empty()) {
-        PutU32(out, 0);
-    } else {
-        const uint32_t rawBytes =
-            static_cast<uint32_t>((createdShmName_.size() + 1) * sizeof(wchar_t));
-        const uint32_t paddedBytes = (rawBytes + 3u) & ~3u;
-        PutU32(out, paddedBytes);
-        const auto* pb = reinterpret_cast<const uint8_t*>(createdShmName_.c_str());
-        out.insert(out.end(), pb, pb + rawBytes);
-        out.insert(out.end(), paddedBytes - rawBytes, 0u);
-    }
-    // 11.6 Model W write-overlay backing-store root (Bazel fork). Same padded
-    // WCHAR block layout as block 11.5, serialized right after it so the manifest
-    // tree stays 4-byte aligned. Empty root => size 0 (no overlay). CODESYNC:
+    // 11.5 Model W write-overlay backing-store root (Bazel fork). Padded WCHAR
+    // block laid out exactly like the report block (block 9): a size word (padded
+    // byte count of the NUL-terminated WCHAR path region) followed by the path +
+    // padding, so the following manifest tree stays 4-byte aligned. Empty root =>
+    // size 0 (no overlay). Carried in the payload rather than an environment
+    // variable so it reaches every child robustly. CODESYNC:
     // g_bazelWriteOverlayRoot / ParseFileAccessManifest in the DLL.
     if (writeOverlayRoot_.empty()) {
         PutU32(out, 0);
@@ -375,8 +356,8 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 11.7 Model W write-overlay SOURCE root (Bazel fork). Same padded WCHAR block
-    // layout as block 11.6, serialized right after it so the manifest tree stays
+    // 11.6 Model W write-overlay SOURCE root (Bazel fork). Same padded WCHAR block
+    // layout as block 11.5, serialized right after it so the manifest tree stays
     // 4-byte aligned. Empty root => size 0 (no source root). CODESYNC:
     // g_bazelOverlaySourceRoot / ParseFileAccessManifest in the DLL.
     if (overlaySourceRoot_.empty()) {

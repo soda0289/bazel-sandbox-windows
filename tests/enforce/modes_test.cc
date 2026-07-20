@@ -1,7 +1,6 @@
 // Read-enforcement MODE: permissive (default) vs hermetic (-H), plus
 // --filter-inputs (undeclared inputs masked NOT_FOUND and hidden from
-// enumeration), output-parent-dir revelation, --execroot-writable, and
-// cleanup-on-exit of undeclared scratch.
+// enumeration) and output-parent-dir revelation.
 //
 // gtest port of tests/enforce/modes.ps1. Uses RunProbeRaw (no implicit -H) so
 // each case controls the read mode explicitly.
@@ -212,76 +211,6 @@ TEST_F(EnforceTest, OutputParentDirRevelation) {
     EXPECT_EQ(kDenied, RunProbeRaw({L"--filter-inputs", L"-W", od, L"-w", outfile}, {L"write", secret}));
     EXPECT_EQ(kNotFound, RunProbeRaw({L"--filter-inputs", L"-W", od, L"-w", outfile},
                                      {L"enumfind", outdir, L"secret.txt"}));
-}
-
-// --- --execroot-writable: create-new allowed, clobber-existing denied ----------
-TEST_F(EnforceTest, ExecrootWritable) {
-    auto ew = NewWorkspace();
-    auto ewNew = Join(ew, L"scratch.tmp");
-    auto ewNewDir = Join(ew, L"scratchdir");
-    auto ewExisting = Join(ew, L"a.txt");   // seeded (undeclared)
-    auto ewOut = Join(ew, L"out.txt");
-    WriteText(ewOut, "declared output");
-    auto ewInput = Join(ew, L"src.txt");    // seeded; declared -r
-
-    std::vector<std::wstring> base = {L"--filter-inputs", L"--execroot-writable", L"-W", ew};
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"write", ewNew}));
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"mkdir", ewNewDir}));
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"rewrite", Join(ew, L"rescratch.tmp")}));
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"writeread", Join(ew, L"wrscratch.tmp")}));
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"writedelete", Join(ew, L"wdscratch.tmp")}));
-    // Overwriting a pre-existing undeclared file is DENIED.
-    EXPECT_EQ(kDenied, RunProbeRaw(base, {L"write", ewExisting}));
-    // Overwriting a pre-existing declared -r input is DENIED.
-    EXPECT_EQ(kDenied, RunProbeRaw({L"--filter-inputs", L"--execroot-writable", L"-W", ew, L"-r", ewInput},
-                                   {L"write", ewInput}));
-    // A declared -w output stays freely overwritable.
-    EXPECT_EQ(kOk, RunProbeRaw({L"--filter-inputs", L"--execroot-writable", L"-W", ew, L"-w", ewOut},
-                               {L"write", ewOut}));
-    // Self-created scratch tree is visible + recursively deletable.
-    auto ewTree = Join(ew, L"treebase");
-    MakeDirs(ewTree);
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"scratchtree", ewTree}));
-    // Cross-process created-set: created in one process, read/deleted in another.
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"writespawnread", Join(ew, L"xproc.tmp"), ProbePath()}));
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"writespawndelete", Join(ew, L"xprocdel.tmp"), ProbePath()}));
-    // Pre-existing undeclared sibling stays hidden from enumeration.
-    EXPECT_EQ(kNotFound, RunProbeRaw(base, {L"enumfind", ew, L"a.txt"}));
-    // Without --execroot-writable, creating a new file is still denied.
-    EXPECT_EQ(kDenied, RunProbeRaw({L"--filter-inputs", L"-W", ew}, {L"write", Join(ew, L"nope.tmp")}));
-}
-
-// --- Cleanup-on-exit: undeclared scratch discarded after the tree exits --------
-TEST_F(EnforceTest, CleanupOnExit) {
-    auto cw = NewWorkspace();
-    std::vector<std::wstring> base = {L"--filter-inputs", L"--execroot-writable", L"-W", cw};
-
-    auto cwScratch = Join(cw, L"scratch.tmp");
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"write", cwScratch}));
-    EXPECT_FALSE(Exists(cwScratch));
-    EXPECT_TRUE(Exists(Join(cw, L"a.txt")));  // pre-existing undeclared preserved
-
-    auto cwDir = Join(cw, L"scratchdir");
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"mkdir", cwDir}));
-    EXPECT_FALSE(Exists(cwDir));
-
-    // Cross-process: scratch created by a spawned child is discarded on exit too.
-    auto cwChild = Join(cw, L"childscratch.tmp");
-    EXPECT_EQ(kOk, RunProbeRaw(base, {L"spawn", ProbePath(), L"write", cwChild}));
-    EXPECT_FALSE(Exists(cwChild));
-
-    // Declared -w output (NOT in created-set) survives.
-    auto cwOut = Join(cw, L"out.declared");
-    EXPECT_EQ(kOk, RunProbeRaw({L"--filter-inputs", L"--execroot-writable", L"-W", cw, L"-w", cwOut},
-                               {L"write", cwOut}));
-    EXPECT_TRUE(Exists(cwOut));
-
-    // Under -D (--sandbox_debug) the scratch is kept for inspection.
-    auto cwDbg = Join(cw, L"dbgscratch.tmp");
-    auto cwDbgLog = (TempRoot() / L"cleanup-debug.out").wstring();
-    EXPECT_EQ(kOk, RunProbeRaw({L"--filter-inputs", L"--execroot-writable", L"-W", cw, L"-D", cwDbgLog},
-                               {L"write", cwDbg}));
-    EXPECT_TRUE(Exists(cwDbg));
 }
 
 }  // namespace

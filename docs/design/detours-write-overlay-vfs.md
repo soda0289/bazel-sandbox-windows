@@ -1,5 +1,15 @@
 # Detours write-redirection overlay (per-action VFS) — design
 
+> **Update (post-implementation).** This doc describes the design's *evolution*,
+> including a **cross-process created-set shared-memory (SHM) index** used as an
+> interim state model. That SHM (and the legacy `--execroot-writable` mode it
+> served) has since been **fully removed**: the write-overlay **backing store on
+> disk is now the sole source of truth** for rewrite-vs-clobber, read redirection,
+> and enumeration visibility (§6.3). References below to the created-set SHM,
+> `g_bazelCreatedShmName`, `ListOverlayChildren`, `MarkCreated`/`WasCreated`, and
+> `WasCreatedInThisProcess` (now `HasOverlayBackingShadow`) are retained as design
+> history; the shipped code keeps none of them.
+
 Status: **research / proposal — NOT approved for implementation.** This doc
 studies whether a **Detours-based, write-redirecting overlay VFS** is the right
 way to close finding
@@ -1217,15 +1227,14 @@ subtractive path is byte-for-byte unchanged.
    subdirectory), dedups against the real listing, and feeds the existing per-handle
    snapshot/cursor (§5.6.1). Removes the O(total-created) prefix scan.
 3. **[done] Backing-store existence replaces the created-set.** `PolicyResult::
-   AllowWrite` (rewrite-vs-clobber) and `WasCreatedInThisProcess` (the read /
-   enumeration visibility carve-outs) now consult `OverlayBackingExists(path)` first,
-   falling back to the SHM `WasCreated(path)` only for legacy `--execroot-writable`.
+   AllowWrite` (rewrite-vs-clobber) and `HasOverlayBackingShadow` (the read /
+   enumeration visibility carve-outs) now consult `OverlayBackingExists(path)`.
    **Overlay-only directories** are handled: a directory present in the backing store
    but absent on the real disk (e.g. the implicit parent of a redirected file write)
    opens the backing directory and enumerates its children directly
    (`ResolveOverlayOpenPath` directory branch + the `InsertOverlayEntries` real-dir
-   guard that suppresses double-listing). The SHM is not yet deleted (it remains the
-   legacy fallback and still covers explicitly-created directories — see phase 5).
+   guard that suppresses double-listing). The created-set SHM has since been removed
+   entirely (along with `--execroot-writable`); the backing store is authoritative.
 4. **[done] Delete / rename.** Implemented per the §6.3.1 table. `Detoured_DeleteFileW`
    and `Detoured_MoveFileWithProgressW` (name-based) now redirect through the helpers
    `ResolveOverlayDelete` / `ResolveOverlayRenameDest` (in `DetouredFunctions.cpp`,

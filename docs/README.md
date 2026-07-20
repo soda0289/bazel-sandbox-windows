@@ -28,7 +28,7 @@ to build it. Use this folder for the deeper design, comparison, and testing docs
   used instead of a constructive VFS, the Mode 1/2/3 parity mapping, Mechanisms A
   (undeclared reads → `NOT_FOUND`) and B (enumeration filtering), the
   `DeclaredInput` marker-bit fix for the execroot symlink forest, and the
-  `--execroot-writable` write model. §9/§10 record the implementation log and
+  `--write-overlay` write model. §9/§10 record the implementation log and
   test strategy.
 * [`projfs-sandbox-modes.md`](design/projfs-sandbox-modes.md) — the *constructive*
   ProjFS VFS alternative and its sandbox modes. Deferred (slow/complex per the

@@ -116,19 +116,11 @@ typedef BOOL(__stdcall* SubstituteProcessExecutionPluginFunc)(
 extern wchar_t* g_SubstituteProcessExecutionShimPath;
 extern bool g_ProcessExecutionShimAllProcesses;
 
-// Bazel fork: name of the launcher-created shared-memory region holding the
-// cross-process "files created by this process tree" set (execroot-writable
-// mode). Parsed from the manifest payload (ParseFileAccessManifest) so it rides
-// the payload that is re-copied verbatim to every child (robust propagation,
-// independent of the child's environment block). Null when the launcher did not
-// request created-files tracking. CODESYNC: ManifestBuilder::SetCreatedShmName.
-extern wchar_t* g_bazelCreatedShmName;
-
 // Bazel fork (Model W write-overlay): absolute path to the launcher-created
 // per-invocation overlay backing directory. Undeclared writes in the execroot
 // cone are redirected under here (mirroring the virtual path) instead of touching
 // the real execroot, giving per-action write isolation. Parsed from the manifest
-// payload (rides the re-copied payload like g_bazelCreatedShmName). Null unless
+// payload so it rides the re-copied payload to every child. Null unless
 // --write-overlay was passed. CODESYNC: ManifestBuilder::SetWriteOverlayRoot.
 extern wchar_t* g_bazelWriteOverlayRoot;
 

@@ -399,7 +399,7 @@ via `--filter-inputs`.
 | Undeclared execroot in `readdir` | not present | **filtered out** (mechanism B) |
 | Declared input read | real file via symlink | real file in place (allowed by `-r`) |
 | Reads outside execroot | whole FS RO-bind-mounted (readable) | whole FS `AllowRead` (readable) — matches default Linux |
-| Writes inside execroot | allowed (whole execroot writable, discarded) | allowed as execroot-wide scratch via `--execroot-writable`; created scratch discarded on exit, declared `-w` outputs kept (§7) |
+| Writes inside execroot | allowed (whole execroot writable, discarded) | redirected into a process-private overlay via `--write-overlay`; real execroot never mutated, declared `-w` outputs written in place (§7) |
 | Writes outside execroot | denied (RO FS) | denied (no write bit) |
 | Declared output collection | copied out of throwaway execroot | already in place (in-place execution) |
 
@@ -413,14 +413,24 @@ virtual execroot (§4) is the path to close it if ever required.
 
 ---
 
-## 7. Write model: `--execroot-writable` + discard-on-exit
+## 7. Write model: `--write-overlay` (formerly `--execroot-writable`)
+
+> **Superseded.** The `--execroot-writable` flag described in this section was
+> **removed** in favor of **`--write-overlay`** (Model W), which redirects
+> undeclared writes into a process-private overlay backing store instead of
+> writing in place, so the real execroot is never mutated. The Bazel
+> `windows-sandbox` strategy now passes `--write-overlay` (with a Bazel-owned
+> `--overlay-dir`). The created-set mechanism described below is retained and
+> reused by write-overlay as its **enumeration index**. For the current write
+> model see [`detours-write-overlay-vfs.md`](detours-write-overlay-vfs.md). The
+> text below is kept for the design history of the created-set.
 
 By default writes stay confined to `-w` (declared outputs + temp), and Mechanism A
 applies to **reads only** — write denials keep returning `ACCESS_DENIED` so
 undeclared writes fail loudly rather than looking like a missing directory.
 
 To match Linux's "the whole execroot is scratch-writable and thrown away after the
-action," the Bazel `windows-sandbox` strategy additionally passes
+action," the Bazel `windows-sandbox` strategy historically passed
 **`--execroot-writable`**. This grants the execroot cone
 `AllowWrite | AllowCreateDirectory | OverrideAllowWriteForExistingFiles`, which the
 DLL enforces inline (`PolicyResult::AllowWrite`) as:

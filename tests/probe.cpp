@@ -147,7 +147,7 @@ int DoWrite(const wchar_t* path) {
 }
 
 // Write the same path twice (CREATE_ALWAYS) within a SINGLE process. Exercises the
-// execroot-writable per-process "files I created" cache: the first write creates a
+// write-overlay per-process "files I created" cache: the first write creates a
 // new file (allowed), the second sees it exists but was created by THIS process, so
 // it must still be allowed. Returns the mapped result of the SECOND write.
 int DoRewrite(const wchar_t* path) {
@@ -191,7 +191,7 @@ int DoCreateNew(const wchar_t* path) {
     return kOk;
 }
 
-// Create a NEW file, then delete it within the SAME process. Under execroot-writable
+// Create a NEW file, then delete it within the SAME process. Under write-overlay
 // this must succeed: a file the process just created has to be deletable. This is the
 // create-temp-then-rename/delete idiom used by zip/cygwin (and many temp-file tools).
 // It is distinct from DoRewrite: the delete resolves the file name via the handle
@@ -208,9 +208,9 @@ int DoWriteDelete(const wchar_t* path) {
 // all in one process. Under --filter-inputs --write-overlay where <path>'s name
 // shadows a HIDDEN undeclared real input, the merged view after the delete must show
 // the name GONE: the final READ must return NOT_FOUND, never re-reveal the masked
-// real file's existence or bytes. Regression guard for the SHM created-set leak
-// (WasCreatedInThisProcess must stop reporting "created" once the backing copy is
-// removed). Returns the mapped result of the final READ.
+// real file's existence or bytes. Regression guard for the overlay created-set leak
+// (HasOverlayBackingShadow must stop reporting a backing shadow once the backing copy
+// is removed). Returns the mapped result of the final READ.
 int DoWriteDeleteRead(const wchar_t* path) {
     int w = DoWrite(path);
     if (w != kOk) return w;
@@ -1043,7 +1043,7 @@ int DoRmdir(const wchar_t* path) {
 
 // Reproduce JavaBuilder's scratch-tree flow inside a SINGLE process: create a
 // nested subdirectory + file under <base>, then walk the tree (enumerate) to find
-// the just-written entries, then recursively delete them. Under execroot-writable
+// the just-written entries, then recursively delete them. Under write-overlay
 // input-filtering the process's OWN created directory and file must be VISIBLE to
 // its later enumerations (matching linux-sandbox's readable+writable execroot), and
 // the recursive delete must succeed (an enumeration that hid the scratch would
@@ -1180,7 +1180,7 @@ int RunChildOp(const wchar_t* exe, const wchar_t* op, const wchar_t* path) {
 }
 
 // Create a NEW file in THIS (parent) process, then spawn a SEPARATE child process
-// that reads it back. Under --execroot-writable this must succeed only if the
+// that reads it back. Under --write-overlay this must succeed only if the
 // "files created by the tree" set is shared ACROSS processes: the parent records
 // the creation, and the child - a distinct process attaching to the same manifest-
 // carried shared-memory region - must see it and be allowed to read the otherwise-

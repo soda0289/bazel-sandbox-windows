@@ -159,32 +159,6 @@ void TestReportPath() {
     }
 }
 
-// The created-files SHM name block must preserve 4-byte alignment for any name
-// length (the manifest tree follows it) and actually be serialized. Mirrors the
-// report-path test. CODESYNC: ManifestBuilder::Build block 11.5 / DLL parse.
-void TestCreatedShmName() {
-    std::vector<uint8_t> bare;
-    {
-        ManifestBuilder mb = MakeBuilder();
-        mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-        mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll);
-        bare = mb.Build(10);
-    }
-    CHECK(bare.size() % 4 == 0);
-
-    for (int extra = 0; extra < 4; ++extra) {
-        std::wstring name = L"Local\\BazelSandboxCreated_1234_5678";
-        name.append(extra, L'x');
-        ManifestBuilder mb = MakeBuilder();
-        mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-        CHECK(mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll));
-        mb.SetCreatedShmName(name);
-        std::vector<uint8_t> blob = mb.Build(10);
-        CHECK(blob.size() % 4 == 0);      // alignment preserved for any length
-        CHECK(blob.size() > bare.size()); // SHM name is actually serialized
-    }
-}
-
 // AddNodeScope must set the exact-path (node) policy WITHOUT opening the subtree
 // (cone) policy, so it serializes differently from the equivalent cone AddScope.
 // This is what lets an output parent dir be revealed/creatable while its
@@ -228,7 +202,6 @@ int main() {
     TestNodeScopeDiffersFromConeScope();
     TestFlagsAffectBlob();
     TestReportPath();
-    TestCreatedShmName();
 
     if (g_failures == 0) {
         wprintf(L"manifest_builder_test: all checks passed\n");

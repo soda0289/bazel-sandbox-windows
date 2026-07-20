@@ -248,11 +248,12 @@ undeclared input byte-for-byte unchanged:
   a `NOT_FOUND` no-op; the real undeclared input is never touched.
 
 The last-three guards regression-test a real hermeticity leak (fixed in
-`vendor/detours-services/PolicyResult.cpp`, `WasCreatedInThisProcess`): deleting or
+`vendor/detours-services/PolicyResult.cpp`, `HasOverlayBackingShadow`): deleting or
 renaming away an overlay copy created over a hidden input used to clear the backing
-store but leave an append-only created-set mark, which re-revealed the masked real
-input's existence *and* bytes. The fix makes read/enumeration visibility
-backing-store-authoritative under `--write-overlay`. The synthetic-probe analogues
+store but leave a stale created-set mark, which re-revealed the masked real
+input's existence *and* bytes. The fix (and the later removal of the created-set
+index entirely) makes read/enumeration visibility backing-store-authoritative under
+`--write-overlay`. The synthetic-probe analogues
 live in `tests/enforce/overlay_test.cc`
 (`OverlayCreateThenDeleteHiddenStaysMaskedNotFound`,
 `OverlayCreateThenRenameAwayHiddenStaysMaskedNotFound`); these modules prove each

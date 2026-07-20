@@ -3313,18 +3313,18 @@ extern bool g_isAttached;
 
 // ---------------------------------------------------------------------------
 // Model W write-overlay: write/read redirection to a process-private backing
-// store (ShouldWriteOverlay()). Undeclared writes in the execroot-writable cone
-// are redirected under g_bazelWriteOverlayRoot (mirroring the virtual path) so
-// the real execroot is never mutated and each action's scratch is isolated. The
-// virtual path is recorded in the created-set index (reused as the overlay
-// index) so reads redirect to the backing copy and enumeration can insert it.
-// All policy/reporting still runs on the VIRTUAL path; only the path handed to
-// the Real_ call is swapped. Everything here is gated by ShouldWriteOverlay().
+// store (ShouldWriteOverlay()). Undeclared writes in the write-overlay redirect
+// cone are redirected under g_bazelWriteOverlayRoot (mirroring the virtual path)
+// so the real execroot is never mutated and each action's scratch is isolated.
+// The backing copy's on-disk existence is the record: reads redirect to it and
+// enumeration inserts it (ListBackingChildren). All policy/reporting still runs on
+// the VIRTUAL path; only the path handed to the Real_ call is swapped. Everything
+// here is gated by ShouldWriteOverlay().
 // ---------------------------------------------------------------------------
 
-// True if `pr` names an undeclared write target in the execroot-writable cone
+// True if `pr` names an undeclared write target in the write-overlay redirect cone
 // (OverrideAllowWriteForExistingFiles) that should be redirected. That bit is set
-// ONLY on the execroot cone under --write-overlay/--execroot-writable; declared -w
+// ONLY on the execroot cone under --write-overlay; declared -w
 // outputs and -d output dirs are granted with Policy_MaskAll (no inheritance) and
 // without the override bit, so they are naturally excluded and land in the real
 // execroot where Bazel harvests them in place. (Note: IndicateUntracked() is NOT a
@@ -3464,8 +3464,8 @@ static bool OverlayIsDirectory(const std::wstring& p)
 // "backing store is the source of truth" enumeration source (see design doc
 // §6.3): the overlay entries to splice into a directory listing are exactly the
 // children of the mirrored backing subdirectory, obtained via one OS directory
-// scan - O(children-in-this-dir) - rather than an O(total-created) walk of the
-// cross-process created-set index. The backing subdirectory exists only once some
+// scan - O(children-in-this-dir) - rather than a walk of a whole-tree index. The
+// backing subdirectory exists only once some
 // path under it has been redirected (EnsureBackingParentDirs mirrors ancestors),
 // so an absent backing dir simply contributes nothing. "." and ".."
 // are skipped. Nested FindFirstFile/FindNextFile pass through to the real API
@@ -3509,12 +3509,12 @@ static void ListBackingChildren(const std::wstring& virtualDir, std::vector<std:
 // "backing store is the source of truth" primitive (design doc §6.3): PolicyResult
 // treats "exists in the backing store" as "created by this action this run", so the
 // rewrite-vs-clobber decision (AllowWrite) and the enumeration/read visibility
-// carve-out (WasCreatedInThisProcess) are answered from the filesystem instead of
-// the cross-process created-set SHM index. Because the backing store is shared by
+// carve-out (HasOverlayBackingShadow) are answered from the filesystem. Because
+// the backing store is shared by
 // the whole action tree (per-invocation root in the manifest), this is inherently
 // cross-process-consistent. Returns false whenever the overlay is inactive (no
-// --write-overlay / no root), so the legacy --execroot-writable created-set path is
-// unaffected. Callers are always inside an active DetouredScope, so the nested
+// --write-overlay / no root). Callers are always inside an active DetouredScope,
+// so the nested
 // GetFileAttributesW passes through to the real API (no policy re-applied).
 bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix)
 {
@@ -3533,10 +3533,10 @@ bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix)
 // input that the read/enumeration hooks make appear absent (denied reads masked
 // to NOT_FOUND; undeclared children removed from listings).
 //
-// The predicate must be independent of the per-process created-set: by the time
-// this runs the write pre-check (PolicyResult::AllowWrite) has already
-// MarkCreated'd a pre-existing undeclared file under --write-overlay, so
-// CheckReadAccess / WasCreatedInThisProcess would spuriously report it visible.
+// The predicate must be independent of the write-overlay backing store: by the
+// time this runs the write pre-check (PolicyResult::AllowWrite) has already
+// seeded a backing shadow for a pre-existing undeclared file under --write-overlay,
+// so CheckReadAccess / HasOverlayBackingShadow would spuriously report it visible.
 // Instead we consult only the STATIC manifest policy, mirroring the enumeration
 // filter's visibility rule (IsEnumChildVisible): a path is visible iff its policy
 // allows read (a declared input, or under a declared directory-input cone) or it
@@ -3560,8 +3560,8 @@ static bool OverlayRealFileHiddenByFilter(const PolicyResult& policyResult)
 // virtual path) or "" to leave the open on the real virtual path.
 //
 //  * Write-intent open of a redirectable path: ensure backing dirs, copy-up the
-//    real file first when the disposition preserves existing content, record the
-//    virtual path in the overlay index, and return the backing path.
+//    real file first when the disposition preserves existing content, and return
+//    the backing path (its on-disk existence is the record of the redirect).
 //  * Read-intent open of a path whose backing already exists (this action wrote
 //    it): return the backing path so the read sees the overlay copy.
 //  * Otherwise: return "" (open the real path unchanged).
@@ -3595,7 +3595,7 @@ static std::wstring ResolveOverlayOpenPath(
     // handle to the backing directory. The OS then enumerates the backing children
     // directly; InsertOverlayEntries detects the absent real dir and adds nothing, so
     // there is no double-listing. Under --filter-inputs those backing children stay
-    // visible via the WasCreatedInThisProcess (backing-existence) enumeration
+    // visible via the HasOverlayBackingShadow (backing-existence) enumeration
     // carve-out. The backing dir exists as soon as any file under it is written
     // (EnsureBackingParentDirs), so the real-dir-first ordering here is load-bearing.
     const std::wstring realWidePath = L"\\\\?\\" + virtualPath;
@@ -3661,8 +3661,8 @@ static std::wstring ResolveOverlayOpenPath(
             }
         }
 
-        // Record the virtual path so reads redirect here and enumeration inserts it.
-        policyResult.MarkCreatedInThisProcess();
+        // The backing copy now exists on disk; reads redirect to it (OverlayBackingExists)
+        // and enumeration splices it in (ListBackingChildren).
         return backing;
     }
 
@@ -3749,7 +3749,6 @@ static std::wstring ResolveOverlayRenameDest(PolicyResult& policyResult)
         return std::wstring();
     }
     EnsureBackingParentDirs(backing);
-    policyResult.MarkCreatedInThisProcess();
     return backing;
 }
 
@@ -5569,8 +5568,8 @@ BOOL WINAPI Detoured_DeleteFileW(_In_ LPCWSTR lpFileName)
 
     // Model W (write-overlay): redirect the unlink so the real execroot is never
     // mutated. The access check above allowed the write (a pre-existing lower file
-    // MarkCreated's + returns Allow expecting redirection), so without this block the
-    // Real_DeleteFileW below would delete the real undeclared file. See §6.3.1.
+    // is allowed under --write-overlay expecting redirection), so without this block
+    // the Real_DeleteFileW below would delete the real undeclared file. See §6.3.1.
     LPCWSTR deleteTarget = lpFileName;
     std::wstring overlayBacking;
     if (ShouldRedirectToOverlay(policyResult))
@@ -5982,7 +5981,7 @@ static bool IsEnumChildVisible(const PolicyResult& directoryPolicyResult, const 
 
     return childPolicy.AllowRead() || childPolicy.IsExactManifestNode()
 #if _WIN32
-        // Reveal entries this process created in an execroot-writable scratch scope
+        // Reveal entries this process created in a write-overlay scratch scope
         // (OverrideAllowWriteForExistingFiles), matching linux-sandbox's readable+
         // writable throwaway execroot. Without this a tool cannot see (jar, clean,
         // or re-open) the outputs it just wrote under an undeclared scratch subtree:
@@ -5992,7 +5991,7 @@ static bool IsEnumChildVisible(const PolicyResult& directoryPolicyResult, const 
         // delete leaves a non-empty directory (RemoveDirectory -> ACCESS_DENIED).
         // Undeclared PRE-EXISTING inputs are not created by this process and stay
         // hidden, preserving hermeticity. Mirrors the CheckReadAccess carve-out.
-        || (childPolicy.OverrideAllowWriteForExistingFiles() && childPolicy.WasCreatedInThisProcess())
+        || (childPolicy.OverrideAllowWriteForExistingFiles() && childPolicy.HasOverlayBackingShadow())
 #endif
         ;
 }
@@ -6249,8 +6248,8 @@ static void ApplyEnumerationFilterNtEx(
 // table (TryGetDirInfoLayout). It is gated entirely behind ShouldWriteOverlay(),
 // so with the flag off the shipped enumeration path is byte-for-byte unchanged.
 //
-// The names to insert are sourced from the real per-process overlay index (see
-// GetOverlayTestSyntheticNames / ListOverlayChildren below). Remaining full-feature scope
+// The names to insert are sourced from the real per-process backing store (see
+// GetOverlayTestSyntheticNames / ListBackingChildren below). Remaining full-feature scope
 // (tracked as mw-enum-classes): only the primary Detoured_NtQueryDirectoryFile
 // call site is wired here - the Ex/Zw siblings, the Win32 FindFirstFile layer, and
 // GetFileInformationByHandleEx are still filter-only.
@@ -6261,7 +6260,7 @@ static void ApplyEnumerationFilterNtEx(
 // default => contributes nothing). This is NOT part of the real feature: it lets
 // the enforce suite exercise the record-construction / chain-relinking / emit-once
 // mechanics in isolation, without first performing a redirected write. In normal
-// operation the overlay entries come from the per-process index (ListOverlayChildren
+// operation the overlay entries come from the on-disk backing store (ListBackingChildren
 // in InsertOverlayEntries); this env var is merely unioned in when present.
 static const std::vector<std::wstring>& GetOverlayTestSyntheticNames()
 {
@@ -8097,27 +8096,16 @@ BOOL WINAPI Detoured_CreateDirectoryW(
         result = Real_CreateDirectoryW(lpPathName, lpSecurityAttributes);
     }
     error = GetLastError();
-    // Track directories this process freshly creates in an execroot-writable scratch
-    // scope so the process's own later enumerations (IsEnumChildVisible) can see them.
-    // AllowWrite only tracks file writes; without this, the intermediate scratch
-    // directories (e.g. JavaBuilder's _javac/<lib>_classes/<pkg> tree) stay hidden and
-    // the tool cannot walk into them to jar or clean up its outputs. Only mark on a
-    // real creation (result == TRUE); a pre-existing undeclared directory returns
-    // ERROR_ALREADY_EXISTS and must stay hidden to preserve hermeticity.
-    //
     // Model W: when the overlay is active, an explicitly-created directory in the
     // redirect cone is created in the BACKING STORE (not the real execroot), mirroring
-    // how redirected file writes work. The backing-only directory then splices into a
-    // parent enumeration through every enum layer (Nt/Zw/Ex, GetFileInformationByHandleEx,
-    // and the Win32 FindFirstFile family - all now insertion-capable, see
-    // InsertOverlayEntries / NextOverlayFindDataW), and is itself openable/enumerable
-    // via the overlay-only-directory branch of ResolveOverlayOpenPath. This keeps the
-    // real execroot untouched for scratch directory trees, matching the file path.
-    if (result && policyResult.OverrideAllowWriteForExistingFiles())
-    {
-        policyResult.MarkCreatedInThisProcess();
-    }
-
+    // how redirected file writes work (see the redirect above). The backing-only
+    // directory then splices into a parent enumeration through every enum layer
+    // (Nt/Zw/Ex, GetFileInformationByHandleEx, and the Win32 FindFirstFile family -
+    // all insertion-capable, see InsertOverlayEntries / NextOverlayFindDataW, sourced
+    // from ListBackingChildren) and is itself openable/enumerable via the
+    // overlay-only-directory branch of ResolveOverlayOpenPath. This keeps the real
+    // execroot untouched for scratch directory trees, matching the file path. No extra
+    // bookkeeping is needed: the backing directory's on-disk existence is the record.
     if (!result && accessCheck.Result != ResultAction::Allow)
     {
         // On error, no directory creation happened, but we need to ensure that ResultAction::Warn acts like ResultAction::Deny.

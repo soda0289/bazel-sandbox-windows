@@ -31,7 +31,7 @@ enum FileAccessPolicy : uint32_t {
     // (parentPolicy-derived) writes are permitted only when the target file does
     // NOT already exist. Enforced in the DLL's PolicyResult::AllowWrite (per-process
     // "files I created" tracking): new files can be created/re-written, pre-existing
-    // undeclared files cannot be clobbered. Used by the execroot-writable mode.
+    // undeclared files cannot be clobbered. Used by the write-overlay mode.
     // CODESYNC: FileAccessPolicy_OverrideAllowWriteForExistingFiles in DataTypes.h.
     Policy_OverrideAllowWriteForExistingFiles = 0x400,
     // Matches C# FileAccessPolicy.AllowAll (includes symlink creation).
@@ -106,15 +106,6 @@ public:
     // for lines to actually be emitted.
     void SetReportPath(std::wstring reportPath);
 
-    // Sets the name of the launcher-created shared-memory region that backs the
-    // cross-process "files created by this tree" set (execroot-writable mode).
-    // The name is serialized into the manifest payload (a padded WCHAR block
-    // right before the manifest tree) so it reaches every child through the
-    // payload rather than the environment. An empty name (the default) emits a
-    // size-0 block (no created-files tracking). CODESYNC: g_bazelCreatedShmName /
-    // ParseFileAccessManifest in the DLL.
-    void SetCreatedShmName(std::wstring name);
-
     // Sets the Model W write-overlay backing-store root (absolute path). Serialized
     // into the manifest payload as a padded WCHAR block right after the created-shm
     // block (and before the manifest tree), so it reaches every child through the
@@ -181,7 +172,6 @@ private:
     std::string dllX86_;
     std::string dllX64_;
     std::wstring reportPath_;
-    std::wstring createdShmName_;
     std::wstring writeOverlayRoot_;
     std::wstring overlaySourceRoot_;
     Node root_;

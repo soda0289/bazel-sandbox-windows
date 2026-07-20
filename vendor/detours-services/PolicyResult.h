@@ -177,18 +177,14 @@ public:
     bool AllowRead() const { return (m_policy & FileAccessPolicy_AllowRead) != 0; }
     bool AllowReadIfNonexistent() const { return (m_policy & FileAccessPolicy_AllowReadIfNonExistent) != 0; }
     bool AllowWrite(bool basedOnlyOnPolicy) const;
-    // True iff this exact path was created by the current process via an
-    // execroot-writable (OverrideAllowWriteForExistingFiles) write of a new file.
-    // Used so a tool can read back the undeclared scratch it just wrote even though
-    // the execroot read-filter otherwise hides undeclared paths. Windows-only
-    // (backed by the per-process created-files tracker in PolicyResult.cpp).
-    bool WasCreatedInThisProcess() const;
-    // Records this exact path in the per-process created-files tracker so that the
-    // current process's later reads / stats / directory enumerations treat it as
-    // its own writable scratch (see WasCreatedInThisProcess). Used for directories
-    // created under an execroot-writable scope, which are otherwise not tracked by
-    // AllowWrite (that only tracks file writes). Windows-only.
-    void MarkCreatedInThisProcess() const;
+    // True iff this exact path has a shadow in this action's write-overlay backing
+    // store, i.e. it was created or redirected by the current run. Used so a tool
+    // can read back / enumerate the undeclared scratch it just wrote even though the
+    // execroot read-filter otherwise hides undeclared paths; because it keys off the
+    // backing shadow's existence, a deleted/renamed-away path correctly stops being
+    // treated as own scratch (no stale index to leak the underlying real file).
+    // Windows-only. (Thin alias for OverlayBackingExists on this policy's path.)
+    bool HasOverlayBackingShadow() const;
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool AllowRealInputTimestamps() const { return (m_policy & FileAccessPolicy_AllowRealInputTimestamps) != 0; }
@@ -288,22 +284,12 @@ private:
 };
 
 #if _WIN32
-// Model W write-overlay support. Returns the immediate child names of directory
-// `dir` (case-insensitive prefix match) that exist in the per-process created-files
-// index but may be absent from the real on-disk listing. For an index path strictly
-// under `dir`, the FIRST path component after `dir` is returned (so both directly
-// written files and the synthetic intermediate directories that contain deeper
-// overlay files surface in enumeration). Names are de-duplicated. `dir` is a plain
-// translated path with no type prefix (e.g. C:\ws\pkg), no trailing separator.
-void ListOverlayChildren(const std::wstring& dir, std::vector<std::wstring>& outNames);
-
 // Model W "backing store is the source of truth" (design doc §6.3). True if the
 // virtual path `virtualPathNoPrefix` (plain "X:\..." form, no type prefix) has a
 // shadow in THIS action's write-overlay backing store. Defined in
 // DetouredFunctions.cpp (needs the backing-path mangling + overlay root). Used by
-// PolicyResult::AllowWrite / WasCreatedInThisProcess so the rewrite-vs-clobber and
+// PolicyResult::AllowWrite / HasOverlayBackingShadow so the rewrite-vs-clobber and
 // read/enumeration-visibility decisions are answered from the (cross-process)
-// backing store rather than the created-set SHM. Returns false when the overlay is
-// inactive, so legacy --execroot-writable is unaffected.
+// backing store. Returns false when the overlay is inactive.
 bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix);
 #endif // _WIN32

@@ -67,22 +67,29 @@ libuv/Node use) was not detoured upstream:
   (dynamically resolved from `kernelbase.dll` so the DLL still loads on OS builds
   that lack the API) and its dynamic attach.
 
-**`--execroot-writable` cross-process created-set** — lets a tool freely create
-undeclared scratch inside the in-place execroot (create-new / re-write-own / read-
-back / delete allowed; clobber of a pre-existing undeclared input denied), matching
-linux-sandbox's throwaway writable execroot, with the "files created by the tree"
-set shared across the whole process tree (JavaBuilder writes scratch in one process
-and reads/cleans it in another):
+**`--write-overlay` per-action backing store (Model W)** — lets a tool freely
+create / re-write / delete undeclared scratch in the execroot while the real
+execroot is never mutated (matching linux-sandbox's throwaway writable execroot):
+undeclared writes are redirected into a process-private backing directory
+(`g_bazelWriteOverlayRoot`, mirroring the virtual path), reads and directory
+enumeration are served from that backing store, and a pre-existing undeclared input
+is never clobbered. The backing store is on disk and shared by the whole action
+tree (per-invocation root in the manifest), so it is inherently cross-process and
+its file-existence expresses deletes/renames — there is **no** separate created-set
+index or shared-memory region:
 
 - `globals.h`, `DetoursServices.cpp` — declaration/definition of
-  `g_bazelCreatedShmName` (the shared-memory region name that backs the created-set).
-- `DetoursHelpers.cpp` — `ParseFileAccessManifest` reads the created-set SHM region
-  name from a trailing block in the manifest payload (so it propagates to every
+  `g_bazelWriteOverlayRoot` (the per-invocation backing-store root).
+- `DetoursHelpers.cpp` — `ParseFileAccessManifest` reads the write-overlay backing
+  root from a trailing block in the manifest payload (so it propagates to every
   child on injection, independent of the child's environment block).
-- `PolicyResult.h`, `PolicyResult.cpp` — the cross-process `CreatedFilesTracker`
-  (append-only shared-memory log + per-process cache), the inline enforcement of
+- `PolicyResult.h`, `PolicyResult.cpp` — the inline enforcement of
   `OverrideAllowWriteForExistingFiles` in `AllowWrite` (create-new allowed,
-  clobber-existing denied), and the `WasCreated` / `MarkCreated` helpers.
+  rewrite-own allowed, clobber-existing redirected), and `HasOverlayBackingShadow`
+  (backing-store-authoritative read/enumeration visibility).
+- `DetouredFunctions.cpp` — the redirect/enumeration helpers `OverlayBackingExists`,
+  `ListBackingChildren`, `ResolveOverlayOpenPath`, `ResolveOverlayDelete`,
+  `ResolveOverlayRenameDest`, and the enumeration-splice (`InsertOverlayEntries`).
 
 The exact diff is captured in [`detours-services.patch`](./detours-services.patch)
 (unified diff, paths relative to a BuildXL checkout root). It applies cleanly to

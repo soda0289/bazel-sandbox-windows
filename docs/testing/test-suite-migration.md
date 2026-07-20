@@ -23,7 +23,7 @@ All nine categories pass as GoogleTest `cc_test`s, 1:1 ports of the former
 | `enforce_pathforms_cc` | canonicalization + non-ASCII |
 | `enforce_reparse_cc` | junctions always; symlinks skipped without privilege |
 | `enforce_limitations_cc` | known gaps; env-dependent cases use `RecordProperty`, not asserts |
-| `enforce_modes_cc` | permissive vs `-H`, `--filter-inputs` matrix, `--execroot-writable`, cleanup-on-exit |
+| `enforce_modes_cc` | permissive vs `-H`, `--filter-inputs` matrix, output-parent-dir revelation |
 | `enforce_overlay_cc` | Model W write-overlay (env-var toggled test names) |
 
 Harness capabilities added beyond the pilot (`tests/enforce/enforce_harness.{h,cc}`):

@@ -62,15 +62,6 @@ struct Options {
     // directory enumerations - so undeclared inputs are invisible, as under
     // linux-sandbox's symlink forest. See docs/design/detours-input-filtering.md.
     bool filterInputs = false;
-    // --execroot-writable: allow the sandboxed tool to CREATE new files/directories
-    // anywhere in the execroot (working dir) and re-write files it created, while
-    // still DENYING overwrites of pre-existing undeclared/input files. This matches
-    // linux-sandbox, whose throwaway execroot is fully writable, and covers tools
-    // that write undeclared scratch inside the execroot (e.g. vite's node_modules/
-    // .vite-temp) without granting a hole to clobber real inputs. Declared -w outputs
-    // stay freely overwritable; -r inputs stay read-only. Enforced via the execroot
-    // cone's OverrideAllowWriteForExistingFiles policy bit (see PolicyResult::AllowWrite).
-    bool execrootWritable = false;
     // --write-overlay: EXPERIMENTAL Model W write-overlay kill-switch. Enables the
     // enumeration-insertion path in the DLL so a tool sees files that live only in
     // its process-private write overlay. Off by default (the shipped subtractive
@@ -145,9 +136,6 @@ void PrintUsage(int exitCode) {
         L"  --filter-inputs  strict mode: implies -H and makes undeclared inputs\n"
         L"             invisible - denied reads return NOT_FOUND and directory\n"
         L"             listings hide undeclared entries (matches linux-sandbox)\n"
-        L"  --execroot-writable  allow creating NEW files/dirs anywhere in the\n"
-        L"             working dir (and re-writing files created this run) while still\n"
-        L"             denying overwrites of pre-existing undeclared/input files\n"
         L"  --write-overlay  EXPERIMENTAL Model W kill-switch: allow directory\n"
         L"             listings to include files that live only in a process-private\n"
         L"             write overlay (off by default; see design doc)\n"
@@ -236,8 +224,6 @@ Options ParseOptions(std::vector<std::wstring> args) {
             } else if (name == L"-filter-inputs") {
                 o.filterInputs = true;
                 o.hermetic = true;
-            } else if (name == L"-execroot-writable") {
-                o.execrootWritable = true;
             } else if (name == L"-write-overlay") {
                 o.writeOverlay = true;
             } else if (name == L"-overlay-dir") {
@@ -381,115 +367,6 @@ std::wstring BuildChildCommandLine(const std::vector<std::wstring>& args) {
         }
     }
     return out;
-}
-
-// ---------------------------------------------------------------------------
-// Cross-process created-files set (shared memory).
-//
-// The whole sandboxed process tree is a single Bazel action. Like linux-sandbox's
-// shared writable execroot, a scratch file/dir CREATED by ANY process in the tree
-// must be readable/enumerable/deletable by EVERY other process in the tree (e.g.
-// JavaBuilder forks javac to create _javac/*_tmp/native_headers in one process and
-// cleans it up in another). The DetoursServices DLL keeps that "created this run"
-// set here; a per-process set cannot see a sibling/parent's creations, so the set
-// is backed by a named shared-memory region created per launcher invocation (i.e.
-// per action - no cross-action leakage) and inherited by every injected DLL. The
-// region name is carried in the manifest payload (ManifestBuilder::SetCreatedShmName
-// -> g_bazelCreatedShmName in the DLL), which is re-copied verbatim to every child
-// on injection, so it propagates robustly even to a child spawned with a custom
-// environment block. Layout / semantics are mirrored in
-// vendor/detours-services/PolicyResult.cpp (CreatedFilesTracker). Only set up when
-// --execroot-writable is in effect (the only mode that consults the tracker).
-// ---------------------------------------------------------------------------
-struct CreatedShmHeader {
-    volatile long long usedBytes;  // bytes of records written into the data region
-    long long capacity;            // usable data-region size in bytes
-};
-constexpr long long kCreatedShmDataBytes = 32ll * 1024 * 1024;
-
-struct CreatedShmHandles {
-    HANDLE mapping = nullptr;
-    HANDLE mutex = nullptr;
-    std::wstring name;
-};
-
-// Create the shared-memory region + mutex and initialize the header. The region
-// name is returned in CreatedShmHandles::name so the caller can carry it in the
-// manifest payload (ManifestBuilder::SetCreatedShmName), which propagates it to
-// every injected DLL in the process tree via the payload that is re-copied on
-// injection - robust even for children spawned with a custom environment block.
-// Returns the owning handles; keep them open for the lifetime of the process tree.
-CreatedShmHandles SetupCreatedFilesShm() {
-    CreatedShmHandles shm;
-    std::wstring base = L"Local\\BazelSandboxCreated_" +
-                        std::to_wstring(GetCurrentProcessId()) + L"_" +
-                        std::to_wstring(GetTickCount64());
-    long long total = static_cast<long long>(sizeof(CreatedShmHeader)) + kCreatedShmDataBytes;
-    HANDLE mapping = CreateFileMappingW(
-        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-        static_cast<DWORD>(total >> 32), static_cast<DWORD>(total & 0xFFFFFFFF),
-        base.c_str());
-    if (mapping == nullptr) return shm;
-    void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(CreatedShmHeader));
-    if (view == nullptr) {
-        CloseHandle(mapping);
-        return shm;
-    }
-    auto* h = static_cast<CreatedShmHeader*>(view);
-    h->usedBytes = 0;
-    h->capacity = kCreatedShmDataBytes;
-    UnmapViewOfFile(view);
-    shm.mutex = CreateMutexW(nullptr, FALSE, (base + L".mtx").c_str());
-    shm.mapping = mapping;
-    shm.name = base;
-    return shm;
-}
-
-// Discard undeclared scratch after the sandboxed process tree exits, mirroring
-// linux-sandbox, which throws away its writable execroot after every action so no
-// action ever inherits another's (or a prior attempt's) leftover files. We run
-// IN PLACE, so the execroot persists between actions and across Bazel's reduced->
-// full classpath re-execution of the same Java action; a first attempt that fails
-// mid-way leaves scratch (e.g. _javac/*_tmp/native_headers) that the second
-// attempt's JavaBuilder cleanupDirectory cannot remove (hidden by the input
-// filter) -> "directory not empty". Deleting our own tracked creations on exit
-// gives each attempt/action the clean slate it would get under linux-sandbox.
-//
-// The SHM created-set records ONLY undeclared creations under the execroot-writable
-// (OverrideAllowWriteForExistingFiles) cone; declared -w outputs are AllowAll /
-// IndicateUntracked and are never in the set, so they are preserved. Deleting
-// deepest-first empties a scratch directory before its own removal; a directory
-// that still holds a declared output (e.g. an -d output parent dir) simply fails
-// RemoveDirectory and is left in place. Skipped under -D (--sandbox_debug), matching
-// linux-sandbox keeping its sandbox dir for inspection.
-void CleanupCreatedScratch(HANDLE mapping) {
-    if (mapping == nullptr) return;
-    BYTE* view = static_cast<BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
-    if (view == nullptr) return;
-    auto* h = reinterpret_cast<CreatedShmHeader*>(view);
-    long long used = h->usedBytes;
-    BYTE* data = view + sizeof(CreatedShmHeader);
-    std::vector<std::wstring> paths;
-    long long off = 0;
-    while (off + static_cast<long long>(sizeof(uint32_t)) <= used) {
-        uint32_t nameBytes = *reinterpret_cast<uint32_t*>(data + off);
-        long long recEnd = off + static_cast<long long>(sizeof(uint32_t)) + nameBytes;
-        if (recEnd > used) break;
-        const wchar_t* chars = reinterpret_cast<const wchar_t*>(data + off + sizeof(uint32_t));
-        paths.emplace_back(chars, nameBytes / sizeof(wchar_t));
-        long long rec = static_cast<long long>(sizeof(uint32_t)) + nameBytes;
-        rec = (rec + 3) & ~3ll;  // records are 4-byte aligned
-        off += rec;
-    }
-    UnmapViewOfFile(view);
-    // Deepest paths first so children are gone before we remove their parent dir.
-    std::sort(paths.begin(), paths.end(),
-              [](const std::wstring& a, const std::wstring& b) { return a.size() > b.size(); });
-    for (const auto& p : paths) {
-        if (!DeleteFileW(p.c_str())) {
-            RemoveDirectoryW(p.c_str());
-        }
-    }
 }
 
 // Model W write-overlay: create a fresh per-invocation backing-store root and
@@ -880,13 +757,14 @@ int wmain(int argc, wchar_t** argv) {
     uint32_t workingDirPolicy = o.hermetic
         ? Policy_Deny
         : (Policy_AllowRead | Policy_AllowReadIfNonExistent);
-    // --execroot-writable: grant write + create-directory on the execroot cone, with
+    // --write-overlay: grant write + create-directory on the execroot cone, with
     // OverrideAllowWriteForExistingFiles so the DLL allows creating NEW files/dirs and
     // re-writing files created this run but denies clobbering pre-existing undeclared
-    // files. Read bits are unchanged (still hidden under a hermetic/filter-inputs
+    // files (undeclared writes are redirected into the process-private overlay backing
+    // store). Read bits are unchanged (still hidden under a hermetic/filter-inputs
     // execroot). Declared -w outputs (AllowAll) and -r inputs are applied as more
     // specific scopes below and are unaffected.
-    if (o.execrootWritable || o.writeOverlay) {
+    if (o.writeOverlay) {
         workingDirPolicy |= Policy_AllowWrite | Policy_AllowCreateDirectory |
                             Policy_OverrideAllowWriteForExistingFiles;
     }
@@ -949,17 +827,6 @@ int wmain(int argc, wchar_t** argv) {
                                  Policy_DeclaredInput))
             Die(L"bad output dir: " + p);
         dbg(L"od", p);
-    }
-
-    // Set up the cross-process created-files shared-memory region BEFORE building
-    // the manifest so its name can be embedded in the payload (which is re-copied
-    // to every child on injection). Only needed under --execroot-writable, the
-    // sole mode that consults the created-files tracker. The handles are kept open
-    // until the tree exits (region lifetime == action).
-    CreatedShmHandles createdShm;
-    if (o.execrootWritable || o.writeOverlay) {
-        createdShm = SetupCreatedFilesShm();
-        mb.SetCreatedShmName(createdShm.name);
     }
 
     // Model W write-overlay: create the per-invocation backing store, grant it as
@@ -1157,12 +1024,6 @@ int wmain(int argc, wchar_t** argv) {
     // Collect resource-usage statistics from the job before we close it.
     WriteStats(o.statsPath, hJob);
 
-    // Discard undeclared scratch the tree created (linux-sandbox parity), unless
-    // --sandbox_debug (-D) asked us to keep it for inspection. Done before closing
-    // the SHM mapping (the created-set lives there) and after the tree has exited.
-    if (o.execrootWritable && o.debugPath.empty()) {
-        CleanupCreatedScratch(createdShm.mapping);
-    }
     // Model W: discard the overlay backing store on tree exit (linux-sandbox
     // parity). Kept under -D for inspection; its path was printed via dbg("ov").
     if (o.writeOverlay && o.debugPath.empty()) {
@@ -1177,8 +1038,6 @@ int wmain(int argc, wchar_t** argv) {
     if (hThread) CloseHandle(hThread);
     if (hProcess) CloseHandle(hProcess);
     if (hJob) CloseHandle(hJob);
-    if (createdShm.mutex) CloseHandle(createdShm.mutex);
-    if (createdShm.mapping) CloseHandle(createdShm.mapping);
 
     if (dbgFp) fclose(dbgFp);
     return static_cast<int>(exitCode);

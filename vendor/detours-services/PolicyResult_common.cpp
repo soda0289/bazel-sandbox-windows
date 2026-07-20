@@ -94,12 +94,12 @@ AccessCheckResult PolicyResult::CheckReadAccess(RequestedReadAccess readAccessRe
         || (!exists && AllowReadIfNonexistent())
         || (readAccessRequested == RequestedReadAccess::EnumerationProbe)
 #if _WIN32
-        // execroot-writable scratch: a file this process just created (allowed as a
+        // write-overlay scratch: a file this process just created (allowed as a
         // new-file write under OverrideAllowWriteForExistingFiles) must be readable
         // back by the same process, matching linux-sandbox's readable+writable
         // throwaway execroot. Without this the execroot read-filter would mask the
         // tool's own scratch as NOT_FOUND (e.g. vite's .vite-temp timestamp module).
-        || (exists && OverrideAllowWriteForExistingFiles() && WasCreatedInThisProcess())
+        || (exists && OverrideAllowWriteForExistingFiles() && HasOverlayBackingShadow())
 #endif
         ;
 

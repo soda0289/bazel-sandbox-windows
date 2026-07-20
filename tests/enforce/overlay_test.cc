@@ -1,6 +1,6 @@
 // Model W write-overlay (experimental): write/read redirection + directory-
 // enumeration insertion. The overlay redirects undeclared writes in the
-// execroot-writable cone into a process-private backing store, so the real
+// execroot cone into a process-private backing store, so the real
 // execroot is never mutated, yet overlay-only files still APPEAR when the tool
 // lists the directory it "wrote" them into. Everything is gated by the
 // --write-overlay kill-switch.
@@ -109,15 +109,6 @@ TEST_F(EnforceTest, OverlayEnumMap) {
     EXPECT_FALSE(Exists(Join(ws, L"mapped.txt")));
 }
 
-// Control: without --write-overlay (but execroot-writable), the same new-file
-// write lands on the REAL disk.
-TEST_F(EnforceTest, OverlayControlWriteLandsOnDisk) {
-    SetOverlayNames(L"");
-    auto ws = NewWorkspace();
-    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--execroot-writable"}, {L"write", Join(ws, L"onreal.txt"), L"x"}));
-    EXPECT_TRUE(Exists(Join(ws, L"onreal.txt")));
-}
-
 // Cross-process enumeration: a separate child sees the parent's overlay file.
 TEST_F(EnforceTest, OverlayCrossProcessEnum) {
     SetOverlayNames(L"");
@@ -193,9 +184,9 @@ TEST_F(EnforceTest, OverlayDeleteHiddenLowerFileNotFound) {
 // Create-then-delete over a HIDDEN undeclared input: writing the masked name lands
 // in the overlay backing store; deleting that overlay copy must leave the merged
 // view showing the name GONE. The subsequent read must return NOT_FOUND - it must
-// NOT re-reveal the masked real file. Regression guard for the SHM created-set leak:
-// once the backing copy is removed, WasCreatedInThisProcess must stop reporting the
-// path "created this action" so the read re-masks to the hidden real input.
+// NOT re-reveal the masked real file. Regression guard for the overlay created-set leak:
+// once the backing copy is removed, HasOverlayBackingShadow must stop reporting a
+// backing shadow so the read re-masks to the hidden real input.
 TEST_F(EnforceTest, OverlayCreateThenDeleteHiddenStaysMaskedNotFound) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();  // seeds seed.txt = "seed-data"

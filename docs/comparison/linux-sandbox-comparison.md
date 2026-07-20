@@ -113,21 +113,25 @@ Legend: ✅ implemented · ➕ useful, not yet implemented · 🚫 intentionally
   through the existing **`--sandbox_add_mount_pair`** option. Not yet implemented;
   see `docs/design/detours-input-filtering.md` §Modes.
 
-- **`--execroot-writable`** — matches the fact that linux-sandbox runs in a
-  **fully writable throwaway execroot**. Because the Windows sandbox runs *in
-  place* in the real execroot, we cannot simply make it writable (that would let
-  a tool clobber real inputs). Instead this flag lets the tool **create** new
-  files/dirs anywhere in the execroot and re-write files it created *this run*,
-  while still **denying overwrites** of pre-existing undeclared/input files
-  (enforced via the execroot cone's `OverrideAllowWriteForExistingFiles` bit).
+- **`--write-overlay`** (formerly `--execroot-writable`) — matches the fact that
+  linux-sandbox runs in a **fully writable throwaway execroot**. Because the
+  Windows sandbox runs *in place* in the real execroot, we cannot simply make it
+  writable (that would let a tool clobber real inputs). Instead this flag lets the
+  tool **create** new files/dirs anywhere in the execroot and re-write files it
+  created *this run*, while a write **over a pre-existing** undeclared/input file
+  is **redirected into a process-private overlay backing store** so the real file
+  is never mutated (enforced via the execroot cone's
+  `OverrideAllowWriteForExistingFiles` bit plus the overlay redirect in the DLL).
   The runner passes it alongside `--filter-inputs`. It covers tools that write
   undeclared scratch inside the execroot (e.g. vite's `node_modules/.vite-temp`)
-  without opening a hole to overwrite declared inputs. The files it creates this
-  run are tracked in a cross-process **created-set** (shared memory, so a forked
-  child's creations are visible to the parent), and the launcher **discards them
-  when the process tree exits** — reproducing linux-sandbox's throwaway execroot
-  so no later action, or a reduced→full classpath re-execution of the same Java
-  action, inherits stale scratch. Declared `-w` outputs are never in the set and
+  without opening a hole to overwrite declared inputs. Files it creates or
+  redirects this run are tracked in a cross-process **created-set** (shared memory,
+  so a forked child's creations are visible to the parent) that also drives
+  **enumeration** (overlay-only files are spliced into directory listings), and
+  Bazel discards the backing store **when the process tree exits** — reproducing
+  linux-sandbox's throwaway execroot so no later action, or a reduced→full
+  classpath re-execution of the same Java action, inherits stale scratch. Declared
+  `-w` outputs are written in place and never in the set, and
   are preserved. Cleanup is skipped under `--sandbox_debug`.
 - **Output parent directories (derived from `-w`, no CLI flag)** — linux-sandbox
   pre-creates the parent directory of every declared output in its writable
@@ -317,16 +321,26 @@ action is its own `BazelSandbox.exe` operating **in place in the same real
 execroot**. `linux-sandbox` gives every action its **own** staged tree, so two
 actions never share a physical path. Because we run in place, two concurrent
 actions that both write an **undeclared, fixed-name** file into their working
-directory (the execroot root) target the **same** path. The `--execroot-writable`
+directory (the execroot root) target the **same** path.
+
+> **Resolved by `--write-overlay`.** This collision was specific to the former
+> in-place `--execroot-writable` model. Under `--write-overlay` an undeclared
+> write over a pre-existing on-disk path is **redirected into each action's
+> process-private overlay backing store** rather than written in place, so two
+> concurrent actions writing the same fixed-name undeclared file each get their
+> own backing copy and neither is denied. The paragraph below describes the
+> historical `--execroot-writable` behavior.
+
+The former `--execroot-writable`
 no-clobber guard — allow if in *this action's* created-set, else deny if the file
-already exists on disk (protecting undeclared inputs) — then denies whichever
-action does not "own" the on-disk copy: while action A holds
-`<execroot>/y.output` (created, not yet exited/discarded), concurrent action B sees
-it on disk, absent from B's per-action created-set, and gets `ERROR_ACCESS_DENIED`.
+already exists on disk (protecting undeclared inputs) — then denied whichever
+action did not "own" the on-disk copy: while action A held
+`<execroot>/y.output` (created, not yet exited/discarded), concurrent action B saw
+it on disk, absent from B's per-action created-set, and got `ERROR_ACCESS_DENIED`.
 `local` never hits this only because it enforces no no-clobber at all (the
 undeclared write just races, last-writer-wins; the file's content is never
 consumed) — i.e. it is latent non-hermeticity that `linux-sandbox` masks with
-per-action trees and our in-place model surfaces as a hard denial. This was
+per-action trees and our in-place model surfaced as a hard denial. This was
 observed with `goyacc`'s `y.output` diagnostic side-file; see
 `sandbox-parity-findings.md` §A8 for the reproduction and fix directions, and §6
 below for the constructive (per-action VFS) fix that removes the class entirely.

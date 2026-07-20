@@ -119,7 +119,7 @@ worth adding (notably `-C` resource limits) — see
 
 For the design of the **in-place input-filtering path** — the `--filter-inputs`
 default that makes undeclared inputs invisible (matching hermetic
-`linux-sandbox` / remote execution), the mode mapping, the `--execroot-writable`
+`linux-sandbox` / remote execution), the mode mapping, the `--write-overlay`
 model, and the `DeclaredInput` marker-bit fix for the execroot symlink
 forest — see [`docs/design/detours-input-filtering.md`](docs/design/detours-input-filtering.md).
 
@@ -162,7 +162,7 @@ Two environment notes are baked into `.bazelrc`:
 [Usage](#usage)) — but to drive it *from Bazel* as the `windows-sandbox` spawn
 strategy you currently need a **patched Bazel**. Upstream Bazel ships an
 incomplete `windows-sandbox` runner (it only passes `-r`/`-w`/`-b`/`-D`, rejects
-runfiles symlink trees, and never enables input-filtering / execroot-writable /
+runfiles symlink trees, and never enables input-filtering / write-overlay /
 output-dir / network flags), so it cannot reach parity with `linux-sandbox` /
 remote execution on its own.
 
@@ -216,9 +216,12 @@ BazelSandbox [option...] -- command [arg...]
   --filter-inputs  strict mode: implies -H and makes undeclared inputs
              invisible (denied reads return NOT_FOUND, directory listings hide
              undeclared entries) - matches hermetic linux-sandbox / remote exec
-  --execroot-writable  allow creating NEW files/dirs anywhere in the working
-             dir (and re-writing files created this run) while still denying
-             overwrites of pre-existing undeclared/input files
+  --write-overlay  redirect undeclared writes in the working dir into a
+             process-private overlay backing store (so the real execroot is
+             never mutated) and splice overlay-only files into directory
+             listings; pre-existing undeclared/input files are never clobbered
+  --overlay-dir <dir>  location for the write-overlay backing store (a
+             per-invocation subdir is created under it); default: %TMP%
   -D <file>  write launcher diagnostics to a file
   --trace <file>  write a per-access report (from the sandbox DLL) to a file
   -S <file>  write child resource-usage statistics (protobuf) to a file
@@ -271,12 +274,15 @@ building any virtual filesystem:
   enumerations**. So an undeclared file looks *absent*, exactly as it would under
   Linux's symlink forest. There is **no filename special-casing** — visibility is
   decided purely by whether Bazel declared the path as an input to this action.
-* `--execroot-writable` matches `linux-sandbox`'s fully-writable throwaway
-  execroot: the tool may **create** new files/dirs anywhere in the working dir
-  and re-write files it created this run, while still **denying overwrites** of
-  pre-existing undeclared/input files. This covers tools that write undeclared
-  scratch inside the execroot (e.g. vite's `node_modules/.vite-temp`) without
-  opening a hole to clobber real inputs.
+* `--write-overlay` gives tools a writable working dir without ever mutating the
+  real execroot: the tool may **create** new files/dirs anywhere in the working
+  dir and re-write files it created this run, while **writes over pre-existing
+  undeclared/input files are redirected** into a process-private overlay backing
+  store (so the real file is never clobbered). Overlay-only files are spliced
+  back into directory listings so the tool sees what it "wrote". This covers
+  tools that write undeclared scratch inside the execroot (e.g. vite's
+  `node_modules/.vite-temp`). The backing store is discarded on exit (kept under
+  `--sandbox_debug`), mirroring `linux-sandbox`'s throwaway writable execroot.
 
 Because the action runs in place, declared inputs reached through the execroot's
 per-entry symlink forest (each `_main/*` entry is a symlink/junction into the
