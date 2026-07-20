@@ -1,0 +1,27 @@
+# BUILD file overlaid onto the msys2-base release archive by the http_archive
+# in MODULE.bazel. After strip_prefix = "msys64", the GNU coreutils applets
+# live at usr/bin/<tool>.exe and the MSYS runtime DLLs they load at run time
+# (msys-2.0.dll, msys-intl-8.dll, ...) live alongside them at usr/bin/*.dll.
+#
+# The applets are dynamically linked against the MSYS runtime, so each .exe must
+# stay co-located with the usr/bin DLLs. Because both live under the same
+# package path (usr/bin/), the runfiles tree keeps them adjacent and Windows'
+# default DLL search resolves the runtime when an applet is launched by its full
+# runfiles path.
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "usr/bin/cat.exe",
+    "usr/bin/cp.exe",
+    "usr/bin/ls.exe",
+    "usr/bin/mkdir.exe",
+    "usr/bin/mv.exe",
+    "usr/bin/rm.exe",
+])
+
+# The MSYS runtime DLLs the applets load. Shipped as data so they land next to
+# the applet .exe files in the runfiles tree.
+filegroup(
+    name = "runtime_dlls",
+    srcs = glob(["usr/bin/*.dll"]),
+)

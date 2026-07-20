@@ -1,0 +1,74 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (cmd + the msys2 applets) need the standard Windows
+# variables to initialize and be found on PATH under `bazel test`'s scrubbed
+# environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Write-overlay VFS e2e: drives BazelSandbox --write-overlay against the hermetic
+# msys2 GNU coreutils (cp/ls/cat/mkdir) and asserts overlay read-after-write,
+# enumeration splice (including a mixed real+overlay directory), and an
+# unchanged real execroot. The launcher (with its co-located DetoursServices.dll),
+# each applet .exe, and the MSYS runtime DLLs (:runtime_dlls) ride as `data`;
+# the applet rlocationpaths are handed to the test via env vars, and the runtime
+# DLLs land next to the applets in the runfiles tree so they load by full path.
+cc_test(
+    name = "overlay_msys2",
+    size = "small",
+    srcs = ["overlay_msys2_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        "@msys2_base//:runtime_dlls",
+        "@msys2_base//:usr/bin/cat.exe",
+        "@msys2_base//:usr/bin/cp.exe",
+        "@msys2_base//:usr/bin/ls.exe",
+        "@msys2_base//:usr/bin/mkdir.exe",
+    ],
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_MSYS_CAT": "$(rlocationpath @msys2_base//:usr/bin/cat.exe)",
+        "E2E_MSYS_CP": "$(rlocationpath @msys2_base//:usr/bin/cp.exe)",
+        "E2E_MSYS_LS": "$(rlocationpath @msys2_base//:usr/bin/ls.exe)",
+        "E2E_MSYS_MKDIR": "$(rlocationpath @msys2_base//:usr/bin/mkdir.exe)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)

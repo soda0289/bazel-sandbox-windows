@@ -66,11 +66,36 @@ the Windows cert store (matches the root repo).
 ### Available modules
 
 * **`coreutils`** — `http_archive`s the pinned Microsoft/uutils coreutils
-  Windows release and drives `cp` (read-back + listing) and a multi-file
-  enumeration case.
+  Windows release and drives `cp` (read-back + listing), a multi-file
+  enumeration case, and a **mixed real+overlay enumeration** case (a directory
+  seeded with real on-disk files into which overlay-only entries are spliced;
+  one `ls` must show the merged view while the real execroot keeps only its
+  seeded files).
+* **`msys2`** — the same three cases as `coreutils` (single-file cp read-back,
+  multi-file enumeration, mixed real+overlay splice) but against the **msys2 GNU
+  coreutils**, fetched **hermetically** from the official `msys2-base` release
+  archive on GitHub (an `http_archive` in `MODULE.bazel`; bump the date/version +
+  sha256 to refresh). The applets are dynamically linked against the MSYS
+  runtime, so the archive's `usr/bin/*.dll` (`msys-2.0.dll`, `msys-intl-8.dll`,
+  …) ride as `data` next to the applet `.exe` files in the runfiles tree and
+  load by the applet's full runfiles path. It is worth keeping alongside the
+  uutils `coreutils` module because it exercises the overlay against the MSYS
+  (Cygwin) runtime's POSIX file ops and its Windows↔POSIX path translation (the
+  applets are handed forward-slash paths), which the pure-Windows uutils build
+  does not cover. No dependency on a machine `C:\msys64` install.
 * **`nodejs`** — gets its Node.js interpreter from the `rules_nodejs`
   toolchain (`@nodejs_host//:node_bin`, version-pinned via
-  `node.toolchain(node_version = ...)`) and adds a `rules_js` **`node_modules` write-stress** case: it
+  `node.toolchain(node_version = ...)`). It runs `node` directly against the
+  overlay for the fs-mutation lane (write/read-back/rename/move/delete via
+  `fs_ops.js`) and an **enumeration splice** case (`enum_ops.js`,
+  `NodeEnumerationSplice`): seed a directory with real on-disk files, splice
+  overlay-only files + a subdir into that *same* directory, delete one
+  overlay-created entry, and assert a single `readdirSync` merges both halves
+  (no duplicates, deleted overlay entry gone), prefix filters resolve against
+  the merged set, and read-back works through both halves — while the real
+  execroot keeps only its seeded files (real entries are immutable, so only
+  overlay entries are mutated; see the `dotnet` bullet / §6.3.1). It also adds a
+  `rules_js` **`node_modules` write-stress** case: it
   materialises a real React + Angular dependency tree (~18k files, pinned by a
   committed `pnpm-lock.yaml`) with `npm_link_all_packages` +
   `copy_to_directory`, then has `node` copy the whole tree through the overlay,

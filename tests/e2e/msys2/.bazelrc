@@ -1,0 +1,30 @@
+# Build settings for the msys2 e2e module. Mirrors the root repo's .bazelrc for
+# the bits that affect building BazelSandbox/DetoursServices (consumed from this
+# repo via local_path_override) plus this module's tests.
+
+common --enable_bzlmod
+
+# Trust the Windows cert store when fetching modules behind a TLS-inspecting
+# proxy (see root README).
+startup --host_jvm_args=-Djavax.net.ssl.trustStoreType=Windows-ROOT
+
+# Inherit the client PATH for repository rules.
+common --repo_env=PATH
+
+# Materialize a real runfiles tree so BazelSandbox.exe and its injected
+# DetoursServices.dll stay co-located at runtime (the launcher loads the DLL
+# from its own directory).
+build --enable_runfiles
+
+# CRITICAL: static release CRT for the vendored DetoursServices engine (see root
+# README / manifest_builder.cpp). Required to build the BazelSandbox dep.
+build --features=static_link_msvcrt
+
+build --cxxopt=/std:c++17
+build --host_cxxopt=/std:c++17
+
+test --test_output=errors
+
+# Each test spawns real sandboxed children (DLL injection + job object); run
+# serially to avoid process-creation thrash blowing the timeouts.
+test --local_test_jobs=1

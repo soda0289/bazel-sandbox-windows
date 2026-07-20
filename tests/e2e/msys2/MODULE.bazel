@@ -1,0 +1,50 @@
+"""End-to-end write-overlay VFS tests against hermetic msys2 GNU coreutils.
+
+This is its own Bazel module (module-per-scenario pattern): it pins its own
+tool toolchain independently of the root repo and is excluded from the root
+workspace via the root .bazelignore. It consumes the sandbox under test from
+this repo via local_path_override.
+
+Like the `coreutils` module, the tools here are HERMETIC: the msys2 GNU
+coreutils (cp/ls/cat/mkdir) and the MSYS runtime DLLs they load are fetched
+from the official msys2-base release archive on GitHub, not from a machine
+install. This gives the overlay coverage the hermetic uutils build cannot: the
+tools are exercised against the MSYS (Cygwin) runtime's POSIX file ops and its
+Windows<->POSIX path translation, with no dependency on a local C:\\msys64.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_msys2",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# The system under test: BazelSandbox.exe + DetoursServices.dll + the shared
+# e2e harness, consumed from this repo.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# Hermetic tool under test: the official msys2 base distribution from GitHub.
+# It ships the GNU coreutils applets (one .exe per utility under usr/bin) plus
+# the MSYS runtime DLLs (msys-2.0.dll, msys-intl-8.dll, ...) they load at run
+# time. We extract the whole archive but only expose the handful of applets and
+# the usr/bin DLLs the tests need. Bump the date/version + sha256 to refresh.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "msys2_base",
+    build_file = "//:msys2.BUILD.bazel",
+    sha256 = "a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221",
+    strip_prefix = "msys64",
+    urls = ["https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-base-x86_64-20260611.tar.xz"],
+)

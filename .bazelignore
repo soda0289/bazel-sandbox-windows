@@ -5,3 +5,4 @@
 tests/e2e/coreutils
 tests/e2e/nodejs
 tests/e2e/dotnet
+tests/e2e/msys2
