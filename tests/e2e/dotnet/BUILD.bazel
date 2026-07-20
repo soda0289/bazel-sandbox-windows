@@ -1,0 +1,91 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_dotnet//dotnet:defs.bzl", "csharp_binary")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (cmd + the dotnet launcher/runtime) need the standard
+# Windows variables to initialize and be found on PATH under `bazel test`'s
+# scrubbed environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# .NET 10 C# program exercising read/write/rename/move/delete. Run UNDER the
+# sandbox by the cc_test; takes the execroot as argv[0] and mutates <execroot>/wd.
+# rules_dotnet emits a .bat launcher that runs `dotnet exec fs_ops.dll`; the
+# hermetic dotnet.exe + fs_ops.dll ride along in its (data-merged) runfiles.
+csharp_binary(
+    name = "fs_ops",
+    srcs = ["fs_ops.cs"],
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
+# .NET 10 C# program exercising the enumeration splice: a directory listing that
+# merges real on-disk entries with overlay-only ones, hides deleted/renamed-away
+# real entries, and honors a wildcard filter. Same launcher shape as fs_ops.
+csharp_binary(
+    name = "enum_ops",
+    srcs = ["enum_ops.cs"],
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
+# Write-overlay VFS e2e: drives BazelSandbox --write-overlay against the .NET 10
+# fs_ops binary and asserts overlay read-after-write, enumeration splice, and an
+# unchanged real execroot. The launcher (with the hermetic dotnet runtime) and
+# BazelSandbox (with its co-located DetoursServices.dll) ride as `data`; their
+# runfiles rlocationpaths are handed to the test via env vars.
+cc_test(
+    name = "overlay_dotnet",
+    # .NET runtime startup + JIT dominates but stays well under a minute.
+    size = "small",  # 60s timeout
+    srcs = ["overlay_dotnet_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        ":enum_ops",
+        ":fs_ops",
+    ],
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_DOTNET_FSOPS": "$(rlocationpath :fs_ops)",
+        "E2E_DOTNET_ENUMOPS": "$(rlocationpath :enum_ops)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)
+

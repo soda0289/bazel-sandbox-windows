@@ -4,3 +4,4 @@
 # test //...`); the root workspace must not descend into them.
 tests/e2e/coreutils
 tests/e2e/nodejs
+tests/e2e/dotnet

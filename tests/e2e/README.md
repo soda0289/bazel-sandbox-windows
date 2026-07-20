@@ -101,6 +101,30 @@ the Windows cert store (matches the root repo).
   `bazel-out` runfiles path**, never the `bazel-bin` convenience-junction form,
   or the launcher's self-location resolves output writes outside the cone
   (`EPERM`); the cc_test's runfiles library yields the real path, so it matches.
+* **`dotnet`** — pins a hermetic **.NET 10 SDK** via `rules_dotnet`
+  (`dotnet.toolchain(dotnet_version = ...)`, fully downloaded — no machine-wide
+  dotnet install required) and compiles a **`csharp_binary`** (`fs_ops.cs`) that
+  drives the same write/read-back/rename/delete/move sequence as the nodejs
+  `fs_ops.js` lane, but through **`System.IO`** — so the overlay is validated
+  against the .NET runtime's own OS-API calls (`CreateFileW` / `MoveFileEx` /
+  `DeleteFile` / `FindFirstFile`). `rules_dotnet` emits a `.bat` launcher that
+  runs `dotnet exec fs_ops.dll`; the launcher, the hermetic `dotnet.exe`, and
+  the managed assembly all ride in the cc_test's runfiles, so the launcher
+  resolves them from the manifest the sandbox inherits and forwards to the
+  child. Fully hermetic (SDK is Bazel-fetched), so unlike the `rules_js` build
+  tests it needs no msys2 and no network after the first fetch. A second test
+  (`DotnetEnumerationSplice`) targets the overlay's hardest area — **directory
+  enumeration**: it seeds a directory with real on-disk files, then has the
+  sandboxed program splice overlay-only files + a subdir into that *same*
+  directory, delete one overlay-created entry, and assert a single
+  `GetFileSystemEntries` listing merges both halves (no duplicates, deleted
+  overlay entry gone), that wildcard filters (`ov*` / `real*`) resolve against
+  the merged set, and that read-back works through both halves — while the real
+  execroot keeps only its seeded files. It deliberately mutates only *overlay*
+  entries: a real visible in-cone file is immutable (delete/rename is denied by
+  design — backing-store-as-truth with no whiteout markers, see
+  `docs/design/detours-write-overlay-vfs.md` §6.3.1), so the real entries always
+  enumerate through the passthrough unchanged.
 
 ### Adding a new hermetic tool module
 

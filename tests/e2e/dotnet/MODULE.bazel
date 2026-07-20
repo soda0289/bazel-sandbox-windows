@@ -1,0 +1,44 @@
+"""End-to-end write-overlay VFS tests against a hermetic .NET 10 C# binary.
+
+This is its own Bazel module (module-per-scenario pattern): it pins its own
+.NET SDK toolchain via rules_dotnet, independently of the root repo, and is
+excluded from the root workspace via the root .bazelignore. It consumes the
+sandbox under test from this repo via local_path_override.
+
+The C# program (fs_ops.cs) drives the same read/write/rename/move/delete
+sequence as the nodejs fs_ops.js lane, but through System.IO, so the overlay is
+validated against the .NET runtime's OS-API patterns. rules_dotnet fetches the
+.NET SDK + runtime pack hermetically, so no system dotnet install is required.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_dotnet",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_dotnet", version = "0.22.1")
+
+# The system under test: BazelSandbox.exe + DetoursServices.dll + the shared
+# e2e harness, consumed from this repo.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# Hermetic .NET SDK + runtime. rules_dotnet downloads the pinned SDK (which
+# carries the matching runtime pack), so the compiled csharp_binary runs under
+# the sandbox without any machine-wide dotnet install. Bump dotnet_version to
+# any release rules_dotnet 0.22.1 knows about to refresh.
+dotnet = use_extension("@rules_dotnet//dotnet:extensions.bzl", "dotnet")
+dotnet.toolchain(dotnet_version = "10.0.201")
+use_repo(dotnet, "dotnet_toolchains")
+
+register_toolchains("@dotnet_toolchains//:all")
