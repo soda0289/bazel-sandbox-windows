@@ -56,7 +56,7 @@ to build it. Use this folder for the deeper design, comparison, and testing docs
 ## `e2e/` — end-to-end testing
 
 * [`smoke-testing.md`](e2e/smoke-testing.md) — the differential smoke harness
-  (`tests/e2e/smoke.ps1`) that builds real repos under both plain `local` and
+  (`tests/integration/smoke.ps1`) that builds real repos under both plain `local` and
   `windows-sandbox`, plus the results tables (regressions + timing).
 * [`rules_js-windows-runfiles.md`](e2e/rules_js-windows-runfiles.md) — notes on
   the rules_js / runfiles behavior on Windows.

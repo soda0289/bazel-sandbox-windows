@@ -25,7 +25,7 @@
     bases force real sandbox execution. They share one `--repository_cache` so
     module/repo fetches are not paid twice.
 
-    Prerequisites are the same as tests/e2e/mode2.ps1:
+    Prerequisites are the same as tests/integration/sandbox-strategy-smoke.ps1:
       * a PATCHED Bazel binary (integration/bazel-windows-sandbox.patch applied) that
         wires the windows-sandbox flags (see integration/README.md);
       * network + corporate cert trust for module resolution (see -HostJvmArgs);
@@ -37,7 +37,7 @@
     Path to the patched Bazel executable.
 
 .PARAMETER Preset
-    Name of a curated repo entry in tests/e2e/smoke-repos.psd1 (e.g. 'rules_js').
+    Name of a curated repo entry in tests/integration/smoke-repos.psd1 (e.g. 'rules_js').
     Provides RepoUrl/Ref/Subdir/Targets. Any of those can be overridden by the
     explicit parameters below.
 
@@ -91,10 +91,10 @@
     Keep the clone and output bases instead of cleaning them up.
 
 .EXAMPLE
-    pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe -Preset rules_js
+    pwsh tests/integration/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe -Preset rules_js
 
 .EXAMPLE
-    pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
+    pwsh tests/integration/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
         -RepoUrl https://github.com/aspect-build/rules_js -Subdir e2e/js_image_docker `
         -Targets //... -KeepArtifacts
 

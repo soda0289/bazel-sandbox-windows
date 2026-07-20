@@ -1,6 +1,6 @@
 # Differential smoke testing against real repos
 
-`tests/e2e/smoke.ps1` builds a target set in a real open-source Bazel repo
+`tests/integration/smoke.ps1` builds a target set in a real open-source Bazel repo
 **twice** — once under `--spawn_strategy=local` and once under
 `--spawn_strategy=windows-sandbox,local` — and **diffs the per-target results**.
 This document explains the methodology, how to run it, and the findings from the
@@ -100,11 +100,11 @@ whole `//...` build with `--keep_going` is compared target-by-target.
 ## Running
 
 ```powershell
-# Curated preset (see tests/e2e/smoke-repos.psd1):
-pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe -Preset rules_js
+# Curated preset (see tests/integration/smoke-repos.psd1):
+pwsh tests/integration/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe -Preset rules_js
 
 # An existing checkout (skips cloning), workspace in a sub-dir:
-pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
+pwsh tests/integration/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
     -RepoPath C:\src\rules_js -Subdir examples -KeepArtifacts
 ```
 
@@ -123,7 +123,7 @@ pwsh tests/e2e/smoke.ps1 -Bazel C:\tmp\bazel-dev.exe `
 > `examples/npm_deps` (a package) is misleading — Bazel walks up to `examples/`
 > anyway and the target set is identical.
 
-Prerequisites (same as `mode2.ps1`): a patched Bazel
+Prerequisites (same as `sandbox-strategy-smoke.ps1`): a patched Bazel
 (`files/bazel-windows-sandbox.patch`), a built `//:BazelSandbox`, and
 network/cert trust for module resolution. Exit codes: `0` no regressions, `1`
 regressions, `2` missing prerequisite, `3` environment could not resolve modules
@@ -158,6 +158,7 @@ graphs push it toward 1.0. Recorded timings live in the `test_findings` table.
 | rules_js `e2e/webpack_devserver` `//...` (10 targets) | copy (default) | 237.6s | 262.5s | **1.10x** (+24.9s, +10%) |
 | rules_js `e2e/webpack_devserver` `//...` (10 targets) | **symlink** (`--windows_enable_symlinks`) | 233.0s | 235.9s | **1.01x** (+2.9s, +1%) |
 | rules_js `examples/` `//...` (271 targets) | **symlink** (`--windows_enable_symlinks`) | 1209.2s | 1286.4s | **1.06x** (+77.2s, +6%) |
+| rules_js `examples/` `//...` (`--write-overlay`, current HEAD, 115 both-pass) | **symlink**, warm repo cache | 359.3s | 318.9s | **0.89x** (−40.4s, −11%) |
 | rules_dotnet `examples/` `//...` (24 targets, .NET) | symlink + runfiles | 241.9s | 257.5s | **1.06x** (+15.6s, +6%) |
 | **bazelbuild/bazel `//src:bazel`** (full self-build, ~6,651 actions, **1,264 Javac sandboxed**) | symlink | **4050.2s** | **3869.1s** | **0.96x** (−181.1s, −4.5%) |
 | **abseil/abseil-cpp** (`strings` + `base` + `container:flat_hash_map`, native MSVC C++) | symlink, fresh bases | **116.0s** | **82.5s** | **0.71x** (−33.5s, −29%) |
@@ -171,6 +172,21 @@ partly real (copies are intercepted per-op by Detours; symlinks aren't) and part
 run-to-run / OS-file-cache variance on a tiny graph. The rules_dotnet run
 independently lands at the same **1.06x (+6%)** on a different (non-JS) toolchain,
 corroborating ~6% as the steady-state overhead.
+
+**`--write-overlay` vs the former `--execroot-writable` (mode 2 write path).** The
+integration (`integration/bazel-windows-sandbox.patch`) now drives
+`--filter-inputs --write-overlay` with Bazel owning a per-action `--overlay-dir`
+backing store (created before the spawn, discarded with the action temp, retained
+under `--sandbox_debug`), replacing the former `--execroot-writable`. Re-running the
+`rules_js examples/ //...` preset under the new patch stayed at **0 sandbox
+regressions** with a **0.89x** sandbox/local ratio (sandbox 11% *faster* than local
+this run). The absolute seconds are lower than the `1209.2s/1286.4s` execroot-writable
+baseline because this run had a warm `--repository_cache` and the current rules_js
+HEAD analyzes fewer targets (115 both-pass vs the earlier 271), so the trustworthy
+apples-to-apples signal is the **ratio**: `--write-overlay` **0.89x** vs
+`--execroot-writable` **1.06x** — the overlay redirection is at least as fast as
+in-place execroot writes (no measurable overhead from routing undeclared writes into
+the backing store), with the added benefit that the real execroot is never mutated.
 
 **Full Bazel self-build (`//src:bazel`).** A complete `bazel-builds-bazel` run —
 6,651 actions, of which **1,264 Javac actions ran under `windows-sandbox`** — took

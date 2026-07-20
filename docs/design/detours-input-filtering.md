@@ -614,7 +614,7 @@ detail (flag bits, hooked surfaces, buffer rewrites).
 4. **Integration + parity validation. ✅ DONE (Mode 2).**
    - The `ng_package` / `node_modules`-heavy cases build end-to-end under
      `--filter-inputs`; A4/A5 behavior matches linux-sandbox expectations (see
-     parity-findings A4/A5). The opt-in `tests/e2e/mode2.ps1` exercises the
+     parity-findings A4/A5). The opt-in `tests/integration/sandbox-strategy-smoke.ps1` exercises the
      Bazel↔sandbox integration layer.
    - Outstanding: regenerate `files/bazel-windows-sandbox.patch` after the latest
      native changes; Mode 3 (`--hermetic-fs`, §1.1) remains future work.
@@ -640,7 +640,7 @@ live"). The tiers:
   `ACCESS_DENIED`.
 * **Real action:** the `ng_package` / `node_modules`-heavy build under
   `--filter-inputs`, compared against a linux-sandbox run of the same commit.
-* **End-to-end (opt-in, `tests/e2e/mode2.ps1`):** drives a real Bazel build
+* **End-to-end (opt-in, `tests/integration/sandbox-strategy-smoke.ps1`):** drives a real Bazel build
   through the `windows-sandbox` strategy to validate the Bazel↔sandbox integration
   layer (Mode 2 emits `--filter-inputs`; declared inputs resolve; an undeclared
   input is observed as `NOT_FOUND`, not `ACCESS_DENIED`). Requires a patched Bazel

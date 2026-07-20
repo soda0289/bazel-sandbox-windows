@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Opt-in end-to-end test for the windows-sandbox default mode ("Mode 2",
-    --filter-inputs) driven through a real Bazel build.
+    Opt-in end-to-end smoke test that the windows-sandbox strategy is actually
+    engaged for actions and filters undeclared inputs (--filter-inputs), driven
+    through a real Bazel build.
 
 .DESCRIPTION
     This is intentionally NOT part of `bazel test //tests:all`. Unlike the
@@ -21,10 +22,13 @@
         default -HostJvmArgs trusts the Windows root store (Zscaler etc.); override
         or clear it if your environment resolves modules differently.
 
-    The test builds a tiny workspace with two genrules:
-      good : reads a DECLARED input (a.txt)      -> must SUCCEED under the sandbox
-      bad  : reads an UNDECLARED sibling (b.txt)  -> must FAIL with "cannot find the
-                                                      file", not "Access is denied"
+    The test builds a tiny workspace with these genrules:
+      good    : reads a DECLARED input (a.txt)      -> must SUCCEED under the sandbox
+      bad     : reads an UNDECLARED sibling (b.txt)  -> must FAIL with "cannot find the
+                                                        file", not "Access is denied"
+      overlay : WRITES an UNDECLARED scratch file    -> must SUCCEED (the write is
+                                                        redirected into the write-overlay
+                                                        backing store, not denied)
     A baseline run of `bad` under --spawn_strategy=local confirms b.txt is actually
     reachable, so the sandboxed failure is genuinely the filter hiding it.
 
@@ -46,7 +50,7 @@
     Keep the temp workspace and output root instead of cleaning them up.
 
 .EXAMPLE
-    pwsh tests/e2e/mode2.ps1 -Bazel C:\path\to\patched-bazel.exe
+    pwsh tests/integration/sandbox-strategy-smoke.ps1 -Bazel C:\path\to\patched-bazel.exe
 
 .NOTES
     Exit codes: 0 = all assertions passed, 1 = a assertion failed,
@@ -92,7 +96,7 @@ if (-not (Test-Path -LiteralPath $dll)) {
     Write-Error "DetoursServices.dll not found beside the sandbox: $dll"; exit 2
 }
 
-Write-Host "== windows-sandbox Mode 2 e2e =="
+Write-Host "== windows-sandbox strategy smoke =="
 Write-Host "   bazel:   $Bazel"
 Write-Host "   sandbox: $Sandbox"
 
@@ -128,6 +132,19 @@ genrule(
     srcs = ["a.txt"],
     outs = ["baseline.out"],
     cmd_bat = "type b.txt > $@",
+)
+
+# overlay writes an UNDECLARED scratch file (not in outs) alongside its declared
+# output. A bare filtering sandbox denies undeclared writes (Access is denied);
+# with --write-overlay the write is transparently redirected into the throwaway
+# overlay backing store, so the action SUCCEEDS and the real source tree is never
+# touched. Success here is the positive proof that --write-overlay is engaged for
+# windows-sandbox actions.
+genrule(
+    name = "overlay",
+    srcs = ["a.txt"],
+    outs = ["overlay.out"],
+    cmd_bat = "echo overlay-scratch> scratch_undeclared.txt && type a.txt > $@",
 )
 '@ | Set-Content -LiteralPath (Join-Path $ws 'BUILD.bazel')
 
@@ -195,6 +212,23 @@ try {
     } else {
         Fail 'undeclared input reported NOT_FOUND (linux-sandbox parity)' 'build failed but with an unexpected error'
         Write-Host $bad.Output
+    }
+
+    # 4) overlay (undeclared WRITE) under the sandbox must SUCCEED - the write is
+    #    redirected into the write-overlay backing store rather than denied. This is
+    #    the positive proof that --write-overlay is passed and engaged.
+    Write-Host "-- //:overlay under windows-sandbox (expect success via --write-overlay)"
+    $ov = Invoke-Bazel (@('build', '//:overlay') + $sbxFlags)
+    if ($ov.Code -eq 0 -and $ov.Output -match 'windows-sandbox') {
+        Pass 'undeclared write redirected into overlay (--write-overlay engaged)'
+    } elseif ($ov.Code -eq 0) {
+        Fail 'undeclared write redirected into overlay (--write-overlay engaged)' 'built, but no windows-sandbox process reported'
+    } elseif ($ov.Output -match 'Access is denied') {
+        Fail 'undeclared write redirected into overlay (--write-overlay engaged)' 'undeclared write was DENIED (overlay not engaged)'
+        Write-Host $ov.Output
+    } else {
+        Fail 'undeclared write redirected into overlay (--write-overlay engaged)' "exit $($ov.Code)"
+        Write-Host $ov.Output
     }
 
     $summary = "$script:Passed passed, $script:Failed failed"

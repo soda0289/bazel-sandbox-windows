@@ -108,7 +108,7 @@ wrestling with how PowerShell starts commands).
 |---|---|---|---|
 | **probe** | `tests/probe.cpp` (~1400 L) | The **sandboxed child**: performs one Win32 op and exits with a stable code (0 allowed / 10 denied / 11 not-found / 20 other …). | **Stays C++, unchanged.** It is the system-under-test *actor*, not a test framework. It must be a separate process to be sandboxed. |
 | **enforce** | `tests/enforce/*.ps1` (9 files, ~1600 L) + `tests/lib/harness.ps1` | Launch `BazelSandbox … -- probe <op>`, assert the child's exit code. Part of `bazel test //tests:all`. | **Port to GoogleTest (`cc_test`).** This is where the PowerShell pain lives. |
-| **e2e** | `tests/e2e/<tool>/` gtest modules, `smoke.ps1`, `mode2.ps1` | Drive **real tools** / **real repo builds** under the sandbox. Opt-in, not in `bazel test //tests:all`. | **Hermetic tool half ported to GoogleTest modules** (Bazel-fetched tools); Bazel-integration scripts (`smoke.ps1`/`mode2.ps1`) stay as scripts (genuine shell orchestration). |
+| **e2e** | `tests/e2e/<tool>/` gtest modules, `tests/integration/smoke.ps1`, `sandbox-strategy-smoke.ps1` | Drive **real tools** / **real repo builds** under the sandbox. Opt-in, not in `bazel test //tests:all`. | **Hermetic tool half ported to GoogleTest modules** (Bazel-fetched tools); Bazel-integration scripts (`smoke.ps1`/`sandbox-strategy-smoke.ps1`) stay as scripts (genuine shell orchestration). |
 
 The friction you feel is ~entirely in the **enforce** layer. `smoke.ps1` (real
 repos, network, patched Bazel) is inherently non-hermetic and stays PowerShell.
@@ -203,7 +203,7 @@ harness exists). ~1600 PS lines → ~1000 C++ lines.
 
 ### BDD (optional)
 
-`smoke.ps1` / `mode2.ps1` are genuine tool/shell orchestration; C++ is a poor
+`smoke.ps1` / `sandbox-strategy-smoke.ps1` are genuine tool/shell orchestration; C++ is a poor
 fit. If BDD is wanted here, use **Pester** (`Describe/Context/It/BeforeEach/
 AfterEach/Should`), vendored via `http_archive` and run through `rules_powershell`.
 

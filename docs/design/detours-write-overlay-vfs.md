@@ -1360,7 +1360,7 @@ subtractive path is byte-for-byte unchanged.
    per-invocation backing root and embeds it in the manifest; confirm delete-on-tree
    -exit, `-D` retain + path print, and cross-volume `MoveFile` from the overlay to a
    real `-w` output (a rename that later promotes scratch to a declared output).
-7. **Differential smoke + enforce.** Run `tests/e2e/smoke.ps1` on the
+7. **Differential smoke + enforce.** Run `tests/integration/smoke.ps1` on the
    goyacc/full-repo case that surfaced A8 and the Java/`ng_package` scratch-heavy
    actions, under both `local` and `windows-sandbox`; add enforce cases for merge
    enumeration, delete/rename denial of pre-existing files, overlay-only directories,

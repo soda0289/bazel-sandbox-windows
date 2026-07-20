@@ -52,7 +52,7 @@ diff --git a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxU
 index 3147b3d253..0bb689e578 100644
 --- a/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
 +++ b/src/main/java/com/google/devtools/build/lib/sandbox/WindowsSandboxUtil.java
-@@ -109,7 +109,12 @@ public final class WindowsSandboxUtil {
+@@ -109,7 +109,13 @@ public final class WindowsSandboxUtil {
      private Set<Path> writableFilesAndDirectories = ImmutableSet.of();
      private Map<PathFragment, Path> readableFilesAndDirectories = new TreeMap<>();
      private Set<Path> inaccessiblePaths = ImmutableSet.of();
@@ -62,11 +62,12 @@ index 3147b3d253..0bb689e578 100644
 +    private boolean blockNetwork = false;
 +    private boolean useLoopbackOnly = false;
 +    private boolean filterInputs = false;
-+    private boolean execrootWritable = false;
++    private boolean writeOverlay = false;
++    private String overlayDir = null;
      private List<String> commandArguments = ImmutableList.of();
  
      private CommandLineBuilder(PathFragment windowsSandboxPath, List<String> commandArguments) {
-@@ -178,10 +183,66 @@ public final class WindowsSandboxUtil {
+@@ -178,10 +184,84 @@ public final class WindowsSandboxUtil {
        return this;
      }
  
@@ -117,26 +118,44 @@ index 3147b3d253..0bb689e578 100644
 +    }
 +
 +    /**
-+     * Sets whether the execroot (working directory) is writable for undeclared, newly-created
-+     * paths.
++     * Sets whether undeclared writes are redirected into a process-private write overlay instead of
++     * touching the real execroot.
 +     *
-+     * <p>When true, {@code --execroot-writable} is passed to {@code BazelSandbox.exe}. This lets the
-+     * sandboxed process create new files/directories anywhere in the execroot (and re-write files
-+     * it created during this run) while still denying overwrites of pre-existing undeclared or
-+     * input files. It reproduces the observable write semantics of a {@code linux-sandbox} throwaway
-+     * execroot (which is fully writable and discarded) for undeclared scratch (e.g. a bundler's
-+     * {@code node_modules/.vite-temp}) without opening a hole to clobber real source/input files.
-+     * Declared outputs ({@code -w}) stay freely overwritable; declared inputs ({@code -r}) stay
-+     * read-only. Used together with {@link #setFilterInputs} for the {@code windows-sandbox}
-+     * strategy.
++     * <p>When true, {@code --write-overlay} is passed to {@code BazelSandbox.exe}. Undeclared
++     * files/directories the sandboxed process creates (and re-writes of files it created during this
++     * run, e.g. a bundler's {@code node_modules/.vite-temp}) are transparently redirected into an
++     * overlay backing store and spliced back into directory enumerations, so the tool observes a
++     * writable execroot while the real source tree is never mutated. This reproduces the observable
++     * write semantics of a {@code linux-sandbox} throwaway execroot (fully writable, then discarded)
++     * without opening a hole to clobber real source/input files: declared outputs ({@code -w}) are
++     * still written in place and stay freely overwritable, declared inputs ({@code -r}) stay
++     * read-only, and pre-existing undeclared inputs cannot be overwritten in place - a create over
++     * such a name lands in the overlay and is discarded with it. Used together with {@link
++     * #setFilterInputs} for the {@code windows-sandbox} strategy.
 +     */
 +    @CanIgnoreReturnValue
-+    public CommandLineBuilder setExecrootWritable(boolean execrootWritable) {
-+      this.execrootWritable = execrootWritable;
++    public CommandLineBuilder setWriteOverlay(boolean writeOverlay) {
++      this.writeOverlay = writeOverlay;
++      return this;
++    }
++
++    /**
++     * Sets the directory for the write-overlay backing store (passed as {@code --overlay-dir}).
++     *
++     * <p>Bazel owns this directory's lifecycle - it creates it before the spawn and discards it with
++     * the action temp afterwards (retained under {@code --sandbox_debug}), mirroring how
++     * {@code linux-sandbox} owns and discards its throwaway execroot. Passing it explicitly (rather
++     * than letting the sandbox default to {@code %TMP%}) also makes the reproduced command line
++     * printed under {@code --sandbox_debug} name the exact backing-store location. Only meaningful
++     * together with {@link #setWriteOverlay}.
++     */
++    @CanIgnoreReturnValue
++    public CommandLineBuilder setOverlayDir(String overlayDir) {
++      this.overlayDir = overlayDir;
        return this;
      }
  
-@@ -219,8 +280,22 @@ public final class WindowsSandboxUtil {
+@@ -219,8 +299,25 @@ public final class WindowsSandboxUtil {
        for (Path writablePath : inaccessiblePaths) {
          commandLineBuilder.add("-b", writablePath.getPathString());
        }
@@ -150,8 +169,11 @@ index 3147b3d253..0bb689e578 100644
 +      if (filterInputs) {
 +        commandLineBuilder.add("--filter-inputs");
 +      }
-+      if (execrootWritable) {
-+        commandLineBuilder.add("--execroot-writable");
++      if (writeOverlay) {
++        commandLineBuilder.add("--write-overlay");
++      }
++      if (overlayDir != null) {
++        commandLineBuilder.add("--overlay-dir", overlayDir);
 +      }
 +      if (sandboxDebugPath != null) {
 +        commandLineBuilder.add("-D", sandboxDebugPath);
@@ -296,7 +318,7 @@ index 9e65f743ea..e33ed2fbb5 100644
      SandboxInputs readablePaths =
          SandboxHelpers.processInputFiles(
              context.getInputMapping(PathFragment.EMPTY_FRAGMENT, /* willAccessRepeatedly= */ true),
-@@ -69,33 +105,171 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
+@@ -69,33 +105,183 @@ final class WindowsSandboxedSpawnRunner extends AbstractSandboxSpawnRunner {
  
      ImmutableSet.Builder<Path> writablePaths = ImmutableSet.builder();
      writablePaths.addAll(getWritableDirs(execRoot, environment));
@@ -394,9 +416,20 @@ index 9e65f743ea..e33ed2fbb5 100644
 +
 +    Path statisticsPath = tmpDir.getRelative("stats.out");
 +
++    // Bazel owns the write-overlay backing-store directory: create it here and let it be discarded
++    // with the action temp on cleanup (retained under --sandbox_debug), mirroring how linux-sandbox
++    // owns and discards its throwaway execroot. The sandbox redirects undeclared writes into here so
++    // the real execroot is never mutated; declared outputs (-w) are still written in place in the
++    // execroot and collected normally. Passing the path explicitly also makes the command line
++    // reproduced under --sandbox_debug name the exact backing-store location.
++    Path overlayDir = tmpDir.getRelative("overlay");
++    overlayDir.createDirectory();
++
 +    // Mode 2 (default, matches default linux-sandbox reads): filter undeclared inputs so they are
 +    // invisible (reads report NOT_FOUND; enumerations omit them), reproducing the symlink-forest
-+    // semantics in place. Outside-execroot reads remain allowed and writes stay confined to -w.
++    // semantics in place, and redirect undeclared writes into a process-private write overlay so the
++    // real source tree is never mutated (matching linux-sandbox's throwaway writable execroot).
++    // Outside-execroot reads remain allowed; declared outputs (-w) are written in place.
 +    // (Mode 3 / --experimental_use_hermetic_windows_sandbox, which additionally denies
 +    // outside-execroot reads, is not yet wired here.)
      WindowsSandboxUtil.CommandLineBuilder commandLineBuilder =
@@ -408,7 +441,8 @@ index 9e65f743ea..e33ed2fbb5 100644
 -            .setUseDebugMode(getSandboxOptions().getSandboxDebug())
 +            .setStatisticsPath(statisticsPath.getPathString())
 +            .setFilterInputs(true)
-+            .setExecrootWritable(true)
++            .setWriteOverlay(true)
++            .setOverlayDir(overlayDir.getPathString())
              .setKillDelay(timeoutKillDelay);
  
 +    if (sandboxDebugPath != null) {

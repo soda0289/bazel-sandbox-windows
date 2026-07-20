@@ -4,7 +4,7 @@
 strategy. Upstream Bazel already *knows about* a `windows-sandbox` strategy, but
 its wiring is incomplete: the built-in `WindowsSandboxedSpawnRunner` only passes
 `-r`/`-w`/`-b`/`-D`, rejects runfiles symlink trees outright, and never enables
-the input-filtering / execroot-writable / output-directory / network flags this
+the input-filtering / write-overlay / output-directory / network flags this
 sandbox implements. To get behavioral parity with `linux-sandbox` / remote
 execution you must run a **patched Bazel**.
 
@@ -17,8 +17,8 @@ It only touches the Java host (no native/C++ changes), completing the
 
 | File | Change |
 |------|--------|
-| `.../sandbox/WindowsSandboxUtil.java` | Adds builder support for `-n`/`-N` (network), `--filter-inputs`, `--execroot-writable`, `-D <file>`, `-S <file>`; `-D` now takes a path. |
-| `.../sandbox/WindowsSandboxedSpawnRunner.java` | Materializes runfiles symlink trees (like local exec); grants both the in-place link path **and** its real target for every input (name-agnostic, covers runfiles forests + pnpm store); grants the `*.runfiles_manifest` sibling; grants each declared output file as `-w` (the launcher itself pre-creates + reveals the output parent-dir chain); enables `--filter-inputs` + `--execroot-writable` ("mode 2"); wires network blocking; spills to an `@argfile` past the `CreateProcessW` 32K command-line limit. |
+| `.../sandbox/WindowsSandboxUtil.java` | Adds builder support for `-n`/`-N` (network), `--filter-inputs`, `--write-overlay`, `--overlay-dir <dir>`, `-D <file>`, `-S <file>`; `-D` now takes a path. |
+| `.../sandbox/WindowsSandboxedSpawnRunner.java` | Materializes runfiles symlink trees (like local exec); grants both the in-place link path **and** its real target for every input (name-agnostic, covers runfiles forests + pnpm store); grants the `*.runfiles_manifest` sibling; grants each declared output file as `-w` (the launcher itself pre-creates + reveals the output parent-dir chain); enables `--filter-inputs` + `--write-overlay` ("mode 2"), creating and owning the per-action `--overlay-dir` backing store (discarded with the action temp, retained under `--sandbox_debug`); wires network blocking; spills to an `@argfile` past the `CreateProcessW` 32K command-line limit. |
 | `.../sandbox/WindowsSandboxedSpawn.java` | Plumbs the sandbox-debug and statistics output paths. |
 | `.../exec/local/WindowsLocalEnvProvider.java` | Also sets `TMPDIR` (msys/Cygwin `mktemp` honors only `TMPDIR`, else falls back to the shared `/tmp` the sandbox denies). |
 | `.../sandbox/BUILD` | Adds the `artifacts` / `runfiles_tree` / `runfiles_tree_updater` deps the above needs. |
@@ -82,5 +82,5 @@ Detours and inflate wall-clock). It requires `SeCreateSymbolicLinkPrivilege`
 (Developer Mode / the privilege granted to your account).
 
 See [`../docs/e2e/smoke-testing.md`](../docs/e2e/smoke-testing.md) for the
-differential test harness (`tests/e2e/smoke.ps1`) that exercises this end-to-end
+differential test harness (`tests/integration/smoke.ps1`) that exercises this end-to-end
 against real repos.

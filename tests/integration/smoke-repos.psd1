@@ -1,5 +1,5 @@
 @{
-    # Curated repo presets for tests/e2e/smoke.ps1 (differential windows-sandbox
+    # Curated repo presets for tests/integration/smoke.ps1 (differential windows-sandbox
     # smoke testing). Each entry supplies defaults that the CLI can override.
     #
     #   RepoUrl        git URL to clone (shallow by default)
