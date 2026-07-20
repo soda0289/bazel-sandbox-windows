@@ -77,9 +77,14 @@
 //   probe writeovdelete <base>    write <base>\ovdel.txt into the overlay then delete
 //                                 it; 0 iff the delete of the process's own overlay
 //                                 file succeeds (backing removed, real untouched)
+//   probe writeovdeleteh <base>   like writeovdelete but deletes via a HANDLE
+//                                 (SetFileInformationByHandle + FILE_DISPOSITION_INFO)
 //   probe writeovrename <base>    write <base>\ovr_src.txt into the overlay, rename it
 //                                 to <base>\ovr_dst.txt, read the dest back; 0 iff the
 //                                 whole move stays inside the backing store
+//   probe writeovrenameh <base>   like writeovrename but renames via a HANDLE
+//                                 (SetFileInformationByHandle + FILE_RENAME_INFO), the
+//                                 path cmd's ren/move take; 0 iff no real-execroot leak
 //   probe writeovstat <base>      write <base>\ovstat.txt into the overlay then stat it
 //                                 via GetFileAttributes(Ex)/GetFileInformationByName/
 //                                 exact FindFirstFileEx; 0 iff every metadata API sees
@@ -580,6 +585,18 @@ int DoWriteOvDelete(const wchar_t* base) {
     return DoDelete(file.c_str());
 }
 
+// Model W delete via a HANDLE (SetFileInformationByHandle + FILE_DISPOSITION_INFO):
+// write a brand-new undeclared file into the overlay, then delete it through the
+// handle-based disposition path. The disposition acts on the already-redirected
+// backing handle, so the backing copy is removed and the real execroot is never
+// touched. Regression-guards the handle-based delete overlay source resolution.
+int DoWriteOvDeleteH(const wchar_t* base) {
+    std::wstring file = std::wstring(base) + L"\\ovdelh.txt";
+    int w = DoWrite(file.c_str());
+    if (w != kOk) return w;
+    return DoDeleteByHandle(file.c_str());
+}
+
 // Model W rename: write a brand-new undeclared file into the overlay, rename it to
 // another undeclared execroot path, then read back the destination. The whole move
 // stays inside the backing store, so the read-back succeeds and neither real path is
@@ -590,6 +607,24 @@ int DoWriteOvRename(const wchar_t* base) {
     int w = DoWrite(src.c_str());
     if (w != kOk) return w;
     int r = DoRename(src.c_str(), dst.c_str());
+    if (r != kOk) return r;
+    return DoRead(dst.c_str());
+}
+
+// Model W rename via a HANDLE (SetFileInformationByHandle + FILE_RENAME_INFO): the
+// path cmd's `ren`/`move` and other tools take instead of MoveFileEx. Write a
+// brand-new undeclared file into the overlay, rename it by handle to another
+// undeclared execroot path, then read back the destination. The whole move must stay
+// inside the backing store (read-back succeeds, neither real path is created).
+// Regression-guards the handle-based rename dest redirect: previously the source
+// handle pointed at the backing copy but the destination NAME was left as the virtual
+// path, so the move leaked the destination onto the real execroot.
+int DoWriteOvRenameH(const wchar_t* base) {
+    std::wstring src = std::wstring(base) + L"\\ovrh_src.txt";
+    std::wstring dst = std::wstring(base) + L"\\ovrh_dst.txt";
+    int w = DoWrite(src.c_str());
+    if (w != kOk) return w;
+    int r = DoRenameByHandle(src.c_str(), dst.c_str());
     if (r != kOk) return r;
     return DoRead(dst.c_str());
 }
@@ -1466,7 +1501,9 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"writeovsubdirenum") return DoWriteOvSubdirEnum(argv[2]);
     if (op == L"writeovsubdirinnerenum") return DoWriteOvSubdirInnerEnum(argv[2]);
     if (op == L"writeovdelete") return DoWriteOvDelete(argv[2]);
+    if (op == L"writeovdeleteh") return DoWriteOvDeleteH(argv[2]);
     if (op == L"writeovrename") return DoWriteOvRename(argv[2]);
+    if (op == L"writeovrenameh") return DoWriteOvRenameH(argv[2]);
     if (op == L"writeovstat") return DoWriteOvStat(argv[2]);
     if (op == L"writeovhardlink") return DoWriteOvHardlink(argv[2]);
     if (op == L"writeovsymlink") return DoWriteOvSymlink(argv[2]);

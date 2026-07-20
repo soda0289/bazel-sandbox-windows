@@ -1,0 +1,48 @@
+"""End-to-end write-overlay VFS tests against a hermetic CPython.
+
+Module-per-scenario (see tests/e2e/README.md): it pins its own Python toolchain
+independently of the root repo and is excluded from the root workspace via the
+root .bazelignore. It consumes the sandbox under test from this repo via
+local_path_override.
+
+The Python interpreter is hermetic: rules_python's `python` extension downloads
+a python-build-standalone CPython and exposes the host-platform interpreter as
+`@python_3_13_host//:python`. The e2e cc_test carries that interpreter (with its
+adjacent stdlib) as `data` and runs it *under the sandbox* against two real
+scripts (scripts/fs_ops.py, scripts/enum_ops.py). Listings deliberately go
+through os.scandir - the API realtools.ps1 flags as the overlay's enumeration
+trouble spot (WinError 203). No machine Python install is needed.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_python",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "2.2.0")
+
+# System under test: BazelSandbox.exe + DetoursServices.dll + shared e2e harness.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# Hermetic CPython from rules_python's python-build-standalone distribution.
+# use_repo exposes @python_3_13_host, whose //:python target is the host-platform
+# interpreter (its stdlib + DLLs sit adjacent in the same repo, so the runfiles
+# tree keeps them co-located and CPython locates sys.prefix from its own path).
+# Bump python_version to any release rules_python 2.2.0 supports to refresh.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    python_version = "3.13",
+    is_default = True,
+)
+use_repo(python, "python_3_13_host")

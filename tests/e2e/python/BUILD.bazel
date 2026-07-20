@@ -1,0 +1,67 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (CPython) need the standard Windows variables to initialize
+# under `bazel test`'s scrubbed environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Write-overlay VFS e2e against hermetic CPython. Drives `python` directly
+# (mkdir/write/os.scandir/rename/delete/move) under the sandbox and asserts
+# overlay read-after-write, an enumeration splice (via os.scandir), and an
+# unchanged real execroot. The interpreter (@python_3_13_host//:python, with its
+# adjacent stdlib carried in runfiles) and each .py script ride as `data`; their
+# runfiles rlocationpaths are handed to the test via env vars.
+cc_test(
+    name = "overlay_python",
+    size = "small",
+    srcs = ["overlay_python_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        "@python_3_13_host//:python",
+    ] + glob(["scripts/*.py"]),
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_PYTHON": "$(rlocationpath @python_3_13_host//:python)",
+        "E2E_PY_FSOPS": "$(rlocationpath scripts/fs_ops.py)",
+        "E2E_PY_ENUMOPS": "$(rlocationpath scripts/enum_ops.py)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)

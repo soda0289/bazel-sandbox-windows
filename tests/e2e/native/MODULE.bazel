@@ -1,0 +1,34 @@
+"""End-to-end write-overlay VFS tests against native Windows built-ins.
+
+Module-per-scenario (see tests/e2e/README.md): its own Bazel module, excluded
+from the root workspace via the root .bazelignore, consuming the sandbox under
+test from this repo via local_path_override.
+
+UNLIKE the other e2e modules, this one fetches NO tool: it exercises the write
+overlay against Windows' own always-present built-ins - cmd.exe's internal
+commands (mkdir/ren/del/move/rmdir/dir/type/findstr/mklink) and the in-box
+xcopy.exe. Because those ship with every Windows install, the tests always run
+(no skip, no download) and cover the raw Win32 file-system API patterns that the
+cmd shell and xcopy emit - including `dir`'s FindFirstFile/FindNextFile
+enumeration, which the overlay's splice has to satisfy.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_native",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# System under test: BazelSandbox.exe + DetoursServices.dll + shared e2e harness.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)

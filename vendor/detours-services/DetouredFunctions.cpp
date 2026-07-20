@@ -2007,9 +2007,12 @@ static bool TryGetFileNameFromFileInformation(
 }
 
 // Forward declaration: the Model W overlay resolvers are defined later in this file
-// (near the CreateFile hooks), but the NT-layer link handler below needs to redirect
-// the new-link name into the backing store.
+// (near the CreateFile hooks), but the NT-layer link/rename handlers below need to
+// redirect the new-link/rename-dest name into the backing store and to deny renaming
+// a real in-cone input.
 static std::wstring ResolveOverlayRenameDest(PolicyResult& policyResult);
+enum class OverlayDeleteAction { PassThrough, RedirectToBacking, DenyAccess, NotFound };
+static OverlayDeleteAction ResolveOverlayDelete(PolicyResult& policyResult, std::wstring& backingOut);
 
 NTSTATUS HandleFileRenameInformation(
     _In_  HANDLE                 FileHandle,
@@ -2137,6 +2140,26 @@ NTSTATUS HandleFileRenameInformation(
         return destAccessCheck.DenialNtStatus();
     }
 
+    // Model W (write-overlay): a real, visible in-cone input must never be renamed/
+    // moved - that would mutate the real execroot. Mirror the path-based MoveFile
+    // source resolution (ResolveOverlayDelete): deny such a source outright. This is
+    // defence-in-depth on top of the source CheckWriteAccess above: a declared -r
+    // input carries a read-only scope that already denies the DELETE open, but a path
+    // that also inherits the writable overlay cone's OverrideAllowWriteForExistingFiles
+    // bit would otherwise slip through. Overlay-created files resolve to
+    // RedirectToBacking/PassThrough (the handle already points at the backing copy),
+    // so only genuine real inputs are denied here (design doc §6.3.1).
+    if (ShouldWriteOverlay())
+    {
+        std::wstring srcBacking;
+        if (ResolveOverlayDelete(sourcePolicyResult, srcBacking) == OverlayDeleteAction::DenyAccess)
+        {
+            ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, ERROR_ACCESS_DENIED);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return DETOURS_STATUS_ACCESS_DENIED;
+        }
+    }
+
     vector<ReportData> filesAndDirectoriesToReport;
     if (renameDirectory)
     {
@@ -2153,11 +2176,45 @@ NTSTATUS HandleFileRenameInformation(
 
     SetLastError(lastError);
 
+    // Model W (write-overlay): redirect the rename DESTINATION name into the backing
+    // store so an in-cone rename/move never lands on the real execroot. cmd's `ren`
+    // (and other tools) open the existing file and set FileRenameInformation naming
+    // the new path, bypassing the MoveFileEx hook (DetoursMoveFileWithProgress). The
+    // source is the already-open FileHandle (redirected to its backing copy at open
+    // time when it is an overlay file), so only the destination name needs rewriting.
+    // Rebuild the info buffer with RootDirectory=NULL and an NT-form (\??\) backing
+    // path. A real read-only (-r) input is already rejected above by the source
+    // CheckWriteAccess deny, so a genuine input can never be renamed/moved; only a
+    // writable file created in the overlay reaches here (design doc §6.3.1).
+    PVOID effInfo = FileInformation;
+    ULONG effLen = Length;
+    std::vector<BYTE> redirectedRenameBuf;
+    if (ShouldWriteOverlay())
+    {
+        std::wstring backing = ResolveOverlayRenameDest(destPolicyResult);
+        if (!backing.empty())
+        {
+            std::wstring nt = (backing.rfind(L"\\\\?\\", 0) == 0)
+                ? (L"\\??\\" + backing.substr(4))
+                : backing;
+            const ULONG nameBytes = (ULONG)(nt.size() * sizeof(wchar_t));
+            const size_t hdr = FIELD_OFFSET(FILE_RENAME_INFO, FileName);
+            redirectedRenameBuf.resize(hdr + nameBytes);
+            memcpy(redirectedRenameBuf.data(), FileInformation, hdr);
+            auto* ni = (PFILE_RENAME_INFO)redirectedRenameBuf.data();
+            ni->RootDirectory = NULL;
+            ni->FileNameLength = nameBytes;
+            memcpy(ni->FileName, nt.c_str(), nameBytes);
+            effInfo = redirectedRenameBuf.data();
+            effLen = (ULONG)redirectedRenameBuf.size();
+        }
+    }
+
     NTSTATUS result = Real_ZwSetInformationFile(
         FileHandle,
         IoStatusBlock,
-        FileInformation,
-        Length,
+        effInfo,
+        effLen,
         FileInformationClass);
     lastError = GetLastError();
 
@@ -2395,6 +2452,22 @@ NTSTATUS HandleFileDispositionInformation(
         ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, sourceAccessCheck.DenialError());
         sourceAccessCheck.SetLastErrorToDenialError();
         return sourceAccessCheck.DenialNtStatus();
+    }
+
+    // Model W (write-overlay): deny deleting a real, visible in-cone input that only
+    // inherits the writable overlay cone's OverrideAllowWriteForExistingFiles bit, so
+    // this NT disposition path matches the path-based DeleteFileW (ResolveOverlayDelete)
+    // and never mutates the real execroot. Overlay-created files (RedirectToBacking/
+    // PassThrough) delete their backing copy through the already-redirected handle.
+    if (ShouldWriteOverlay())
+    {
+        std::wstring srcBacking;
+        if (ResolveOverlayDelete(sourcePolicyResult, srcBacking) == OverlayDeleteAction::DenyAccess)
+        {
+            ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, ERROR_ACCESS_DENIED);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return DETOURS_STATUS_ACCESS_DENIED;
+        }
     }
 
     SetLastError(lastError);
@@ -3606,8 +3679,7 @@ static std::wstring ResolveOverlayOpenPath(
 // docs/design/detours-write-overlay-vfs.md §6.3.1 (backing-store-as-truth, no
 // whiteout markers). On RedirectToBacking, backingOut receives the backing-store
 // path the unlink/move must operate on instead of the real path.
-enum class OverlayDeleteAction { PassThrough, RedirectToBacking, DenyAccess, NotFound };
-
+// (OverlayDeleteAction is declared earlier in this file for the NT-layer handlers.)
 static OverlayDeleteAction ResolveOverlayDelete(PolicyResult& policyResult, std::wstring& backingOut)
 {
     backingOut.clear();
@@ -7518,6 +7590,23 @@ static BOOL DeleteUsingSetFileInformationByHandle(
         return FALSE;
     }
 
+    // Model W (write-overlay): a real, visible in-cone input must never be deleted -
+    // that would mutate the real execroot. Mirror the path-based DeleteFileW source
+    // resolution (ResolveOverlayDelete) so a source that inherits the writable overlay
+    // cone's OverrideAllowWriteForExistingFiles bit is still denied. Overlay-created
+    // files resolve to RedirectToBacking/PassThrough (the handle already points at the
+    // backing copy the disposition deletes), so only genuine real inputs are denied.
+    if (ShouldWriteOverlay())
+    {
+        std::wstring srcBacking;
+        if (ResolveOverlayDelete(sourcePolicyResult, srcBacking) == OverlayDeleteAction::DenyAccess)
+        {
+            ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, ERROR_ACCESS_DENIED);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+    }
+
     BOOL result = Real_SetFileInformationByHandle(
         hFile,
         FileInformationClass,
@@ -7625,6 +7714,23 @@ static BOOL RenameUsingSetFileInformationByHandle(
         return FALSE;
     }
 
+    // Model W (write-overlay): a real, visible in-cone input must never be renamed/
+    // moved - that would mutate the real execroot. Mirror the path-based MoveFile
+    // source resolution (ResolveOverlayDelete) so a source that inherits the writable
+    // overlay cone's OverrideAllowWriteForExistingFiles bit is still denied. Overlay-
+    // created files resolve to RedirectToBacking/PassThrough (the handle already points
+    // at the backing copy), so only genuine real inputs are denied here (§6.3.1).
+    if (ShouldWriteOverlay())
+    {
+        std::wstring srcBacking;
+        if (ResolveOverlayDelete(sourcePolicyResult, srcBacking) == OverlayDeleteAction::DenyAccess)
+        {
+            ReportIfNeeded(sourceAccessCheck, sourceOpContext, sourcePolicyResult, ERROR_ACCESS_DENIED);
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+    }
+
     vector<ReportData> filesAndDirectoriesToReport;
     if (renameDirectory)
     {
@@ -7639,11 +7745,39 @@ static BOOL RenameUsingSetFileInformationByHandle(
         }
     }
 
+    // Model W (write-overlay): redirect the rename DESTINATION name into the backing
+    // store so an in-cone rename/move never lands on the real execroot. This is the
+    // SetFileInformationByHandle(FileRenameInfo) sibling of HandleFileRenameInformation
+    // above; the source handle was already redirected to its backing copy at open
+    // time. The Win32 API accepts a \\?\-prefixed full path with RootDirectory=NULL,
+    // so (unlike the NT ZwSetInformationFile path) no \??\ conversion is needed. A real
+    // read-only (-r) input was already denied by the source CheckWriteAccess above.
+    LPVOID effInfo = lpFileInformation;
+    DWORD effLen = dwBufferSize;
+    std::vector<BYTE> redirectedRenameBuf;
+    if (ShouldWriteOverlay())
+    {
+        std::wstring backing = ResolveOverlayRenameDest(destPolicyResult);
+        if (!backing.empty())
+        {
+            const ULONG nameBytes = (ULONG)(backing.size() * sizeof(wchar_t));
+            const size_t hdr = FIELD_OFFSET(FILE_RENAME_INFO, FileName);
+            redirectedRenameBuf.resize(hdr + nameBytes);
+            memcpy(redirectedRenameBuf.data(), lpFileInformation, hdr);
+            auto* ni = (PFILE_RENAME_INFO)redirectedRenameBuf.data();
+            ni->RootDirectory = NULL;
+            ni->FileNameLength = nameBytes;
+            memcpy(ni->FileName, backing.c_str(), nameBytes);
+            effInfo = redirectedRenameBuf.data();
+            effLen = (DWORD)redirectedRenameBuf.size();
+        }
+    }
+
     BOOL result = Real_SetFileInformationByHandle(
         hFile,
         FileInformationClass,
-        lpFileInformation,
-        dwBufferSize);
+        effInfo,
+        effLen);
     DWORD error = GetLastError();
     DWORD reportedError = GetReportedError(result, error);
 

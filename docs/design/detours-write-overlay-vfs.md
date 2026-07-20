@@ -1236,11 +1236,26 @@ subtractive path is byte-for-byte unchanged.
    require mutating the real execroot). The rename destination mirrors the filter-aware
    CREATE_NEW of §5.6.2 (lands in the backing store, parent dirs created). No
    tombstones, whiteouts, or opaque-directory markers. Handle-based delete/rename
-   (`FILE_FLAG_DELETE_ON_CLOSE`, `FileDispositionInfo`, `FileRenameInfo`) already
-   redirect naturally: `DELETE` counts as write access (`WantsWriteAccess`), so the
-   opening `CreateFile` is routed through `ResolveOverlayOpenPath` onto the backing
-   handle. Enforce cases in `tests/enforce/overlay_test.cc` (`writeovdelete`,
-   `writeovrename`, plus filter/permissive lower-file delete) — suite now 39 cases.
+   (`FILE_FLAG_DELETE_ON_CLOSE`, `FileDispositionInfo`, `FileRenameInfo`) is what
+   cmd's `ren`/`move` and many runtimes actually use instead of the `MoveFile*` hooks.
+   The SOURCE side rides the backing copy for free: `DELETE` counts as write access
+   (`WantsWriteAccess`), so the opening `CreateFile` is routed through
+   `ResolveOverlayOpenPath` onto the backing handle. But the rename **destination**
+   name in `FILE_RENAME_INFO`/`FILE_RENAME_INFORMATION` is a virtual execroot path, so
+   the handle rename must rewrite it into the backing store (RootDirectory=NULL + the
+   backing path, Win32 `\\?\` form for `SetFileInformationByHandle`, NT `\??\` form for
+   `ZwSetInformationFile`) or the move leaks the destination onto the real execroot.
+   `HandleFileRenameInformation` and `RenameUsingSetFileInformationByHandle` now do
+   this (mirroring the existing `HandleFileLinkInformation` hard-link redirect).
+   Additionally, all three handle mutators (`HandleFileRenameInformation`,
+   `RenameUsingSetFileInformationByHandle`, `HandleFileDispositionInformation`,
+   `DeleteUsingSetFileInformationByHandle`) re-run `ResolveOverlayDelete` on the source
+   and **deny** a real, visible in-cone input even when it inherits the writable cone's
+   `OverrideAllowWriteForExistingFiles` bit — so a read-only `-r` input can never be
+   renamed, moved, or deleted (matching the name-based `MoveFile*`/`DeleteFileW` hooks).
+   Enforce cases in `tests/enforce/overlay_test.cc` (`writeovdelete`, `writeovdeleteh`,
+   `writeovrename`, `writeovrenameh`, the handle-path read-only-input deny tests, plus
+   filter/permissive lower-file delete).
    Directory moves are deferred to phase 5 (pass through unchanged).
 5. **Broaden API coverage + redirect explicit `CreateDirectoryW`.**
    - **[done] Metadata/probe redirect (`mw-metadata`).** The path-based metadata hooks
@@ -1330,10 +1345,16 @@ subtractive path is byte-for-byte unchanged.
        `attrib +r` on a real in-cone input did **not** mutate the real file (no leak),
        and `SetFileTime` on an overlay-only file may fail cosmetically; handle-based
        `SetFileInformationByHandle`/`NtSetInformationFile(FileBasicInformation)` *is*
-       hooked, which is why tar's mtime-preserve works. `NtSetInformationFile(`
-       `FileRenameInformation)` is intercepted for policy but not yet overlay-redirected
-       (the Win32 `MoveFile*` hooks cover the common rename path; the NT rename path is a
-       known follow-up mirroring the `FileLinkInformation` fix above).
+       hooked, which is why tar's mtime-preserve works.
+     - **[done] Handle-based rename overlay redirect.** `NtSetInformationFile(`
+       `FileRenameInformation)` and `SetFileInformationByHandle(FileRenameInfo)` — the
+       path cmd's `ren`/`move` take — now redirect the rename destination into the
+       backing store (was previously intercepted for policy only, so the Win32
+       `MoveFile*` hooks covered the common path but a handle rename leaked the dest onto
+       the real execroot). Fixed in `HandleFileRenameInformation` /
+       `RenameUsingSetFileInformationByHandle`, mirroring the `FileLinkInformation`
+       hard-link redirect; pinned by `writeovrenameh` and the handle-path read-only-input
+       deny enforce cases.
 6. **Backing store + discard (mostly in place).** The launcher already creates the
    per-invocation backing root and embeds it in the manifest; confirm delete-on-tree
    -exit, `-D` retain + path print, and cross-volume `MoveFile` from the overlay to a

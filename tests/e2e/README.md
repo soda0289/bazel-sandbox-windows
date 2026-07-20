@@ -150,6 +150,37 @@ the Windows cert store (matches the root repo).
   design — backing-store-as-truth with no whiteout markers, see
   `docs/design/detours-write-overlay-vfs.md` §6.3.1), so the real entries always
   enumerate through the passthrough unchanged.
+* **`python`** — pins a hermetic **CPython** via `rules_python`
+  (`python.toolchain(python_version = ...)`, a python-build-standalone
+  distribution downloaded by Bazel — no machine Python needed) and exposes the
+  host interpreter as `@python_3_13_host//:python`, carried in the cc_test
+  runfiles (with its adjacent stdlib) and run **directly under the sandbox**
+  against real `.py` scripts. `PythonFsMutationOps` (`scripts/fs_ops.py`) drives
+  write/read-back/rename/delete/move, and `PythonEnumerationSplice`
+  (`scripts/enum_ops.py`) is the enumeration-splice case. Both do all their
+  directory listings through **`os.scandir`** (CPython's readdir loop →
+  `FindFirstFile`/`FindNextFile`) — deliberately, because `realtools.ps1`'s
+  header flags `os.scandir` as the overlay's historical enumeration trouble spot
+  (a stale last-error / `WinError 203` leaking out of the merged enumeration).
+* **`native`** — fetches **no tool**: it exercises the overlay against Windows'
+  own always-present built-ins, so it always runs (no download, no skip).
+  `cmd.exe`'s internal commands (`mkdir`/`del`/`rmdir`/`dir`/`type`, resolved by
+  the harness from the OS system directory) drive `NativeCmdFsMutationOps`
+  (write/read-back/delete/rmdir) and `NativeEnumerationSplice` (the enumeration
+  case, via `dir`'s raw `FindFirstFile`/`FindNextFile` + `dir <pattern>`
+  wildcards); the in-box `xcopy.exe` drives `NativeXcopyTreeCopy` (a real tree
+  copied into an overlay dest); and `mklink /H` drives `NativeHardlink`. A
+  fifth, **`NativeCmdRenameMoveOverlay`**, covers cmd's `ren`/`move` of an
+  overlay-created file and directory. cmd renames via the *handle-based*
+  `FileRenameInformation` path (open the source handle, then
+  `SetFileInformationByHandle`/`NtSetInformationFile` naming the destination),
+  not the path-based `MoveFileEx` hook. That handle path now redirects the
+  rename **destination** into the backing store
+  (`HandleFileRenameInformation` / `RenameUsingSetFileInformationByHandle`), so
+  the whole move stays in the overlay and never leaks onto the real execroot.
+  (This fixed a bug where the destination name was left as the virtual execroot
+  path, so a handle rename leaked the moved file onto real disk; a real `-r`
+  input still cannot be renamed/moved — the source open for `DELETE` is denied.)
 
 ### Adding a new hermetic tool module
 

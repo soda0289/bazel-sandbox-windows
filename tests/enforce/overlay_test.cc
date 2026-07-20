@@ -197,12 +197,72 @@ TEST_F(EnforceTest, OverlayDeleteVisibleLowerFileDenied) {
     EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
 }
 
+// Handle-based delete (SetFileInformationByHandle + FILE_DISPOSITION_INFO) of an
+// overlay-created file must remove the backing copy without touching the real
+// execroot (the sibling of writeovdelete on the handle path).
+TEST_F(EnforceTest, OverlayDeleteByHandleOwnFile) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"writeovdeleteh", ws}));
+    EXPECT_FALSE(Exists(Join(ws, L"ovdelh.txt")));
+}
+
+// A read-only (-r) input must NEVER be deletable via the handle path, even under the
+// write overlay (mirrors the rename guarantee). The declared input carries a
+// read-only scope; the overlay cone is writable (-w) as in Bazel Mode 2.
+TEST_F(EnforceTest, OverlayDeleteByHandleReadonlyInputDenied) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds a.txt = "x"
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"-w", ws, L"-r", Join(ws, L"a.txt"), L"--write-overlay"},
+                                   {L"deleteh", Join(ws, L"a.txt")}));
+    EXPECT_TRUE(Exists(Join(ws, L"a.txt")));
+}
+
 TEST_F(EnforceTest, OverlayRenameOwnFile) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();
     EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"writeovrename", ws}));
     EXPECT_FALSE(Exists(Join(ws, L"ovr_src.txt")));
     EXPECT_FALSE(Exists(Join(ws, L"ovr_dst.txt")));
+}
+
+// Regression: rename an overlay-created file via a HANDLE (SetFileInformationByHandle
+// + FILE_RENAME_INFO) - the path cmd's `ren`/`move` take. The move must stay inside
+// the backing store (probe read-back of the dest succeeds -> kOk) and never leak
+// either name onto the real execroot. Previously the destination NAME was left as the
+// virtual path, so the handle-based move leaked the destination onto real disk.
+TEST_F(EnforceTest, OverlayRenameByHandleOwnFile) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"writeovrenameh", ws}));
+    EXPECT_FALSE(Exists(Join(ws, L"ovrh_src.txt")));
+    EXPECT_FALSE(Exists(Join(ws, L"ovrh_dst.txt")));
+}
+
+// A read-only (-r) input must NEVER be renamable, even under the write overlay. The
+// handle-based rename opens the source for DELETE access, which the more-specific
+// read-only scope denies up front, so the whole op is refused and the real input
+// stays intact. The overlay cone is writable (-w) as in Bazel Mode 2; only the
+// declared input a.txt carries the read-only scope. Guards against the overlay
+// redirect ever being extended to real -r inputs (design §6.3.1).
+TEST_F(EnforceTest, OverlayRenameByHandleReadonlyInputDenied) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds a.txt = "x"
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"-w", ws, L"-r", Join(ws, L"a.txt"), L"--write-overlay"},
+                                   {L"renameh", Join(ws, L"a.txt"), Join(ws, L"a_renamed.txt")}));
+    EXPECT_TRUE(Exists(Join(ws, L"a.txt")));
+    EXPECT_FALSE(Exists(Join(ws, L"a_renamed.txt")));
+}
+
+// The same guarantee for the path-based MoveFileEx rename (ResolveOverlayDelete's
+// DenyAccess branch): a real -r input in a writable overlay cone cannot be moved.
+TEST_F(EnforceTest, OverlayRenamePathReadonlyInputDenied) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds a.txt = "x"
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"-w", ws, L"-r", Join(ws, L"a.txt"), L"--write-overlay"},
+                                   {L"rename", Join(ws, L"a.txt"), Join(ws, L"a_moved.txt")}));
+    EXPECT_TRUE(Exists(Join(ws, L"a.txt")));
+    EXPECT_FALSE(Exists(Join(ws, L"a_moved.txt")));
 }
 
 // --- Composite-op redirect (mw-composite-ops) ---------------------------------

@@ -1,0 +1,65 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+# Windows target + Unicode defines matching the shared harness / root targets.
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+# Sandboxed children (cmd + xcopy) need the standard Windows variables to
+# initialize and to find xcopy.exe on PATH under `bazel test`'s scrubbed
+# environment.
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Write-overlay VFS e2e against native Windows built-ins. Drives cmd.exe's
+# internal commands (mkdir/ren/del/move/rmdir/dir/type/mklink) and the in-box
+# xcopy under the sandbox and asserts overlay read-after-write, an enumeration
+# splice (via `dir`'s FindFirstFile/FindNextFile), and an unchanged real
+# execroot. No tool is fetched: cmd.exe is resolved from the OS system directory
+# by the harness and xcopy is found on PATH. Only BazelSandbox (with its
+# co-located DetoursServices.dll) rides as `data`.
+cc_test(
+    name = "overlay_native",
+    size = "small",
+    srcs = ["overlay_native_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+    ],
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)
