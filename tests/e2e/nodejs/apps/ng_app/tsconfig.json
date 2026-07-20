@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "outDir": "out",
+    "types": [],
+    "lib": ["ES2022", "DOM"]
+  },
+  "files": ["src/app.component.ts"],
+  "angularCompilerOptions": {
+    "strictTemplates": true
+  }
+}

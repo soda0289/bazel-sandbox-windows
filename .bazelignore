@@ -3,3 +3,4 @@
 # run explicitly from their own directory (e.g. `cd tests/e2e/coreutils && bazel
 # test //...`); the root workspace must not descend into them.
 tests/e2e/coreutils
+tests/e2e/nodejs

@@ -46,6 +46,10 @@ class OverlayTest : public ::testing::Test {
     void SetUp() override;
     void TearDown() override;
 
+   public:
+    // Static utilities are public so free helper functions in the test TUs can
+    // call them (matches the enforce harness convention).
+
     // Absolute path to the resolved BazelSandbox.exe (from E2E_SANDBOX). Empty
     // if it could not be resolved (SetUp asserts non-empty).
     static const std::wstring& SandboxPath();
@@ -60,24 +64,8 @@ class OverlayTest : public ::testing::Test {
     // it is not itself the tool under test.
     static std::wstring CmdExe();
 
-    // Creates a fresh empty execroot directory for the current test and returns
-    // its (backslash-normalized) path. Reset per test (fresh fixture).
-    std::wstring NewWorkspace();
-
     // Joins a workspace path with a child name (backslash-normalized).
     static std::wstring Join(const std::wstring& dir, const std::wstring& name);
-
-    // Runs "BazelSandbox --write-overlay -W <ws> -- <toolCmd...>" and returns
-    // the exit code plus captured stdout+stderr.
-    RunResult RunOverlay(const std::wstring& ws,
-                         const std::vector<std::wstring>& toolCmd);
-
-    // Writes `content` to a .bat file in the temp root and runs it under the
-    // overlay via cmd.exe (/c). `lines` are joined with CRLF + "&& " semantics
-    // is up to the caller; each entry becomes its own line. Returns the run
-    // result. Used to sequence multiple tool ops in one invocation.
-    RunResult RunOverlayBat(const std::wstring& ws,
-                            const std::vector<std::wstring>& lines);
 
     // --- filesystem helpers -------------------------------------------------
     static bool Exists(const std::wstring& p);
@@ -87,6 +75,31 @@ class OverlayTest : public ::testing::Test {
     // Sorted list of paths (relative to `dir`) of every entry under `dir`,
     // recursively. Used to assert the real execroot is unchanged.
     static std::vector<std::wstring> Snapshot(const std::wstring& dir);
+
+    // Runs "BazelSandbox --write-overlay -W <ws> -- <toolCmd...>" and returns
+    // the exit code plus captured stdout+stderr. Public so free helper
+    // functions in the test TUs can drive it (matches the static-helper
+    // convention above).
+    RunResult RunOverlay(const std::wstring& ws,
+                         const std::vector<std::wstring>& toolCmd);
+
+    // Writes `lines` to a .bat in the temp root and runs it under the overlay
+    // via cmd.exe (/c). Each entry becomes its own line (written verbatim, so
+    // the caller controls "&&"/errorlevel sequencing). Public so free helpers
+    // in the test TUs can sequence several ops in one invocation (e.g. run a
+    // build then read an emitted file back THROUGH the overlay).
+    RunResult RunOverlayBat(const std::wstring& ws,
+                            const std::vector<std::wstring>& lines);
+
+   protected:
+    // Creates a fresh empty execroot directory for the current test and returns
+    // its (backslash-normalized) path. Reset per test (fresh fixture).
+    std::wstring NewWorkspace();
+
+    // Writes `content` to a .bat file in the temp root and runs it under the
+    // overlay via cmd.exe (/c). `lines` are joined with CRLF + "&& " semantics
+    // is up to the caller; each entry becomes its own line. Returns the run
+    // result. Used to sequence multiple tool ops in one invocation.
 
     const std::filesystem::path& TempRoot() const { return tempRoot_; }
 

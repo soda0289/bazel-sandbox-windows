@@ -1,0 +1,31 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@npm//:vite/package_json.bzl", vite_bin = "bin")
+
+# App sources copied into the bin tree so vite (run from the bin tree) resolves
+# them next to the linked //:node_modules at the workspace root.
+js_library(
+    name = "srcs",
+    srcs = glob([
+        "index.html",
+        "vite.config.js",
+        "src/**/*.jsx",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+# `bazel run //apps/react_app:build` runs `vite build` in this package dir
+# (chdir), producing dist/ next to the sources. This is the same launcher the
+# overlay e2e test drives under the sandbox via msys2 bash.
+vite_bin.vite_binary(
+    name = "build",
+    args = ["build"],
+    chdir = package_name(),
+    data = [
+        ":srcs",
+        "//:node_modules/@vitejs/plugin-react",
+        "//:node_modules/react",
+        "//:node_modules/react-dom",
+        "//:node_modules/vite",
+    ],
+    visibility = ["//visibility:public"],
+)

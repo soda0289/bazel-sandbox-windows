@@ -1,0 +1,55 @@
+"""End-to-end write-overlay VFS tests against a hermetic Node.js.
+
+Module-per-scenario (see tests/e2e/README.md). Two lanes in one module:
+  * Test A drives `node` directly against the overlay (mkdir/write/readdir/copy).
+  * Test B (rules_js) materializes a real React + Angular node_modules tree and
+    has node copy the whole tree into the overlay - a thousands-of-files write
+    stress test that must leave the real execroot untouched.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_nodejs",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "aspect_rules_js", version = "3.2.3")
+bazel_dep(name = "rules_nodejs", version = "6.7.5")
+bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
+
+# System under test: BazelSandbox.exe + DetoursServices.dll + shared e2e harness.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# rules_js: translate the committed pnpm lockfile (React + Angular + rxjs) into
+# hermetic per-package repos. npm_link_all_packages in BUILD.bazel then links a
+# node_modules tree, which copy_to_directory materializes to a real directory
+# for the overlay stress test. Package tarballs are fetched from the npm
+# registry at build time (pinned + integrity-checked by the lockfile), so this
+# module - like the smoke.ps1 lane - needs network on first build.
+#
+# The hermetic Node.js interpreter comes from the rules_nodejs toolchain
+# (@nodejs_host//:node_bin), which the e2e cc_test runs *under the sandbox*.
+# rules_nodejs 6.7.5's bundled version map includes 24.18.0; use_repo exposes
+# the host-platform node binary as a plain file we can carry as cc_test data and
+# resolve from runfiles. Bump node_version to any release in that map to refresh.
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "24.18.0")
+use_repo(node, "nodejs_host")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+    verify_node_modules_ignored = "//:.bazelignore",
+)
+use_repo(npm, "npm")

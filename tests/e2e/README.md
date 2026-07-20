@@ -63,6 +63,45 @@ The first run fetches + verifies the tool archive and builds the sandbox from
 this repo. Behind a TLS-inspecting proxy the module's `.bazelrc` already trusts
 the Windows cert store (matches the root repo).
 
+### Available modules
+
+* **`coreutils`** — `http_archive`s the pinned Microsoft/uutils coreutils
+  Windows release and drives `cp` (read-back + listing) and a multi-file
+  enumeration case.
+* **`nodejs`** — gets its Node.js interpreter from the `rules_nodejs`
+  toolchain (`@nodejs_host//:node_bin`, version-pinned via
+  `node.toolchain(node_version = ...)`) and adds a `rules_js` **`node_modules` write-stress** case: it
+  materialises a real React + Angular dependency tree (~18k files, pinned by a
+  committed `pnpm-lock.yaml`) with `npm_link_all_packages` +
+  `copy_to_directory`, then has `node` copy the whole tree through the overlay,
+  reads a deep file back (`@angular/core/package.json`), enumerates it, and
+  asserts the thousands of writes all landed in the backing store (the real
+  execroot stays empty). This exercises the overlay at scale — deep scoped
+  `@scope/pkg` dirs and a high write count — which the synthetic `probe` and the
+  single-file tool cases cannot. Being `rules_js`-based it fetches package
+  tarballs from the npm registry at build time, so it is network-dependent (like
+  `smoke.ps1`) and stays an opt-in, `.bazelignore`d module.
+
+  It also runs two **`rules_js` `js_binary` build tests** — the "formal build"
+  analogue of the hand-written script cases: instead of a bespoke script, a real
+  toolchain-driven build (**vite** bundling a React app, **ngc** compiling an
+  Angular app) does thousands of reads/writes through the overlay. Each drives
+  the *same* native launcher `bazel run //apps/<app>:build` invokes, under the
+  sandbox with the launcher's runfiles `_main` root as the write cone (`-W`); the
+  bundler runs there and its output tree (`dist/`, `out/`) is redirected into the
+  process-private backing store while the real runfiles tree stays byte-for-byte
+  unchanged. vite prints its output summary, so its markers come from stdout;
+  ngc is *silent* on success, so its test chains `&& type out\app.component.js`
+  in the same invocation and asserts the Angular-only `defineComponent` marker in
+  the file read back **through the overlay** — positive proof the compile emitted
+  into the backing store. On Windows a `js_binary` launcher shells out to bash to
+  run its `.sh` launcher (exactly what `bazel run` does), so these two tests are
+  **non-hermetic**: they require **msys2 bash** at `C:\msys64\usr\bin\bash.exe`
+  and self-skip if it is absent. The `-W` cone must be the **real (non-junction)
+  `bazel-out` runfiles path**, never the `bazel-bin` convenience-junction form,
+  or the launcher's self-location resolves output writes outside the cone
+  (`EPERM`); the cc_test's runfiles library yields the real path, so it matches.
+
 ### Adding a new hermetic tool module
 
 Copy `tests/e2e/coreutils/` to `tests/e2e/<tool>/`, then: point its

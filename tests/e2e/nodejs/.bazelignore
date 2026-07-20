@@ -1,0 +1,4 @@
+# rules_js recommends ignoring a source node_modules; we never create one (the
+# tree is Bazel-managed), but npm_translate_lock's verify_node_modules_ignored
+# points here.
+node_modules

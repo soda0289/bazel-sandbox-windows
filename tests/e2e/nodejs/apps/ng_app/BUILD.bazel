@@ -1,0 +1,38 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@npm//:@angular/compiler-cli/package_json.bzl", ngc_bin = "bin")
+
+# App sources copied into the bin tree so ngc (run from the bin tree) resolves
+# them next to the linked //:node_modules at the workspace root.
+js_library(
+    name = "srcs",
+    srcs = glob([
+        "tsconfig.json",
+        "src/**/*.ts",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+# `bazel run //apps/ng_app:build` runs the Angular compiler (ngc) on this
+# package's tsconfig (chdir), emitting out/*.js + *.d.ts. ngc is silent on
+# success, so the overlay test proves emission by reading a compiled file back
+# THROUGH the overlay (see overlay_nodejs_test.cc). This is the same launcher
+# `bazel run` invokes, driven under the sandbox via msys2 bash.
+ngc_bin.ngc_binary(
+    name = "build",
+    args = [
+        "-p",
+        "tsconfig.json",
+    ],
+    chdir = package_name(),
+    data = [
+        ":srcs",
+        "//:node_modules/@angular/compiler",
+        "//:node_modules/@angular/compiler-cli",
+        "//:node_modules/@angular/core",
+        "//:node_modules/rxjs",
+        "//:node_modules/tslib",
+        "//:node_modules/typescript",
+        "//:node_modules/zone.js",
+    ],
+    visibility = ["//visibility:public"],
+)

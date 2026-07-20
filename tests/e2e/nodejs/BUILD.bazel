@@ -1,0 +1,84 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
+
+# Link the pnpm lockfile's packages into a node_modules tree.
+npm_link_all_packages(name = "node_modules")
+
+# Materialize the (symlink-farm) node_modules into a single real directory tree
+# artifact so the sandboxed node can copy it wholesale into the overlay. This is
+# the source of the thousands-of-files write stress; it is not itself sandboxed.
+copy_to_directory(
+    name = "node_modules_tree",
+    srcs = [":node_modules"],
+    include_external_repositories = ["*"],
+    replace_prefixes = {"node_modules": "node_modules"},
+)
+
+_HELPER_DEFINES = [
+    "UNICODE",
+    "_UNICODE",
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "_WIN32_WINNT=0x0A00",
+    "NTDDI_VERSION=0x0A000006",
+]
+
+_ENV_INHERIT = [
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "CommonProgramFiles",
+    "ComSpec",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "PUBLIC",
+    "SystemDrive",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+]
+
+# Write-overlay VFS e2e against hermetic Node.js. Test A drives node directly;
+# Test B copies a real React + Angular node_modules tree (materialized by
+# rules_js, see :node_modules_tree) into the overlay as a write stress test.
+cc_test(
+    name = "overlay_nodejs",
+    # ~40s: Test B copies an ~18k-file node_modules tree through the overlay.
+    size = "medium",  # 300s timeout - comfortable headroom over the ~40s runtime
+    srcs = ["overlay_nodejs_test.cc"],
+    data = [
+        "@bazel_sandbox_windows//:BazelSandbox",
+        "@nodejs_host//:node_bin",
+        ":node_modules_tree",
+        "//apps/react_app:build",
+        "//apps/ng_app:build",
+    ] + glob(["scripts/*.js"]),
+    env = {
+        "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_NODE": "$(rlocationpath @nodejs_host//:node_bin)",
+        "E2E_NODE_MODULES": "$(rlocationpath :node_modules_tree)",
+        "E2E_JS_FSREADBACK": "$(rlocationpath scripts/fs_readback.js)",
+        "E2E_JS_FSOPS": "$(rlocationpath scripts/fs_ops.js)",
+        "E2E_JS_NODEMODULES": "$(rlocationpath scripts/node_modules_stress.js)",
+        "E2E_VITE_REACT": "$(rlocationpath //apps/react_app:build)",
+        "E2E_NGC_ANGULAR": "$(rlocationpath //apps/ng_app:build)",
+    },
+    env_inherit = _ENV_INHERIT,
+    local_defines = _HELPER_DEFINES,
+    deps = [
+        "@bazel_sandbox_windows//tests/e2e:e2e_harness",
+        "@googletest//:gtest_main",
+    ],
+)
