@@ -94,5 +94,58 @@ TEST_F(OverlayTest, CoreutilsMultipleFilesEnumerated) {
     EXPECT_FALSE(Exists(wd)) << "overlay directory leaked onto real disk";
 }
 
+// Enumeration's hardest case: a directory that already holds REAL on-disk
+// entries must, in a single `ls`, also show the OVERLAY-only entries copied
+// into it this invocation - the merged (spliced) view - while the real execroot
+// keeps only its seeded files. (Only overlay entries are created here; a real
+// visible in-cone file is immutable - delete/rename is denied by design, see
+// docs/design/detours-write-overlay-vfs.md §6.3.1 - so this exercises the
+// merge, not a mutation of the real entries.)
+TEST_F(OverlayTest, CoreutilsMixedRealOverlayEnumerated) {
+    REQUIRE_TOOL(mkdir, "E2E_UU_MKDIR");
+    REQUIRE_TOOL(cp, "E2E_UU_CP");
+    REQUIRE_TOOL(ls, "E2E_UU_LS");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    auto ws = NewWorkspace();
+    // Seed a directory with two REAL on-disk files, plus a real input to copy.
+    auto mix = Join(ws, L"mix");
+    ASSERT_TRUE(CreateDirectoryW(mix.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS);
+    WriteText(Join(mix, L"realA.txt"), "REALA");
+    WriteText(Join(mix, L"realB.txt"), "REALB");
+    auto in = Join(ws, L"in.txt");
+    WriteText(in, "OVX");
+
+    // Under the overlay, splice overlay-only entries (a file + a subdir) into
+    // the SAME directory that already holds the real entries, then enumerate.
+    auto ovsub = Join(mix, L"ovsub");
+    auto r = RunOverlayBat(ws, {
+        Q(cp) + L" " + Q(in) + L" " + Q(Join(mix, L"ovX.txt")),
+        Q(mkdir) + L" " + Q(ovsub),
+        Q(ls) + L" " + Q(mix),
+        Q(cat) + L" " + Q(Join(mix, L"ovX.txt")),
+        Q(cat) + L" " + Q(Join(mix, L"realA.txt")),
+    });
+
+    // Merged view: both real entries AND both overlay entries appear together.
+    EXPECT_TRUE(Contains(r.out, "realA.txt")) << "real entry missing from merged listing:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "realB.txt")) << "real entry missing from merged listing:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "ovX.txt")) << "overlay file missing from merged listing:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "ovsub")) << "overlay subdir missing from merged listing:\n" << r.out;
+    // Read-back through both halves of the merge.
+    EXPECT_TRUE(Contains(r.out, "OVX")) << "overlay read-back failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "REALA")) << "real passthrough read failed:\n" << r.out;
+
+    // The real execroot is untouched: only the seeded input + the mix/ dir with
+    // its two real files remain (in.txt, mix, mix\realA.txt, mix\realB.txt = 4);
+    // no overlay entry leaked to disk.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(4u, snap.size()) << "overlay entries leaked onto the real execroot";
+    EXPECT_TRUE(Exists(Join(mix, L"realA.txt"))) << "seeded real file vanished";
+    EXPECT_TRUE(Exists(Join(mix, L"realB.txt"))) << "seeded real file vanished";
+    EXPECT_FALSE(Exists(Join(mix, L"ovX.txt"))) << "overlay copy leaked onto real disk";
+    EXPECT_FALSE(Exists(ovsub)) << "overlay subdir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
