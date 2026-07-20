@@ -1313,10 +1313,10 @@ subtractive path is byte-for-byte unchanged.
      probe now restores the *virtual* last component into `cFileName` (it was returning
      the backing dir's name for the cone root, so the JVM class loader canonicalized
      in-cone classpath entries into the backing store and failed class resolution).
-     Pinned by the opt-in **`tests/e2e/realtools.ps1`** matrix (native cmd, PowerShell
-     7 + 5.1, uutils + msys2 GNU coreutils, node, python, java/javac, dotnet, tar, xcopy,
-     curl — each does create/list/copy/read-back under `--write-overlay` and asserts a
-     clean real execroot).
+     Pinned by the opt-in hermetic **`tests/e2e/<tool>/`** matrix (native cmd +
+     tar/curl/PowerShell, uutils + msys2 GNU coreutils, node, python, java/javac,
+     dotnet — each does create/list/copy/read-back under `--write-overlay` and
+     asserts a clean real execroot).
    - **[done] Composite-op + NT link-info redirect (`mw-composite-ops`).** Same
      self-contained-kernel-op class as `mw-copyfile`, swept across the remaining hooks:
      `CopyFile2` (Win8+; not backstopped by the `NtCreateFile` hook, so it needed its own
@@ -1338,8 +1338,9 @@ subtractive path is byte-for-byte unchanged.
      symlink hook also had to move its overlay redirect ahead of the default
      `IgnoreReparsePoints` early-return. Pinned by new probe ops (`writeovhardlink`,
      `writeovsymlink`, `writeovreplace`, `writeovrmdir`) + `tests/enforce/overlay_test.cc`
-     cases (including a real-in-cone `rmdir` denial) and `tests/e2e/realtools.ps1`
-     `mklink /H` and `mkdir`+`rmdir` cases.
+     cases (including a real-in-cone `rmdir` denial) and `tests/e2e/native`'s
+     `NativeHardlink` (`mklink /H`) and `NativeCmdFsMutationOps` (`mkdir`+`rmdir`)
+     cases.
      - **Deliberately deferred (no leak observed, lower priority):**
        `SetFileAttributes(W/A)` and `SetFileTime` are not overlay-hooked — empirically
        `attrib +r` on a real in-cone input did **not** mutate the real file (no leak),

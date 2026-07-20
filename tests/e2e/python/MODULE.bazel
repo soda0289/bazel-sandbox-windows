@@ -10,8 +10,8 @@ a python-build-standalone CPython and exposes the host-platform interpreter as
 `@python_3_13_host//:python`. The e2e cc_test carries that interpreter (with its
 adjacent stdlib) as `data` and runs it *under the sandbox* against two real
 scripts (scripts/fs_ops.py, scripts/enum_ops.py). Listings deliberately go
-through os.scandir - the API realtools.ps1 flags as the overlay's enumeration
-trouble spot (WinError 203). No machine Python install is needed.
+through os.scandir - the overlay's historical enumeration trouble spot (a leaked
+WinError 203). No machine Python install is needed.
 
 Run from this directory:
 

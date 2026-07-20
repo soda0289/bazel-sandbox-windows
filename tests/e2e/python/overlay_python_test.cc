@@ -10,8 +10,8 @@
 //                             into a directory of real files, via os.scandir.
 //
 // Listings deliberately go through os.scandir (CPython's readdir loop ->
-// FindFirstFile/FindNextFile), the API realtools.ps1's header flags as the
-// overlay's enumeration trouble spot (a stale last-error / WinError 203). Every
+// FindFirstFile/FindNextFile), the overlay's historical enumeration trouble spot
+// (a stale last-error / WinError 203). Every
 // test asserts the three overlay invariants: read-after-write, an enumeration
 // splice, and an unchanged real execroot (skips if its tool/data env var is
 // missing).
@@ -108,6 +108,27 @@ TEST_F(OverlayTest, PythonEnumerationSplice) {
     EXPECT_TRUE(Exists(Join(mix, L"realB.txt"))) << "seeded real file vanished";
     EXPECT_FALSE(Exists(Join(mix, L"ovX.txt"))) << "overlay create leaked to the real disk";
     EXPECT_FALSE(Exists(Join(mix, L"ovsub"))) << "overlay subdir leaked to the real disk";
+}
+
+// shutil.copy (the stdlib file-copy tool) copies a real
+// in-cone input into an overlay directory; the copy reads back through open()
+// (overlay read-after-write) and appears in os.scandir (enumeration splice),
+// while nothing lands on the real execroot.
+TEST_F(OverlayTest, PythonShutilCopyOverlay) {
+    std::wstring py = PythonExe();
+    if (py.empty()) GTEST_SKIP() << "python missing from runfiles (E2E_PYTHON)";
+    std::wstring script = Script("E2E_PY_COPYOPS");
+    if (script.empty()) GTEST_SKIP() << "copy_ops.py missing (E2E_PY_COPYOPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunOverlay(ws, {py, script, ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "READ=OVPYCOPY")) << "shutil.copy read-back failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "LIST=out.txt")) << "copied file missing from listing:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "python copy leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay directory leaked onto real disk";
 }
 
 // Input-filtering (the mode Bazel uses in production): only declared -r inputs

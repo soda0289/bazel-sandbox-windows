@@ -6,7 +6,7 @@
 #
 # Directory listings deliberately go through os.scandir (CPython's readdir loop
 # -> FindFirstFile/FindNextFile), the API the overlay's enumeration splice has
-# to satisfy and the one realtools.ps1 calls out as a historical trouble spot
+# to satisfy and the one flagged as a historical trouble spot
 # (a stale last-error / WinError 203 leaking out of the merged enumeration).
 #
 # Run as: python fs_ops.py <execroot>

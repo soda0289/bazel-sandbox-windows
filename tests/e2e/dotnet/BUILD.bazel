@@ -72,6 +72,16 @@ csharp_binary(
     visibility = ["//visibility:public"],
 )
 
+# .NET 10 C# program exercising File.Copy (the CopyFile / CopyFileEx kernel-copy
+# path): copies a real in-cone input into an overlay dest, reads it back, and
+# lists the overlay dir. Same launcher shape as fs_ops.
+csharp_binary(
+    name = "copy_ops",
+    srcs = ["copy_ops.cs"],
+    target_frameworks = ["net10.0"],
+    visibility = ["//visibility:public"],
+)
+
 # Write-overlay VFS e2e: drives BazelSandbox --write-overlay against the .NET 10
 # fs_ops binary and asserts overlay read-after-write, enumeration splice, and an
 # unchanged real execroot. The launcher (with the hermetic dotnet runtime) and
@@ -84,6 +94,7 @@ cc_test(
     srcs = ["overlay_dotnet_test.cc"],
     data = [
         "@bazel_sandbox_windows//:BazelSandbox",
+        ":copy_ops",
         ":enum_ops",
         ":filter_ops",
         ":fs_ops",
@@ -93,6 +104,7 @@ cc_test(
         "E2E_DOTNET_FSOPS": "$(rlocationpath :fs_ops)",
         "E2E_DOTNET_ENUMOPS": "$(rlocationpath :enum_ops)",
         "E2E_DOTNET_FILTEROPS": "$(rlocationpath :filter_ops)",
+        "E2E_DOTNET_COPYOPS": "$(rlocationpath :copy_ops)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

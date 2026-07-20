@@ -6,7 +6,7 @@
 # duplicates, reflecting the removal of an overlay-created entry - all while the
 # real execroot stays byte-for-byte unchanged.
 #
-# os.scandir is the specific API realtools.ps1's header flags as a historical
+# os.scandir is the specific API flagged as a historical
 # trouble spot for the overlay (a stale last-error / WinError 203 leaking out of
 # the merged enumeration), so this lane drives it directly.
 #

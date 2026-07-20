@@ -1,19 +1,13 @@
 # End-to-end tests (opt-in)
 
 These tests exercise the sandbox end-to-end in ways the probe-based enforcement
-suites under `tests/enforce/` cannot. There are three flavours:
+suites under `tests/enforce/` cannot. There are two flavours:
 
 * **Hermetic gtest modules** (`tests/e2e/<tool>/`) drive the sandbox against a
   **Bazel-fetched, pinned real tool** and assert the **write-overlay VFS** with
   the same GoogleTest harness the enforcement suite uses. Reproducible and
   CI-friendly (the tool is downloaded + version-pinned by Bazel). See
   [Hermetic tool modules](#hermetic-tool-modules-teste2etool) below.
-* **`realtools.ps1`** drives the sandbox binary *directly* against a broad matrix of
-  **real third-party tools** (native shells/utilities, PowerShell 7 + 5.1,
-  Microsoft/uutils coreutils, msys2 GNU coreutils, and the python/node/java/dotnet
-  toolchains) to validate the **write-overlay VFS** against the OS-API patterns the
-  synthetic `probe` cannot replicate. Non-hermetic: tools are discovered at
-  machine paths and skipped if absent. No Bazel required.
 * **`mode2.ps1` / `smoke.ps1`** drive the sandbox through a **real Bazel build** to
   validate the **Bazel <-> sandbox integration layer** (that `windows-sandbox`
   passes `--filter-inputs`, grants declared inputs, hides undeclared ones).
@@ -159,9 +153,11 @@ the Windows cert store (matches the root repo).
   write/read-back/rename/delete/move, and `PythonEnumerationSplice`
   (`scripts/enum_ops.py`) is the enumeration-splice case. Both do all their
   directory listings through **`os.scandir`** (CPython's readdir loop →
-  `FindFirstFile`/`FindNextFile`) — deliberately, because `realtools.ps1`'s
-  header flags `os.scandir` as the overlay's historical enumeration trouble spot
-  (a stale last-error / `WinError 203` leaking out of the merged enumeration).
+  `FindFirstFile`/`FindNextFile`) — deliberately, because `os.scandir` is the
+  overlay's historical enumeration trouble spot (a stale last-error / `WinError
+  203` leaking out of the merged enumeration). `PythonShutilCopyOverlay`
+  (`scripts/copy_ops.py`) additionally drives `shutil.copy` (source read +
+  destination write redirected into the backing store).
 * **`java`** — pins a fully hermetic **JDK** via `rules_java` (a downloaded
   `remotejdk_21` for both the target and tool runtimes — `.bazelrc` sets
   `--java_runtime_version`/`--tool_java_runtime_version=remotejdk_21` so nothing
@@ -172,6 +168,11 @@ the Windows cert store (matches the root repo).
   `JavaEnumerationSplice` (`EnumOps.java`) the enumeration-splice case, both
   through **`java.nio.file`** (`Files.move`/`Files.list`/`Files.newDirectoryStream`
   → `MoveFileEx`/`FindFirstFile`) — a distinct caller from .NET/node/python.
+  `JavaClasspathLoadInCone` compiles a class outside the sandbox then loads it
+  through an in-cone `-cp` entry under the overlay (the classpath-canonicalization
+  path), and `JavacCompileIntoOverlay` runs `javac` compiling into the overlay
+  then `java` running the result — both driving the hermetic JDK's `java`/`javac`
+  re-exported by the `jdk_tool` rule (`jdk_tools.bzl`).
   Fully hermetic (JDK is Bazel-fetched), so no machine Java and no network after
   the first fetch.
 * **`native`** — fetches **no tool**: it exercises the overlay against Windows'
@@ -181,8 +182,16 @@ the Windows cert store (matches the root repo).
   (write/read-back/delete/rmdir) and `NativeEnumerationSplice` (the enumeration
   case, via `dir`'s raw `FindFirstFile`/`FindNextFile` + `dir <pattern>`
   wildcards); the in-box `xcopy.exe` drives `NativeXcopyTreeCopy` (a real tree
-  copied into an overlay dest); and `mklink /H` drives `NativeHardlink`. A
-  fifth, **`NativeCmdRenameMoveOverlay`**, covers cmd's `ren`/`move` of an
+  copied into an overlay dest); and `mklink /H` drives `NativeHardlink`. The
+  always-present in-box tools add more real-tool coverage without any download:
+  `NativeCmdCopySingleFileAndFindstr` (cmd's single-file `copy` = `CopyFileW`,
+  read back through `findstr`), `NativeTarCreateExtract` (`tar.exe`
+  create+extract, incl. its mtime-preserving `SetFileInformationByHandle`),
+  `NativeCurlFileUrl` (`curl.exe` fetching a `file://` URL into the overlay), and
+  `NativeWindowsPowerShellCopyItem` / `NativePwsh7CopyItem` (Windows PowerShell
+  5.1 always-present, and pwsh 7 when installed — `Get-ChildItem` list +
+  `Copy-Item` = .NET `File.Copy` → `CopyFileEx`). A further case,
+  **`NativeCmdRenameMoveOverlay`**, covers cmd's `ren`/`move` of an
   overlay-created file and directory. cmd renames via the *handle-based*
   `FileRenameInformation` path (open the source handle, then
   `SetFileInformationByHandle`/`NtSetInformationFile` naming the destination),
@@ -219,56 +228,21 @@ overlay stress test) at the new tool, wire the tool binaries into the
 `cc_test`'s `data` + `env` rlocationpaths, write the `*_test.cc` against the
 shared harness, and add `tests/e2e/<tool>` to the root `.bazelignore`.
 
-## `realtools.ps1` — write-overlay VFS against real tools
-
-Drives `BazelSandbox.exe --write-overlay` directly (no Bazel) against a matrix of
-real tools, each running a small **create dir -> write file -> list -> copy ->
-read back** workflow inside a single sandbox invocation. Because the backing store
-is process-private and per invocation, the write and its read-back must share one
-invocation. Every case asserts three things:
-
-1. the read-back marker appears in the tool's output (overlay read-after-write);
-2. the listing shows the created file (overlay enumeration splice);
-3. the real execroot is byte-for-byte unchanged (every write was redirected into
-   the backing store — nothing leaked onto disk).
-
 ### Why real tools (not just `probe`)
 
-The committed `tests/enforce/` suites drive only the synthetic `probe`, which cannot
-reproduce the OS-API patterns real tools use. Each family here has caught a genuine
-overlay bug the probe missed, e.g. python's `os.scandir` loop (a leaked `WinError
-203` from the enum snapshot), the JVM class loader's per-component path
-canonicalization (in-cone classpath entries canonicalizing into the backing store),
-and `CopyFile`/`CopyFileEx` (an overlay-only source coming back `NOT_FOUND` and the
-destination **leaking onto the real execroot** — hit by uutils `cp` / Rust
-`std::fs::copy`, native `copy`, node `fs.copyFileSync`, and .NET `File.Copy`).
-The composite-op cases caught the **`mklink /H` NT-layer leak**: `cmd` creates a
-hardlink via `NtSetInformationFile(FileLinkInformation)` (not `CreateHardLinkW`),
-which leaked the new link onto the real execroot until `HandleFileLinkInformation`
-was taught to redirect the link name into the backing store.
-
-### Tools covered
-
-Native `cmd` (dir/copy/findstr), PowerShell 7 and Windows PowerShell 5.1
-(Get-ChildItem/Copy-Item), Microsoft/uutils coreutils and msys2 GNU coreutils
-(ls/cp/cat/grep), `node`, `python`, `java` (load a class from an in-cone classpath),
-`javac` (compile into the overlay) + `java`, `dotnet` (CreateDirectory / GetFiles /
-File.Copy via a tiny helper built once, offline), `tar`, `xcopy`, `curl`
-(`file://`), and native `cmd` composite ops (`mklink /H` hardlink, `mkdir`+`rmdir`).
-Tools are discovered dynamically at machine-specific paths; any that are
-absent are **skipped**, not failed.
-
-### Running
-
-```powershell
-pwsh tests/e2e/realtools.ps1
-```
-
-Optional flags: `-Sandbox <BazelSandbox.exe>` (defaults to this repo's build) and
-`-KeepArtifacts` (keep the per-case temp workspaces + generated .bat/.log scratch).
-
-Exit codes: `0` all discovered tools passed, `1` a case failed, `2` a prerequisite
-binary was missing (sandbox/DLL), `3` no real tools were found (nothing to test).
+The committed `tests/enforce/` suites drive only the synthetic `probe`, which
+cannot reproduce the OS-API patterns real tools use. Each family here has caught
+a genuine overlay bug the probe missed, e.g. python's `os.scandir` loop (a leaked
+`WinError 203` from the enum snapshot), the JVM class loader's per-component path
+canonicalization (in-cone classpath entries canonicalizing into the backing
+store), and `CopyFile`/`CopyFileEx` (an overlay-only source coming back
+`NOT_FOUND` and the destination **leaking onto the real execroot** — hit by
+uutils `cp`, native cmd `copy`, node `fs.copyFileSync`, .NET `File.Copy`, and
+PowerShell `Copy-Item`). The composite-op cases caught the **`mklink /H` NT-layer
+leak**: `cmd` creates a hardlink via `NtSetInformationFile(FileLinkInformation)`
+(not `CreateHardLinkW`), which leaked the new link onto the real execroot until
+`HandleFileLinkInformation` was taught to redirect the link name into the backing
+store.
 
 ## Prerequisites (Bazel-driven tests below)
 

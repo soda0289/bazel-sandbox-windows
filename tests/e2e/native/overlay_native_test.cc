@@ -16,6 +16,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,44 @@ std::wstring Q(const std::wstring& s) { return L"\"" + s + L"\""; }
 
 bool Contains(const std::string& hay, const char* needle) {
     return hay.find(needle) != std::string::npos;
+}
+
+// Resolves an always-present in-box tool from the OS system directory (env-
+// independent). Empty if the file is absent (older Windows without it).
+std::wstring SysTool(const wchar_t* name) {
+    wchar_t sysdir[MAX_PATH];
+    UINT n = GetSystemDirectoryW(sysdir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    std::wstring p = (std::filesystem::path(sysdir) / name).make_preferred().wstring();
+    return OverlayTest::Exists(p) ? p : std::wstring();
+}
+
+// Windows PowerShell 5.1 (always present) lives under System32\WindowsPowerShell.
+std::wstring WindowsPowerShell() {
+    return SysTool(L"WindowsPowerShell\\v1.0\\powershell.exe");
+}
+
+// PowerShell 7 (pwsh.exe) via PATH; empty if it is not installed (skip then).
+std::wstring Pwsh7() {
+    wchar_t buf[MAX_PATH];
+    DWORD n = SearchPathW(nullptr, L"pwsh.exe", nullptr, MAX_PATH, buf, nullptr);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    return std::wstring(buf, n);
+}
+
+// The gci/Copy-Item body shared by Windows PowerShell 5.1 and pwsh 7: create a
+// dir, write in.txt, list it (LIST=), Copy-Item to out.txt (which goes through
+// .NET File.Copy -> CopyFileEx, the kernel-copy path the overlay must intercept),
+// then read the copy back (READ=). Written ConstrainedLanguage-safe (cmdlets +
+// primitive operators only). ws uses backslashes; inside single quotes those are
+// literal.
+std::wstring PsBody(const std::wstring& ws, const std::wstring& mark) {
+    return L"$d = Join-Path '" + ws + L"' 'wd'\n"
+           L"New-Item -ItemType Directory -Force $d | Out-Null\n"
+           L"Set-Content -LiteralPath (Join-Path $d 'in.txt') -Value '" + mark + L"'\n"
+           L"'LIST=' + ((Get-ChildItem $d).Name -join ',')\n"
+           L"Copy-Item -LiteralPath (Join-Path $d 'in.txt') -Destination (Join-Path $d 'out.txt')\n"
+           L"'READ=' + (Get-Content -Raw -LiteralPath (Join-Path $d 'out.txt'))\n";
 }
 
 // write/read/delete/rmdir sequenced in one cmd invocation, each op visible to
@@ -255,6 +295,135 @@ TEST_F(OverlayTest, NativeFilterInputsHidesUndeclared) {
     EXPECT_TRUE(Contains(r.out, "SECRETHIDDEN")) << "undeclared file was visible to `if exist`:\n" << r.out;
     EXPECT_FALSE(Contains(r.out, "SECRETVISIBLE")) << r.out;
     EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
+}
+
+// cmd's single-file `copy` (CopyFileW under the hood) into an overlay dest, then
+// `findstr` reads the copy back through the overlay. This covers the CopyFile
+// family separately from the `xcopy` tree case: the kernel copy opens the source
+// and writes the destination itself, so the overlay must intercept those opens
+// and redirect the write into the backing store (a leak would land out.txt on
+// the real execroot). `findstr` proves the copied bytes read back through the
+// overlay.
+TEST_F(OverlayTest, NativeCmdCopySingleFileAndFindstr) {
+    std::wstring findstr = SysTool(L"findstr.exe");
+    if (findstr.empty()) GTEST_SKIP() << "findstr.exe not present";
+
+    auto ws = NewWorkspace();
+    auto wd = Join(ws, L"wd");
+    auto in = Join(wd, L"in.txt");
+    auto out = Join(wd, L"out.txt");
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir " + Q(wd),
+        L"echo OVCOPY>" + Q(in),
+        L"copy /y " + Q(in) + L" " + Q(out) + L" >nul",
+        L"type " + Q(out),
+        Q(findstr) + L" OVCOPY " + Q(out),
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "OVCOPY")) << "single-file copy did not read back:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "cmd copy leaked onto the real execroot";
+    EXPECT_FALSE(Exists(wd)) << "overlay directory leaked onto real disk";
+}
+
+// In-box `tar.exe` (bsdtar/libarchive): create an archive from a real in-cone
+// source tree, then extract it into an overlay-only dir and read a file back.
+// The archive (a.tar) and the extracted tree are overlay writes; the source is a
+// real allowed input. tar's bulk read + write + its mtime-preserving
+// SetFileInformationByHandle(FileBasicInformation) metadata path all stay in the
+// backing store. Always present on modern Windows; skipped otherwise.
+TEST_F(OverlayTest, NativeTarCreateExtract) {
+    std::wstring tar = SysTool(L"tar.exe");
+    if (tar.empty()) GTEST_SKIP() << "tar.exe not present";
+
+    auto ws = NewWorkspace();
+    // Real in-cone source tree (allowed reads).
+    auto src = Join(ws, L"src");
+    ASSERT_TRUE(CreateDirectoryW(src.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS);
+    WriteText(Join(src, L"hello.txt"), "OVTAR");
+
+    auto arc = Join(ws, L"a.tar");
+    auto ext = Join(ws, L"ext");
+    auto r = RunOverlayBat(ws, {
+        Q(tar) + L" -cf " + Q(arc) + L" -C " + Q(ws) + L" src",
+        L"mkdir " + Q(ext),
+        Q(tar) + L" -xf " + Q(arc) + L" -C " + Q(ext),
+        L"type " + Q(Join(ext, L"src\\hello.txt")),
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "OVTAR")) << "tar extract did not read back through the overlay:\n" << r.out;
+
+    // The real execroot keeps only the seeded source tree: src, src\hello.txt.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(2u, snap.size()) << "tar output leaked onto the real execroot";
+    EXPECT_FALSE(Exists(arc)) << "overlay archive leaked onto real disk";
+    EXPECT_FALSE(Exists(ext)) << "overlay extract dir leaked onto real disk";
+}
+
+// In-box `curl.exe`: fetch a real in-cone file via a file:// URL and write the
+// result into the overlay, then read it back. curl reads the source through
+// WinHTTP/file scheme (CreateFile on the real input) and writes the output into
+// the backing store; the output must not leak onto the real execroot.
+TEST_F(OverlayTest, NativeCurlFileUrl) {
+    std::wstring curl = SysTool(L"curl.exe");
+    if (curl.empty()) GTEST_SKIP() << "curl.exe not present";
+
+    auto ws = NewWorkspace();
+    auto srcfile = Join(ws, L"srcfile.txt");
+    WriteText(srcfile, "OVCURL");
+
+    // file:///C:/.../srcfile.txt (forward slashes).
+    std::wstring fwd = srcfile;
+    std::replace(fwd.begin(), fwd.end(), L'\\', L'/');
+    std::wstring url = L"file:///" + fwd;
+    auto got = Join(ws, L"got.txt");
+
+    auto r = RunOverlayBat(ws, {
+        Q(curl) + L" -s -o " + Q(got) + L" " + Q(url),
+        L"type " + Q(got),
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "OVCURL")) << "curl output did not read back through the overlay:\n" << r.out;
+
+    // The real execroot keeps only the seeded source file.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "curl output leaked onto the real execroot";
+    EXPECT_EQ(L"srcfile.txt", snap[0]);
+    EXPECT_FALSE(Exists(got)) << "overlay curl output leaked onto real disk";
+}
+
+// Runs the shared gci/Copy-Item PowerShell body under the overlay and asserts
+// the listing + copy read-back, with no real-execroot leak. Copy-Item goes
+// through .NET File.Copy (CopyFileEx), so this validates the kernel-copy
+// interception from a PowerShell caller.
+static void RunPowerShellCopyCase(OverlayTest& t, const std::wstring& ws,
+                                  const std::wstring& shell, const std::wstring& mark) {
+    auto r = t.RunOverlay(ws, {shell, L"-NoProfile", L"-NonInteractive", L"-Command",
+                               PsBody(ws, mark)});
+    std::string want = "READ=" + std::string(mark.begin(), mark.end());
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "in.txt")) << "Get-ChildItem did not splice overlay file:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, want.c_str())) << "Copy-Item read-back failed:\n" << r.out;
+    EXPECT_TRUE(OverlayTest::Snapshot(ws).empty()) << "PowerShell writes leaked onto the real execroot";
+    EXPECT_FALSE(OverlayTest::Exists(OverlayTest::Join(ws, L"wd"))) << "overlay directory leaked onto real disk";
+}
+
+// Windows PowerShell 5.1 (always present in System32) - the .NET Framework host.
+TEST_F(OverlayTest, NativeWindowsPowerShellCopyItem) {
+    std::wstring wps = WindowsPowerShell();
+    if (wps.empty()) GTEST_SKIP() << "Windows PowerShell 5.1 not present";
+    RunPowerShellCopyCase(*this, NewWorkspace(), wps, L"OVWPS");
+}
+
+// PowerShell 7 (pwsh.exe) - the .NET (Core) host; non-hermetic, skipped if absent.
+TEST_F(OverlayTest, NativePwsh7CopyItem) {
+    std::wstring pwsh = Pwsh7();
+    if (pwsh.empty()) GTEST_SKIP() << "pwsh (PowerShell 7) not on PATH";
+    RunPowerShellCopyCase(*this, NewWorkspace(), pwsh, L"OVPWSH");
 }
 
 }  // namespace

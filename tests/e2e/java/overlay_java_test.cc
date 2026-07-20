@@ -134,5 +134,87 @@ TEST_F(OverlayTest, JavaFilterInputsHidesUndeclared) {
     EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
 }
 
+// Quotes a path for a command line built by hand (the raw java/javac cases).
+std::wstring Q(const std::wstring& s) { return L"\"" + s + L"\""; }
+
+// Runs a command line to completion OUTSIDE the sandbox (used to seed a real,
+// in-cone compiled .class before the sandboxed java run). Returns the child
+// exit code, or -1 if the process could not be started.
+int RunLocalWait(const std::wstring& cmdline) {
+    std::wstring mut = cmdline;
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mut.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        return -1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return static_cast<int>(code);
+}
+
+// java loads a class from an in-cone `-cp` entry: javac compiles T.class OUTSIDE
+// the sandbox (a real in-cone input), then `java -cp <ws> T` runs UNDER the
+// overlay and must resolve + read that real .class through the classpath. This
+// guards the classpath-canonicalization path: an in-place classpath dir must
+// canonicalize to the real file, not a masked one).
+TEST_F(OverlayTest, JavaClasspathLoadInCone) {
+    std::wstring java = OverlayTest::ToolFromEnv("E2E_JAVA_JAVA");
+    std::wstring javac = OverlayTest::ToolFromEnv("E2E_JAVA_JAVAC");
+    if (java.empty()) GTEST_SKIP() << "hermetic java missing (E2E_JAVA_JAVA)";
+    if (javac.empty()) GTEST_SKIP() << "hermetic javac missing (E2E_JAVA_JAVAC)";
+
+    auto ws = NewWorkspace();
+    auto src = Join(ws, L"T.java");
+    WriteText(src, "public class T { public static void main(String[] a){ System.out.println(\"T-OK\"); } }");
+
+    // Seed T.class as a REAL in-cone input (compiled outside the sandbox).
+    int seed = RunLocalWait(Q(javac) + L" -d " + Q(ws) + L" " + Q(src));
+    ASSERT_EQ(0, seed) << "seed javac failed";
+    ASSERT_TRUE(Exists(Join(ws, L"T.class"))) << "seed did not produce a real T.class";
+
+    // Load the real class through an in-cone -cp entry, under the overlay.
+    auto r = RunOverlay(ws, {java, L"-cp", ws, L"T"});
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "T-OK")) << "class not loaded from in-cone classpath:\n" << r.out;
+
+    // The real execroot keeps only the two seeded inputs; java wrote nothing.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(2u, snap.size()) << "java run leaked onto the real execroot";
+}
+
+// javac compiles INTO the overlay, then java runs the result - both in one
+// invocation (the overlay backing store is per invocation). javac writes
+// U.class into the overlay; `java -cp <ws> U` reads it back through the
+// classpath and prints U-OK. The compiled class must never touch the real
+// execroot.
+TEST_F(OverlayTest, JavacCompileIntoOverlay) {
+    std::wstring java = OverlayTest::ToolFromEnv("E2E_JAVA_JAVA");
+    std::wstring javac = OverlayTest::ToolFromEnv("E2E_JAVA_JAVAC");
+    if (java.empty()) GTEST_SKIP() << "hermetic java missing (E2E_JAVA_JAVA)";
+    if (javac.empty()) GTEST_SKIP() << "hermetic javac missing (E2E_JAVA_JAVAC)";
+
+    auto ws = NewWorkspace();
+    auto src = Join(ws, L"U.java");
+    WriteText(src, "public class U { public static void main(String[] a){ System.out.println(\"U-OK\"); } }");
+
+    // Compile into the overlay, then run - one invocation, shared backing store.
+    auto r = RunOverlayBat(ws, {
+        Q(javac) + L" -d " + Q(ws) + L" " + Q(src) +
+            L" && " + Q(java) + L" -cp " + Q(ws) + L" U",
+    });
+
+    EXPECT_TRUE(Contains(r.out, "U-OK")) << "javac->java through the overlay failed:\n" << r.out;
+
+    // The real execroot keeps only U.java; U.class lived only in the overlay.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "javac output leaked onto the real execroot";
+    EXPECT_EQ(L"U.java", snap[0]);
+    EXPECT_FALSE(Exists(Join(ws, L"U.class"))) << "overlay .class leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e

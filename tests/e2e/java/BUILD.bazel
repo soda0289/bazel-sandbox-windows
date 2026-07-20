@@ -1,5 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_test")
 load("@rules_java//java:defs.bzl", "java_binary")
+load(":jdk_tools.bzl", "jdk_tool")
 
 # Windows target + Unicode defines matching the shared harness / root targets.
 _HELPER_DEFINES = [
@@ -73,6 +74,23 @@ java_binary(
     visibility = ["//visibility:public"],
 )
 
+# The hermetic remote JDK's java + javac executables, re-exported at their real
+# runfiles paths so the classpath-load and javac-into-overlay cases can invoke
+# them directly (rather than via a java_binary launcher). Used to drive the raw
+# `java -cp` / `javac -d` command lines the classpath-load and javac-into-overlay
+# cases exercise.
+jdk_tool(
+    name = "jdk_java",
+    tool = "java",
+    visibility = ["//visibility:public"],
+)
+
+jdk_tool(
+    name = "jdk_javac",
+    tool = "javac",
+    visibility = ["//visibility:public"],
+)
+
 # Write-overlay VFS e2e: drives BazelSandbox against the hermetic Java binaries
 # and asserts overlay read-after-write, enumeration splice, an unchanged real
 # execroot, and input-filtering (declared visible / undeclared masked). The
@@ -89,12 +107,16 @@ cc_test(
         ":enum_ops",
         ":filter_ops",
         ":fs_ops",
+        ":jdk_java",
+        ":jdk_javac",
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
         "E2E_JAVA_FSOPS": "$(rlocationpath :fs_ops)",
         "E2E_JAVA_ENUMOPS": "$(rlocationpath :enum_ops)",
         "E2E_JAVA_FILTEROPS": "$(rlocationpath :filter_ops)",
+        "E2E_JAVA_JAVA": "$(rlocationpath :jdk_java)",
+        "E2E_JAVA_JAVAC": "$(rlocationpath :jdk_javac)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

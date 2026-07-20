@@ -162,8 +162,38 @@ TEST_F(OverlayTest, Msys2MixedRealOverlayEnumerated) {
     EXPECT_FALSE(Exists(ovsub)) << "overlay subdir leaked onto real disk";
 }
 
+// grep reads file content through the overlay: cp seeds an overlay-only file,
+// then grep -r scans the overlay directory and matches a marker line. grep's
+// recursive walk enumerates the overlay dir (splice) AND opens+reads the
+// overlay file (read-after-write), so a match proves both paths resolve to the
+// backing store. The real execroot keeps only the seeded input.
+TEST_F(OverlayTest, Msys2GrepSearch) {
+    REQUIRE_MSYS(mkdir, "E2E_MSYS_MKDIR");
+    REQUIRE_MSYS(cp, "E2E_MSYS_CP");
+    REQUIRE_MSYS(grep, "E2E_MSYS_GREP");
+
+    auto ws = NewWorkspace();
+    auto in = Join(ws, L"in.txt");
+    WriteText(in, "alpha\nOVGREP-NEEDLE\nomega\n");  // real, in-cone input
+
+    auto wd = Join(ws, L"wd");
+    auto out = Join(wd, L"a.txt");
+    auto r = RunOverlayBat(ws, {
+        Q(mkdir) + L" " + Q(Fwd(wd)),
+        Q(cp) + L" " + Q(Fwd(in)) + L" " + Q(Fwd(out)),
+        Q(grep) + L" -r OVGREP-NEEDLE " + Q(Fwd(wd)),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVGREP-NEEDLE")) << "grep did not match through the overlay:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "a.txt")) << "grep -r did not enumerate the overlay file:\n" << r.out;
+
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "unexpected on-disk entries under execroot";
+    EXPECT_EQ(L"in.txt", snap[0]);
+    EXPECT_FALSE(Exists(wd)) << "overlay directory leaked onto real disk";
+}
+
 // Input-filtering (the mode Bazel uses in production): only declared -r inputs
-// are visible. Driven through the msys2 applets' POSIX file ops - ls for
 // enumeration, cat for reads - the declared input is fully visible while the
 // undeclared sibling is masked NOT_FOUND. Each op runs in its own invocation so
 // cat's error text for the masked path cannot contaminate the ls listing check.

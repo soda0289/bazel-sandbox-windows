@@ -108,7 +108,7 @@ wrestling with how PowerShell starts commands).
 |---|---|---|---|
 | **probe** | `tests/probe.cpp` (~1400 L) | The **sandboxed child**: performs one Win32 op and exits with a stable code (0 allowed / 10 denied / 11 not-found / 20 other …). | **Stays C++, unchanged.** It is the system-under-test *actor*, not a test framework. It must be a separate process to be sandboxed. |
 | **enforce** | `tests/enforce/*.ps1` (9 files, ~1600 L) + `tests/lib/harness.ps1` | Launch `BazelSandbox … -- probe <op>`, assert the child's exit code. Part of `bazel test //tests:all`. | **Port to GoogleTest (`cc_test`).** This is where the PowerShell pain lives. |
-| **e2e** | `tests/e2e/realtools.ps1`, `smoke.ps1`, `mode2.ps1` | Drive **real tools** / **real repo builds** under the sandbox. Opt-in, not in `bazel test //tests:all`. | **Keep as scripts** (genuine shell orchestration). Optionally Pester-ize; make the *toolchain* half hermetic. |
+| **e2e** | `tests/e2e/<tool>/` gtest modules, `smoke.ps1`, `mode2.ps1` | Drive **real tools** / **real repo builds** under the sandbox. Opt-in, not in `bazel test //tests:all`. | **Hermetic tool half ported to GoogleTest modules** (Bazel-fetched tools); Bazel-integration scripts (`smoke.ps1`/`mode2.ps1`) stay as scripts (genuine shell orchestration). |
 
 The friction you feel is ~entirely in the **enforce** layer. `smoke.ps1` (real
 repos, network, patched Bazel) is inherently non-hermetic and stays PowerShell.
@@ -203,7 +203,7 @@ harness exists). ~1600 PS lines → ~1000 C++ lines.
 
 ### BDD (optional)
 
-`realtools.ps1` / `smoke.ps1` are genuine tool/shell orchestration; C++ is a poor
+`smoke.ps1` / `mode2.ps1` are genuine tool/shell orchestration; C++ is a poor
 fit. If BDD is wanted here, use **Pester** (`Describe/Context/It/BeforeEach/
 AfterEach/Should`), vendored via `http_archive` and run through `rules_powershell`.
 
@@ -278,10 +278,10 @@ Two lanes:
 1. **Hermetic e2e lane** — node / python / java / dotnet / uutils / pwsh7, all
    Bazel-downloaded. This half can finally run in CI without machine setup.
 2. **Native-OS lane** — cmd / PowerShell 5.1 / mklink / xcopy / System32 curl /
-   msys2 — discovery-based, opt-in, skipped when absent (today's `realtools.ps1`
-   model). These are the highest-signal cases (they caught the `mklink /H`
-   NT-link-info leak, CopyFileEx leak, etc.) precisely *because* they exercise
-   un-hermetic real Windows tools.
+   tar — driven by the always-present in-box tools in the hermetic `native`
+   module (so they always run; pwsh 7 is skipped when absent). These are the
+   highest-signal cases (they caught the `mklink /H` NT-link-info leak,
+   CopyFileEx leak, etc.) precisely *because* they exercise real Windows tools.
 
 `smoke.ps1` (real external repos) stays exactly as-is — non-hermetic by nature.
 

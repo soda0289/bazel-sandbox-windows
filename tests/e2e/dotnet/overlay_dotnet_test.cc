@@ -106,6 +106,27 @@ TEST_F(OverlayTest, DotnetEnumerationSplice) {
     EXPECT_FALSE(Exists(Join(mix, L"ovsub"))) << "overlay subdir leaked to the real disk";
 }
 
+// File.Copy (the CopyFile / CopyFileEx kernel-copy path) copies a real in-cone
+// input into an overlay dest; the copy reads back through File.ReadAllText
+// (overlay read-after-write) and appears in Directory.GetFileSystemEntries
+// (enumeration splice), while nothing lands on the real execroot. Covers the
+// CopyFile family separately from fs_ops.cs's File.Move.
+TEST_F(OverlayTest, DotnetFileCopyOverlay) {
+    std::wstring launcher = OverlayTest::ToolFromEnv("E2E_DOTNET_COPYOPS");
+    if (launcher.empty())
+        GTEST_SKIP() << "copy_ops csharp_binary launcher missing (E2E_DOTNET_COPYOPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunOverlay(ws, {OverlayTest::CmdExe(), L"/c", launcher, ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "READ=OVNETCOPY")) << "File.Copy read-back failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "LIST=out.txt")) << "copied file missing from listing:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << ".NET copy leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay directory leaked onto real disk";
+}
+
 // Input-filtering (the mode Bazel uses in production): only declared -r inputs
 // are visible. Driven through .NET's own APIs - Directory.GetFileSystemEntries
 // for enumeration and File.ReadAllText for reads - the declared input is fully
