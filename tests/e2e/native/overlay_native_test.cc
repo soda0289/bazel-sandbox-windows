@@ -426,5 +426,142 @@ TEST_F(OverlayTest, NativePwsh7CopyItem) {
     RunPowerShellCopyCase(*this, NewWorkspace(), pwsh, L"OVPWSH");
 }
 
+// ---------------------------------------------------------------------------
+// Combined --filter-inputs --write-overlay: a tool output name colliding with an
+// UNDECLARED (masked) real input. The real `secret.txt` is seeded on disk but
+// never declared with -r, so it is masked NOT_FOUND. Every case must leave that
+// real file byte-for-byte unchanged. cmd is the richest driver here: its `ren`
+// takes the handle-based FileRenameInformation path while `move` takes the
+// path-based MoveFileEx path, so both destination-redirect hooks get covered.
+// ---------------------------------------------------------------------------
+
+// create over the hidden name -> lands in the overlay, reads back, and does NOT
+// come back ACCESS_DENIED; the real undeclared file is untouched.
+TEST_F(OverlayTest, NativeFilterOverlayCreateOverHidden) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(secret, "REAL-SECRET");  // real, UNDECLARED (masked) input
+
+    auto r = RunFilteredOverlayBat(ws, /*declared*/ {}, {
+        L"echo OVERLAY-NEW>" + Q(secret),
+        L"type " + Q(secret),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVERLAY-NEW")) << "create over masked name failed:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "Access is denied")) << "create wrongly denied:\n" << r.out;
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "real undeclared input was mutated";
+}
+
+// rename ONTO the hidden name (cmd `ren`, handle path): an overlay file renamed
+// onto the masked name lands in the backing store; real file untouched.
+TEST_F(OverlayTest, NativeFilterOverlayRenameOntoHidden) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    auto tmp = Join(ws, L"tmp.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"echo OVERLAY-MOVED>" + Q(tmp),
+        L"ren " + Q(tmp) + L" secret.txt",
+        L"type " + Q(secret),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVERLAY-MOVED")) << "rename onto masked name failed:\n" << r.out;
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "real undeclared input was mutated";
+    EXPECT_FALSE(Exists(tmp)) << "overlay source leaked onto real disk";
+}
+
+// move ONTO the hidden name (cmd `move`, path-based MoveFileEx): same guarantee
+// through the other rename hook.
+TEST_F(OverlayTest, NativeFilterOverlayMoveOntoHidden) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    auto tmp = Join(ws, L"tmp.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"echo OVERLAY-MV>" + Q(tmp),
+        L"move /y " + Q(tmp) + L" " + Q(secret) + L" >nul",
+        L"type " + Q(secret),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVERLAY-MV")) << "move onto masked name failed:\n" << r.out;
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "real undeclared input was mutated";
+    EXPECT_FALSE(Exists(tmp)) << "overlay source leaked onto real disk";
+}
+
+// create over the hidden name, THEN rename that overlay copy AWAY: the move
+// operates on the backing copy (source AND dest resolve into the backing store),
+// so it succeeds and the real undeclared file is untouched.
+TEST_F(OverlayTest, NativeFilterOverlayCreateThenRenameAway) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    auto moved = Join(ws, L"moved.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"echo OVERLAY-AWAY>" + Q(secret),
+        L"ren " + Q(secret) + L" moved.txt",
+        L"type " + Q(moved),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVERLAY-AWAY")) << "rename away from masked name failed:\n" << r.out;
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "real undeclared input was mutated";
+    EXPECT_FALSE(Exists(moved)) << "overlay rename dest leaked onto real disk";
+}
+
+// create over the hidden name, THEN delete that overlay copy: the delete removes
+// the backing copy (RedirectToBacking) and the merged view shows the name gone,
+// while the real undeclared file stays on disk untouched.
+TEST_F(OverlayTest, NativeFilterOverlayCreateThenDelete) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"echo OVERLAY-DEL>" + Q(secret),
+        L"del " + Q(secret),
+        L"if exist " + Q(secret) + L" (echo STILL) else (echo GONE)",
+    });
+
+    EXPECT_TRUE(Contains(r.out, "GONE")) << "overlay copy not removed from merged view:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "STILL")) << "overlay copy still visible after delete:\n" << r.out;
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "real undeclared input was deleted/mutated";
+}
+
+// SAFETY GUARD: a BARE delete of the undeclared name (no overlay copy) is a
+// NOT_FOUND no-op - an undeclared input can never be destroyed. The real file
+// must survive on disk.
+TEST_F(OverlayTest, NativeFilterOverlayBareDeleteUndeclaredNoop) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"del " + Q(secret),
+    });
+
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "undeclared input was deleted via the sandbox";
+    EXPECT_TRUE(Exists(secret)) << "real undeclared input vanished";
+}
+
+// SAFETY GUARD: a BARE rename of the undeclared name (no overlay copy) is a
+// NOT_FOUND no-op - the source reads as absent, so the move fails and neither the
+// real source nor a real dest is produced.
+TEST_F(OverlayTest, NativeFilterOverlayBareRenameUndeclaredNoop) {
+    auto ws = NewWorkspace();
+    auto secret = Join(ws, L"secret.txt");
+    auto moved = Join(ws, L"moved.txt");
+    WriteText(secret, "REAL-SECRET");
+
+    auto r = RunFilteredOverlayBat(ws, {}, {
+        L"ren " + Q(secret) + L" moved.txt",
+    });
+
+    EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "undeclared input was renamed via the sandbox";
+    EXPECT_TRUE(Exists(secret)) << "real undeclared input vanished";
+    EXPECT_FALSE(Exists(moved)) << "rename produced a real dest from a masked source";
+}
+
 }  // namespace
 }  // namespace bsxe2e

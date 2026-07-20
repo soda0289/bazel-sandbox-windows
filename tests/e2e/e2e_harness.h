@@ -25,6 +25,17 @@
 // cases assert a real tool reads its declared inputs but neither reads nor
 // enumerates undeclared siblings.
 //
+// A third mode, RunFilteredOverlay / RunFilteredOverlayBat, drives BOTH at once:
+//
+//     BazelSandbox --filter-inputs --write-overlay -W <execroot> -r <in> ... -- <tool>
+//
+// input-filtering AND the write overlay together - the combination where a
+// tool's output name can collide with an undeclared (masked) real input. Create
+// / rename-onto / create-then-rename-away / create-then-delete of such a name
+// all succeed into the overlay (never ACCESS_DENIED), while a bare delete/rename
+// of the masked name is a NOT_FOUND no-op - and the real execroot is never
+// mutated in any case.
+//
 // The launcher rides as `data` on the cc_test and its runfiles rlocationpath is
 // handed in via E2E_SANDBOX; real tools are handed in via their own env vars
 // (each test TU knows its own names) and resolved through the rules_cc runfiles
@@ -103,6 +114,33 @@ class OverlayTest : public ::testing::Test {
     RunResult RunFiltered(const std::wstring& ws,
                           const std::vector<std::wstring>& declaredInputs,
                           const std::vector<std::wstring>& toolCmd);
+
+    // Runs "BazelSandbox --filter-inputs --write-overlay -W <ws> -r <in> ... --
+    // <toolCmd...>" - the *combined* mode: input-filtering (only declared -r
+    // inputs visible; every other real in-cone file masked NOT_FOUND) AND the
+    // write-overlay (all writes redirected into the process-private backing
+    // store, real execroot never mutated). This is the mode where the sharpest
+    // edge cases live, around a file whose name collides with an undeclared
+    // (masked) real input:
+    //   * create over the hidden name           -> succeeds into the overlay
+    //   * rename/move ONTO the hidden name       -> succeeds into the overlay
+    //   * create THEN rename/move it away        -> succeeds (moves the overlay copy)
+    //   * create THEN delete it                  -> succeeds (removes the overlay copy)
+    //   * bare delete/rename of the hidden name  -> NOT_FOUND no-op (an undeclared
+    //     input can never be destroyed or moved)
+    // In every case the real execroot stays byte-for-byte unchanged and a create
+    // over a masked name must NOT come back ACCESS_DENIED. Public so free helpers
+    // can drive it.
+    RunResult RunFilteredOverlay(const std::wstring& ws,
+                                 const std::vector<std::wstring>& declaredInputs,
+                                 const std::vector<std::wstring>& toolCmd);
+
+    // Writes `lines` to a .bat and runs it under the combined filter+overlay mode
+    // via cmd.exe (/c) - the RunFilteredOverlay analogue of RunOverlayBat, for
+    // sequencing several cmd ops (e.g. create-then-read) in one invocation.
+    RunResult RunFilteredOverlayBat(const std::wstring& ws,
+                                    const std::vector<std::wstring>& declaredInputs,
+                                    const std::vector<std::wstring>& lines);
 
     // Writes `lines` to a .bat and runs it under the input-filtering mode via
     // cmd.exe (/c) - the RunFiltered analogue of RunOverlayBat, for sequencing

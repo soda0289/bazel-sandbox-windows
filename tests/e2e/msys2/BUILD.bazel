@@ -58,6 +58,8 @@ cc_test(
         "@msys2_base//:usr/bin/grep.exe",
         "@msys2_base//:usr/bin/ls.exe",
         "@msys2_base//:usr/bin/mkdir.exe",
+        "@msys2_base//:usr/bin/mv.exe",
+        "@msys2_base//:usr/bin/rm.exe",
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
@@ -66,6 +68,8 @@ cc_test(
         "E2E_MSYS_GREP": "$(rlocationpath @msys2_base//:usr/bin/grep.exe)",
         "E2E_MSYS_LS": "$(rlocationpath @msys2_base//:usr/bin/ls.exe)",
         "E2E_MSYS_MKDIR": "$(rlocationpath @msys2_base//:usr/bin/mkdir.exe)",
+        "E2E_MSYS_MV": "$(rlocationpath @msys2_base//:usr/bin/mv.exe)",
+        "E2E_MSYS_RM": "$(rlocationpath @msys2_base//:usr/bin/rm.exe)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

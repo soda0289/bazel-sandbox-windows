@@ -74,6 +74,17 @@ java_binary(
     visibility = ["//visibility:public"],
 )
 
+# Java program exercising the COMBINED --filter-inputs --write-overlay edge
+# cases: create / rename-onto / create-then-rename-away / create-then-delete of a
+# name that shadows a HIDDEN undeclared input, plus bare NOT_FOUND-no-op guards.
+# Files.move/Files.delete take the path-based MoveFileEx/DeleteFile hooks.
+java_binary(
+    name = "filter_overlay_ops",
+    srcs = ["FilterOverlayOps.java"],
+    main_class = "FilterOverlayOps",
+    visibility = ["//visibility:public"],
+)
+
 # The hermetic remote JDK's java + javac executables, re-exported at their real
 # runfiles paths so the classpath-load and javac-into-overlay cases can invoke
 # them directly (rather than via a java_binary launcher). Used to drive the raw
@@ -106,6 +117,7 @@ cc_test(
         "@bazel_sandbox_windows//:BazelSandbox",
         ":enum_ops",
         ":filter_ops",
+        ":filter_overlay_ops",
         ":fs_ops",
         ":jdk_java",
         ":jdk_javac",
@@ -115,6 +127,7 @@ cc_test(
         "E2E_JAVA_FSOPS": "$(rlocationpath :fs_ops)",
         "E2E_JAVA_ENUMOPS": "$(rlocationpath :enum_ops)",
         "E2E_JAVA_FILTEROPS": "$(rlocationpath :filter_ops)",
+        "E2E_JAVA_FILTEROVERLAYOPS": "$(rlocationpath :filter_overlay_ops)",
         "E2E_JAVA_JAVA": "$(rlocationpath :jdk_java)",
         "E2E_JAVA_JAVAC": "$(rlocationpath :jdk_javac)",
     },

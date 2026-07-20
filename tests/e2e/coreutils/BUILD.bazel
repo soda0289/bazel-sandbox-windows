@@ -53,6 +53,8 @@ cc_test(
         "@uutils_coreutils//:cp.exe",
         "@uutils_coreutils//:ls.exe",
         "@uutils_coreutils//:mkdir.exe",
+        "@uutils_coreutils//:mv.exe",
+        "@uutils_coreutils//:rm.exe",
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
@@ -60,6 +62,8 @@ cc_test(
         "E2E_UU_CP": "$(rlocationpath @uutils_coreutils//:cp.exe)",
         "E2E_UU_LS": "$(rlocationpath @uutils_coreutils//:ls.exe)",
         "E2E_UU_MKDIR": "$(rlocationpath @uutils_coreutils//:mkdir.exe)",
+        "E2E_UU_MV": "$(rlocationpath @uutils_coreutils//:mv.exe)",
+        "E2E_UU_RM": "$(rlocationpath @uutils_coreutils//:rm.exe)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

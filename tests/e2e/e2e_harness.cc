@@ -237,6 +237,25 @@ RunResult OverlayTest::RunOverlayBat(const std::wstring& ws,
     return RunOverlay(ws, {CmdExe(), L"/c", WriteBat(lines)});
 }
 
+RunResult OverlayTest::RunFilteredOverlay(const std::wstring& ws,
+                                          const std::vector<std::wstring>& declaredInputs,
+                                          const std::vector<std::wstring>& toolCmd) {
+    std::vector<std::wstring> args = {L"--filter-inputs", L"--write-overlay", L"-W", ws};
+    for (const auto& in : declaredInputs) {
+        args.push_back(L"-r");
+        args.push_back(in);
+    }
+    args.push_back(L"--");
+    for (const auto& a : toolCmd) args.push_back(a);
+    return RunArgs(args);
+}
+
+RunResult OverlayTest::RunFilteredOverlayBat(const std::wstring& ws,
+                                             const std::vector<std::wstring>& declaredInputs,
+                                             const std::vector<std::wstring>& lines) {
+    return RunFilteredOverlay(ws, declaredInputs, {CmdExe(), L"/c", WriteBat(lines)});
+}
+
 RunResult OverlayTest::RunFilteredBat(const std::wstring& ws,
                                       const std::vector<std::wstring>& declaredInputs,
                                       const std::vector<std::wstring>& lines) {

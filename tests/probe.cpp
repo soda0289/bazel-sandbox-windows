@@ -74,9 +74,19 @@
 //                                 store), then enumerate the overlay-only directory
 //                                 <base>\ovsub via ntdll!NtQueryDirectoryFile; 0 iff
 //                                 f.txt is listed (overlay-only-dir open + enum)
+//   probe writedelete <path>      write <path> into the overlay then delete it
 //   probe writeovdelete <base>    write <base>\ovdel.txt into the overlay then delete
 //                                 it; 0 iff the delete of the process's own overlay
 //                                 file succeeds (backing removed, real untouched)
+//   probe writedeleteread <path>  write <path> into the overlay, delete that overlay
+//                                 copy, then READ <path> back; under a HIDDEN
+//                                 undeclared input this must be NOT_FOUND (11) - the
+//                                 masked real file must not re-surface after the
+//                                 overlay copy is removed
+//   probe writerenameawayread <path>
+//                                 write <path> into the overlay, rename it away to
+//                                 <path>.moved, then READ the original <path>; under a
+//                                 HIDDEN undeclared input this must be NOT_FOUND (11)
 //   probe writeovdeleteh <base>   like writeovdelete but deletes via a HANDLE
 //                                 (SetFileInformationByHandle + FILE_DISPOSITION_INFO)
 //   probe writeovrename <base>    write <base>\ovr_src.txt into the overlay, rename it
@@ -192,6 +202,34 @@ int DoWriteDelete(const wchar_t* path) {
     int w = DoWrite(path);
     if (w != kOk) return w;
     return DoDelete(path);
+}
+
+// Write <path> into the overlay, delete that overlay copy, then READ <path> back -
+// all in one process. Under --filter-inputs --write-overlay where <path>'s name
+// shadows a HIDDEN undeclared real input, the merged view after the delete must show
+// the name GONE: the final READ must return NOT_FOUND, never re-reveal the masked
+// real file's existence or bytes. Regression guard for the SHM created-set leak
+// (WasCreatedInThisProcess must stop reporting "created" once the backing copy is
+// removed). Returns the mapped result of the final READ.
+int DoWriteDeleteRead(const wchar_t* path) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    int d = DoDelete(path);
+    if (d != kOk) return d;
+    return DoRead(path);
+}
+
+// Write <path> into the overlay, rename that overlay copy AWAY to <path>.moved, then
+// READ the ORIGINAL <path> back. The source's overlay copy has moved, so the original
+// name must read as GONE (NOT_FOUND) - it must not re-reveal a masked undeclared input
+// sitting under it. Companion to DoWriteDeleteRead for the rename-source path. Returns
+// the mapped result of the READ of the original path.
+int DoWriteRenameAwayRead(const wchar_t* path) {
+    int w = DoWrite(path);
+    if (w != kOk) return w;
+    std::wstring dst = std::wstring(path) + L".moved";
+    if (!MoveFileExW(path, dst.c_str(), MOVEFILE_REPLACE_EXISTING)) return MapLastError();
+    return DoRead(path);
 }
 
 int DoMkdir(const wchar_t* path) {
@@ -1386,6 +1424,8 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"rewrite") return DoRewrite(argv[2]);
     if (op == L"writeread") return DoWriteRead(argv[2]);
     if (op == L"writedelete") return DoWriteDelete(argv[2]);
+    if (op == L"writedeleteread") return DoWriteDeleteRead(argv[2]);
+    if (op == L"writerenameawayread") return DoWriteRenameAwayRead(argv[2]);
     if (op == L"writespawnread") {
         if (argc < 4) return kBadUsage;
         return DoWriteSpawnRead(argv[2], argv[3]);

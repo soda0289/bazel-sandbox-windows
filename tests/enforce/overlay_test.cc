@@ -190,6 +190,32 @@ TEST_F(EnforceTest, OverlayDeleteHiddenLowerFileNotFound) {
     EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
 }
 
+// Create-then-delete over a HIDDEN undeclared input: writing the masked name lands
+// in the overlay backing store; deleting that overlay copy must leave the merged
+// view showing the name GONE. The subsequent read must return NOT_FOUND - it must
+// NOT re-reveal the masked real file. Regression guard for the SHM created-set leak:
+// once the backing copy is removed, WasCreatedInThisProcess must stop reporting the
+// path "created this action" so the read re-masks to the hidden real input.
+TEST_F(EnforceTest, OverlayCreateThenDeleteHiddenStaysMaskedNotFound) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds seed.txt = "seed-data"
+    EXPECT_EQ(kNotFound, RunProbeRaw({L"-W", ws, L"--filter-inputs", L"--write-overlay"},
+                                     {L"writedeleteread", Join(ws, L"seed.txt")}));
+    EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
+}
+
+// Create-then-rename-away over a HIDDEN undeclared input: the overlay copy is moved
+// off the masked name, so reading the ORIGINAL name must return NOT_FOUND (the real
+// hidden input must not resurface under it). The rename-source companion to the
+// create-then-delete guard above.
+TEST_F(EnforceTest, OverlayCreateThenRenameAwayHiddenStaysMaskedNotFound) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds seed.txt = "seed-data"
+    EXPECT_EQ(kNotFound, RunProbeRaw({L"-W", ws, L"--filter-inputs", L"--write-overlay"},
+                                     {L"writerenameawayread", Join(ws, L"seed.txt")}));
+    EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
+}
+
 TEST_F(EnforceTest, OverlayDeleteVisibleLowerFileDenied) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();  // seeds seed.txt = "seed-data"

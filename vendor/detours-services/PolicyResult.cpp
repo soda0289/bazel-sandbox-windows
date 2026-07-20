@@ -389,6 +389,20 @@ bool PolicyResult::WasCreatedInThisProcess() const {
     if (OverlayBackingExists(path)) {
         return true;
     }
+    // Under an ACTIVE write-overlay the backing store is the SOLE source of truth for
+    // "created this action": do NOT fall back to the SHM created-set. The SHM index
+    // is append-only and cannot express a removal, so a mark set when a tool created
+    // a file over a masked undeclared input outlives the backing copy after the tool
+    // deletes it (or renames it away). Consulting it would keep WasCreatedInThisProcess
+    // true with no backing copy left, un-masking the read of the underlying real file
+    // and re-revealing a hidden undeclared input's existence and bytes - a hermeticity
+    // leak with no linux-sandbox counterpart (its throwaway execroot never held the
+    // undeclared input). With the overlay active, no-backing == not-created. The SHM
+    // set is therefore consulted only in the legacy --execroot-writable mode, which
+    // has no backing store of its own.
+    if (ShouldWriteOverlay()) {
+        return false;
+    }
     return CreatedFilesTracker::GetInstance().WasCreated(path);
 }
 

@@ -216,5 +216,59 @@ TEST_F(OverlayTest, JavacCompileIntoOverlay) {
     EXPECT_FALSE(Exists(Join(ws, L"U.class"))) << "overlay .class leaked onto real disk";
 }
 
+// COMBINED --filter-inputs --write-overlay: a Java tool output whose name collides
+// with a HIDDEN undeclared input (seeded real secret.txt, NO -r). Every op lands
+// in the overlay and leaves the real file unchanged; deleting or renaming away the
+// overlay copy must NOT re-reveal the masked real input (SRCAFTER/AFTERDEL
+// NotFound). Files.move/Files.delete take the path-based MoveFileEx/DeleteFile hooks.
+TEST_F(OverlayTest, JavaFilterOverlayMutations) {
+    std::wstring launcher = OverlayTest::ToolFromEnv("E2E_JAVA_FILTEROVERLAYOPS");
+    if (launcher.empty())
+        GTEST_SKIP() << "filter_overlay_ops java_binary launcher missing (E2E_JAVA_FILTEROVERLAYOPS)";
+
+    auto seed = [&](const wchar_t* op) {
+        auto ws = NewWorkspace();
+        WriteText(Join(ws, L"secret.txt"), "REAL-SECRET");
+        auto r = RunFilteredOverlay(ws, /*declared*/ {}, {launcher, ws, op});
+        EXPECT_EQ(0, r.code) << op << ":\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", ReadText(Join(ws, L"secret.txt")))
+            << op << ": real undeclared input was mutated";
+        return std::make_pair(ws, r.out);
+    };
+
+    {
+        auto [ws, out] = seed(L"create");
+        EXPECT_TRUE(Contains(out, "CREATE=OVERLAY-NEW")) << "create over hidden failed:\n" << out;
+    }
+    {
+        auto [ws, out] = seed(L"renameonto");
+        EXPECT_TRUE(Contains(out, "RENAMEONTO=OVERLAY-ONTO")) << "rename onto hidden failed:\n" << out;
+        EXPECT_FALSE(Exists(Join(ws, L"tmp.txt"))) << "overlay source leaked to real disk";
+    }
+    {
+        auto [ws, out] = seed(L"renameaway");
+        EXPECT_TRUE(Contains(out, "RENAMEAWAY=OVERLAY-AWAY")) << "rename away failed:\n" << out;
+        EXPECT_TRUE(Contains(out, "SRCAFTER=ERR:NotFound")) << "source re-revealed after rename away:\n" << out;
+        EXPECT_FALSE(Contains(out, "SRCAFTER=REAL-SECRET")) << "masked real input leaked:\n" << out;
+        EXPECT_FALSE(Exists(Join(ws, L"moved.txt"))) << "overlay dest leaked to real disk";
+    }
+    {
+        auto [ws, out] = seed(L"delete");
+        EXPECT_TRUE(Contains(out, "AFTERDEL=ERR:NotFound")) << "name re-revealed after delete:\n" << out;
+        EXPECT_FALSE(Contains(out, "AFTERDEL=REAL-SECRET")) << "masked real input leaked:\n" << out;
+    }
+    {
+        auto [ws, out] = seed(L"deletebare");
+        EXPECT_TRUE(Contains(out, "DELETEBARE=ERR:NotFound")) << "bare delete not a NOT_FOUND no-op:\n" << out;
+        EXPECT_TRUE(Exists(Join(ws, L"secret.txt"))) << "undeclared input vanished";
+    }
+    {
+        auto [ws, out] = seed(L"renamefrombare");
+        EXPECT_TRUE(Contains(out, "RENAMEFROMBARE=ERR:NotFound")) << "bare rename not a NOT_FOUND no-op:\n" << out;
+        EXPECT_TRUE(Exists(Join(ws, L"secret.txt"))) << "undeclared input vanished";
+        EXPECT_FALSE(Exists(Join(ws, L"moved.txt"))) << "bare rename produced a real dest";
+    }
+}
+
 }  // namespace
 }  // namespace bsxe2e

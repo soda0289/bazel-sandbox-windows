@@ -177,5 +177,99 @@ TEST_F(OverlayTest, CoreutilsFilterInputsHidesUndeclared) {
     EXPECT_FALSE(Contains(secR.out, "TOP-SECRET")) << "undeclared file was readable:\n" << secR.out;
 }
 
+// COMBINED --filter-inputs --write-overlay: a coreutils output whose name collides
+// with a HIDDEN undeclared input. A declared -r src.txt is the (visible) copy
+// source; secret.txt is the masked undeclared real input. cp/mv/rm go through the
+// Rust std::fs path-based CopyFile/MoveFileEx/DeleteFile hooks. Every op must land
+// in the overlay and leave the real secret.txt unchanged; after deleting or
+// renaming away the overlay copy, reading secret.txt must NOT re-reveal either the
+// overlay content (OVUU-NEW) or the masked real bytes (REAL-SECRET).
+TEST_F(OverlayTest, CoreutilsFilterOverlayMutations) {
+    REQUIRE_TOOL(cp, "E2E_UU_CP");
+    REQUIRE_TOOL(mv, "E2E_UU_MV");
+    REQUIRE_TOOL(rm, "E2E_UU_RM");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    // Fresh workspace per op: seeds a HIDDEN real secret.txt and a declared -r
+    // src.txt (the only visible file), returns the workspace + secret path.
+    auto seed = [&](std::wstring& src, std::wstring& secret) {
+        auto ws = NewWorkspace();
+        secret = Join(ws, L"secret.txt");
+        src = Join(ws, L"src.txt");
+        WriteText(secret, "REAL-SECRET");  // undeclared -> masked
+        WriteText(src, "OVUU-NEW");         // declared -r -> visible copy source
+        return ws;
+    };
+    auto real = [&](const std::wstring& secret) { return ReadText(secret); };
+
+    // create over hidden: cp the visible src onto the masked name -> overlay copy.
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        auto r = RunFilteredOverlayBat(ws, {src}, {
+            Q(cp) + L" " + Q(src) + L" " + Q(secret),
+            Q(cat) + L" " + Q(secret),
+        });
+        EXPECT_TRUE(Contains(r.out, "OVUU-NEW")) << "create over hidden failed:\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "real undeclared input mutated";
+    }
+    // rename ONTO hidden: cp src->tmp, mv tmp onto the masked name.
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        auto tmp = Join(ws, L"tmp.txt");
+        auto r = RunFilteredOverlayBat(ws, {src}, {
+            Q(cp) + L" " + Q(src) + L" " + Q(tmp),
+            Q(mv) + L" " + Q(tmp) + L" " + Q(secret),
+            Q(cat) + L" " + Q(secret),
+        });
+        EXPECT_TRUE(Contains(r.out, "OVUU-NEW")) << "rename onto hidden failed:\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "real undeclared input mutated";
+        EXPECT_FALSE(Exists(tmp)) << "overlay source leaked to real disk";
+    }
+    // create then rename AWAY: the moved copy carries the bytes; reading the
+    // original masked name must be GONE (no OVUU-NEW, no REAL-SECRET).
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        auto moved = Join(ws, L"moved.txt");
+        auto r = RunFilteredOverlayBat(ws, {src}, {
+            Q(cp) + L" " + Q(src) + L" " + Q(secret),
+            Q(mv) + L" " + Q(secret) + L" " + Q(moved),
+            Q(cat) + L" " + Q(moved),
+            Q(cat) + L" " + Q(secret),
+        });
+        EXPECT_TRUE(Contains(r.out, "OVUU-NEW")) << "rename away lost the moved content:\n" << r.out;
+        EXPECT_FALSE(Contains(r.out, "REAL-SECRET")) << "masked real input re-revealed after rename away:\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "real undeclared input mutated";
+        EXPECT_FALSE(Exists(moved)) << "overlay dest leaked to real disk";
+    }
+    // create then delete: reading the name afterwards must be GONE (leak guard).
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        auto r = RunFilteredOverlayBat(ws, {src}, {
+            Q(cp) + L" " + Q(src) + L" " + Q(secret),
+            Q(rm) + L" " + Q(secret),
+            Q(cat) + L" " + Q(secret),
+        });
+        EXPECT_FALSE(Contains(r.out, "OVUU-NEW")) << "overlay copy survived delete:\n" << r.out;
+        EXPECT_FALSE(Contains(r.out, "REAL-SECRET")) << "masked real input re-revealed after delete:\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "real undeclared input mutated";
+    }
+    // bare delete of the hidden name (no overlay copy): NOT_FOUND no-op, real survives.
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        RunFilteredOverlayBat(ws, {src}, {Q(rm) + L" " + Q(secret)});
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "undeclared input deleted via the sandbox";
+        EXPECT_TRUE(Exists(secret)) << "real undeclared input vanished";
+    }
+    // bare rename of the hidden name away (no overlay copy): NOT_FOUND no-op.
+    {
+        std::wstring src, secret; auto ws = seed(src, secret);
+        auto moved = Join(ws, L"moved.txt");
+        RunFilteredOverlayBat(ws, {src}, {Q(mv) + L" " + Q(secret) + L" " + Q(moved)});
+        EXPECT_EQ("REAL-SECRET", real(secret)) << "undeclared input renamed via the sandbox";
+        EXPECT_TRUE(Exists(secret)) << "real undeclared input vanished";
+        EXPECT_FALSE(Exists(moved)) << "bare rename produced a real dest";
+    }
+}
+
 }  // namespace
 }  // namespace bsxe2e

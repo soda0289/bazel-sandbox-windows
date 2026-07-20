@@ -159,5 +159,70 @@ TEST_F(OverlayTest, PythonFilterInputsHidesUndeclared) {
     EXPECT_FALSE(Contains(r.out, "TOP-SECRET")) << "undeclared content leaked:\n" << r.out;
 }
 
+// COMBINED --filter-inputs --write-overlay: a Python tool output whose name
+// collides with a HIDDEN undeclared input (masked, seeded real secret.txt, NO -r).
+// Every op must land in the overlay and leave the real file byte-for-byte
+// unchanged; crucially, deleting or renaming away the overlay copy must NOT
+// re-reveal the masked real input (the SRCAFTER/AFTERDEL read must be NOT_FOUND).
+// Python's os.replace/os.remove take the path-based MoveFileEx/DeleteFile hooks,
+// complementing the native module's handle-based ren/move coverage.
+TEST_F(OverlayTest, PythonFilterOverlayMutations) {
+    std::wstring py = PythonExe();
+    if (py.empty()) GTEST_SKIP() << "python missing from runfiles (E2E_PYTHON)";
+    std::wstring script = Script("E2E_PY_FILTEROVERLAYOPS");
+    if (script.empty()) GTEST_SKIP() << "filter_overlay_ops.py missing (E2E_PY_FILTEROVERLAYOPS)";
+
+    // Each op runs in a fresh workspace with a freshly seeded HIDDEN real input.
+    auto seed = [&](const wchar_t* op) {
+        auto ws = NewWorkspace();
+        WriteText(Join(ws, L"secret.txt"), "REAL-SECRET");
+        auto r = RunFilteredOverlay(ws, /*declared*/ {}, {py, script, ws, op});
+        EXPECT_EQ(0, r.code) << op << ":\n" << r.out;
+        EXPECT_EQ("REAL-SECRET", ReadText(Join(ws, L"secret.txt")))
+            << op << ": real undeclared input was mutated";
+        return std::make_pair(ws, r.out);
+    };
+
+    // create over hidden -> overlay (not ACCESS_DENIED); real untouched.
+    {
+        auto [ws, out] = seed(L"create");
+        EXPECT_TRUE(Contains(out, "CREATE=OVERLAY-NEW")) << "create over hidden failed:\n" << out;
+    }
+    // rename ONTO hidden (path-based MoveFileEx dest redirect).
+    {
+        auto [ws, out] = seed(L"renameonto");
+        EXPECT_TRUE(Contains(out, "RENAMEONTO=OVERLAY-ONTO")) << "rename onto hidden failed:\n" << out;
+        EXPECT_FALSE(Exists(Join(ws, L"tmp.txt"))) << "overlay source leaked to real disk";
+    }
+    // create then rename AWAY: dest gets the bytes; the source name re-masks to
+    // NOT_FOUND (leak guard), never re-revealing REAL-SECRET.
+    {
+        auto [ws, out] = seed(L"renameaway");
+        EXPECT_TRUE(Contains(out, "RENAMEAWAY=OVERLAY-AWAY")) << "rename away failed:\n" << out;
+        EXPECT_TRUE(Contains(out, "SRCAFTER=ERR:NotFound")) << "source re-revealed after rename away:\n" << out;
+        EXPECT_FALSE(Contains(out, "SRCAFTER=REAL-SECRET")) << "masked real input leaked:\n" << out;
+        EXPECT_FALSE(Exists(Join(ws, L"moved.txt"))) << "overlay dest leaked to real disk";
+    }
+    // create then delete: the name re-masks to NOT_FOUND (leak guard).
+    {
+        auto [ws, out] = seed(L"delete");
+        EXPECT_TRUE(Contains(out, "AFTERDEL=ERR:NotFound")) << "name re-revealed after delete:\n" << out;
+        EXPECT_FALSE(Contains(out, "AFTERDEL=REAL-SECRET")) << "masked real input leaked:\n" << out;
+    }
+    // bare delete of the hidden name (no overlay copy) is a NOT_FOUND no-op.
+    {
+        auto [ws, out] = seed(L"deletebare");
+        EXPECT_TRUE(Contains(out, "DELETEBARE=ERR:NotFound")) << "bare delete not a NOT_FOUND no-op:\n" << out;
+        EXPECT_TRUE(Exists(Join(ws, L"secret.txt"))) << "undeclared input vanished";
+    }
+    // bare rename of the hidden name away (no overlay copy) is a NOT_FOUND no-op.
+    {
+        auto [ws, out] = seed(L"renamefrombare");
+        EXPECT_TRUE(Contains(out, "RENAMEFROMBARE=ERR:NotFound")) << "bare rename not a NOT_FOUND no-op:\n" << out;
+        EXPECT_TRUE(Exists(Join(ws, L"secret.txt"))) << "undeclared input vanished";
+        EXPECT_FALSE(Exists(Join(ws, L"moved.txt"))) << "bare rename produced a real dest";
+    }
+}
+
 }  // namespace
 }  // namespace bsxe2e

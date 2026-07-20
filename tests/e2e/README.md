@@ -220,6 +220,45 @@ python `os.scandir`+`open`, node `readdirSync`+`readFileSync`, .NET
 The enforce suite already covers the masking mechanism against the synthetic
 probe; these prove each *real runtime's* API surface observes it identically.
 
+### Combined filter+overlay coverage (`*FilterOverlayMutations`)
+
+Production Bazel runs the two modes *together* (`--filter-inputs --write-overlay`):
+undeclared execroot inputs are masked, and the action's writes are redirected into
+the per-invocation overlay backing store rather than the real execroot. The
+dangerous case this creates is an **output whose name collides with a hidden
+undeclared input** — the tool creates/renames/deletes a file at a path that, on
+the real disk, is an undeclared input the sandbox is masking. Every module carries
+a `*FilterOverlayMutations` case (driven by the harness's `RunFilteredOverlay` /
+`RunFilteredOverlayBat` helpers, which emit `--filter-inputs --write-overlay -W
+<ws> -r <in> …`) exercising this matrix, all of which must leave the real
+undeclared input byte-for-byte unchanged:
+
+- **create over hidden** — writing the masked name succeeds into the overlay
+  (reads back the new content), real input untouched.
+- **rename/move ONTO hidden** — moving another overlay file onto the masked name
+  succeeds into the overlay; the real input is not clobbered.
+- **create then rename AWAY** — the moved copy carries the bytes, and reading the
+  original name afterwards is **GONE** (neither the overlay content nor the masked
+  real bytes re-appear).
+- **create then delete** — reading the name after deletion is **GONE** (same
+  guard).
+- **bare delete / bare rename-away of the hidden name** (no overlay copy first) —
+  a `NOT_FOUND` no-op; the real undeclared input is never touched.
+
+The last-three guards regression-test a real hermeticity leak (fixed in
+`vendor/detours-services/PolicyResult.cpp`, `WasCreatedInThisProcess`): deleting or
+renaming away an overlay copy created over a hidden input used to clear the backing
+store but leave an append-only created-set mark, which re-revealed the masked real
+input's existence *and* bytes. The fix makes read/enumeration visibility
+backing-store-authoritative under `--write-overlay`. The synthetic-probe analogues
+live in `tests/enforce/overlay_test.cc`
+(`OverlayCreateThenDeleteHiddenStaysMaskedNotFound`,
+`OverlayCreateThenRenameAwayHiddenStaysMaskedNotFound`); these modules prove each
+real runtime's mutation APIs observe the same invariant. Coverage spans the
+handle-based rename path (native cmd `ren`) and the path-based `MoveFileEx` path
+(cmd `move`, python `os.replace`, node `fs.renameSync`, .NET `File.Move`, java
+`Files.move`, coreutils/msys2 `mv`).
+
 ### Adding a new hermetic tool module
 
 Copy `tests/e2e/coreutils/` to `tests/e2e/<tool>/`, then: point its
