@@ -11,6 +11,11 @@ Bazel + network/cert environment. They are **not** part of `bazel test //tests:a
   patched Bazel actually routes actions through `BazelSandbox.exe` with
   `--filter-inputs --write-overlay` (declared input builds; undeclared read is
   NOT_FOUND; undeclared write is redirected into the overlay).
+* **`overlay-concurrent-write.ps1`** — regression for the "goyacc `y.output`"
+  collision: two **concurrent** sandbox actions writing the same fixed-name
+  undeclared scratch file into one shared in-place execroot must both succeed,
+  because each action gets its own process-private write overlay. Drives
+  `BazelSandbox.exe` **directly** — no patched Bazel or network needed.
 * **`smoke.ps1`** — differential real-repo smoke: builds a real open-source repo
   under both `local` and `windows-sandbox` and diffs per-target results.
 ## Prerequisites (Bazel-driven tests below)
@@ -65,6 +70,36 @@ sandboxed failure is genuinely the input filter hiding it and not a missing file
 is a separate target from `bad` on purpose: a successful build of the identical
 action would populate the action cache and the sandboxed run would get a cache hit
 instead of re-executing.
+
+## `overlay-concurrent-write.ps1` — concurrent same-name write regression
+
+Unlike the other two harnesses, this one needs **no patched Bazel and no network** —
+it drives `BazelSandbox.exe` directly. It reproduces the historical "goyacc
+`y.output`" failure at the sandbox layer.
+
+`windows-sandbox` runs in place in one shared, persistent execroot (unlike
+linux-sandbox's per-action throwaway copy). Tools like `goyacc` write a fixed-name
+undeclared scratch file — `y.output` — into the execroot root. Under the old
+per-action created-set model, two actions racing on that path collided: while action
+A held its `y.output`, concurrent action B saw the file already on disk, absent from
+B's created-set, and the no-clobber guard denied it (`ERROR_ACCESS_DENIED`).
+
+The write-overlay model fixes this structurally — Bazel's
+`WindowsSandboxedSpawnRunner` creates a unique per-action temp dir and derives
+`overlayDir = <action-temp>/overlay`, so every action redirects its undeclared
+writes into a **private** overlay. The test launches two overlapping
+`BazelSandbox.exe` invocations that both create and briefly hold `y.output` in the
+same execroot root and asserts: both exit `0`, neither reports "Access is denied",
+the real execroot is untouched, and each `y.output` lands in its **own** overlay
+backing store.
+
+```powershell
+pwsh tests/integration/overlay-concurrent-write.ps1
+```
+
+Optional flags: `-Sandbox <BazelSandbox.exe>` (defaults to this repo's build),
+`-KeepArtifacts`. Exit codes: `0` all passed, `1` a check failed, `2` a prerequisite
+binary was missing.
 
 ## `smoke.ps1` — differential testing against real repos
 
