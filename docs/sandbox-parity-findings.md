@@ -367,34 +367,33 @@ if behavior changes.
 * **Test:** `enforce_reparse` — declared-vs-undeclared junction-target cases
   (declared allowed, undeclared-to-baseline hidden under filtering).
 
-### B5. Native `NtQueryAttributesFile` / `NtQueryFullAttributesFile` are not detoured — KNOWN-GAP
+### B5. Native `NtQueryAttributesFile` / `NtQueryFullAttributesFile` — NOW DETOURED (was KNOWN-GAP)
 
 * **What:** the sandbox masks *stat/attribute* probes of undeclared inputs across
   every hooked variant — `GetFileAttributesW`/`GetFileAttributesExW`,
   `GetFileInformationByName`, `FindFirstFileEx`, and the `CreateFile`/`NtCreateFile`
   read-open paths — so an undeclared file reports `NOT_FOUND` rather than
   `ACCESS_DENIED` (matching linux-sandbox; see the consistency matrix in
-  `tests/enforce/modes_test.cc`). However the two *handle-less* NT attribute syscalls,
-  `NtQueryAttributesFile` and `NtQueryFullAttributesFile` (`ntdll`), are **not
-  hooked**. A process that calls them directly — bypassing the Win32 and
-  `NtCreateFile` layers — can therefore learn the existence/attributes of an
-  undeclared file that the hooked paths would hide. This is an *over-exposure*
-  (Goal-2) gap: it leaks presence, not content.
-* **Why it is low-risk in practice:** these are not the paths the Win32 stat
-  surface uses. `GetFileAttributesEx`, `stat`/`_wstat`, .NET `File.Exists`,
-  Node/libuv `fs.stat` (via `GetFileInformationByName` / `NtCreateFile`), and the
-  Java `WindowsFileSystemProvider` all route through hooked functions. Only code
-  that deliberately issues the raw `Nt*` attribute syscalls (rare outside
-  low-level tooling) bypasses the mask, and even then it obtains only metadata,
-  never file contents (a content read still goes through a hooked open).
-* **Fix if needed:** add `Detoured_NtQueryAttributesFile` /
-  `Detoured_NtQueryFullAttributesFile` mirroring the `GetFileAttributesExW` denial
-  handling (resolve the `OBJECT_ATTRIBUTES` path, run the policy check, and return
-  `STATUS_OBJECT_NAME_NOT_FOUND` when the read denial should be masked). This is
-  the same divergence class as the `GetFileAttributesEx` masking regression — a
-  hook-variant that was never exercised — so any implementation should also gain a
-  probe op + a row in the `tests/enforce/modes_test.cc` consistency matrix.
-* **Test:** none yet (no probe op exercises the raw `Nt*` attribute syscalls).
+  `tests/enforce/modes_test.cc`). The two *handle-less* NT attribute syscalls,
+  `NtQueryAttributesFile` and `NtQueryFullAttributesFile` (`ntdll`), used to be
+  **un-hooked**, so a direct caller (bypassing the Win32 and `NtCreateFile`
+  layers) could learn the existence/attributes of an undeclared file the hooked
+  paths would hide.
+* **Resolution:** both are now detoured (`Detoured_NtQueryAttributesFile` /
+  `Detoured_NtQueryFullAttributesFile`, sharing `DetoursNtQueryAttributesCommon`
+  in `DetouredFunctions.cpp`). Each resolves the `OBJECT_ATTRIBUTES` path, runs the
+  same overlay reverse-map (for overlay-only-cwd relative resolution) and the same
+  `CheckReadAccess(Probe)` policy as `GetFileAttributesExW`, and returns
+  `accessCheck.DenialNtStatus(ShouldDeniedReadsAsNotFound())` (i.e.
+  `STATUS_OBJECT_NAME_NOT_FOUND` under `--filter-inputs`) when the probe should be
+  masked. The primary motivation was the Windows image loader's (`LoadLibrary`)
+  handle-less existence probe, which resolved relative names against the physical
+  backing cwd and returned `NOT_FOUND` for a real declared input reached from an
+  overlay-only cwd.
+* **Test:** `tests/enforce/overlay_test.cc` `OverlayRelativeLoadLibraryWorks`
+  exercises the loader probe path (loads a valid PE via a path relative to an
+  overlay-only cwd). A disabled-baseline (gating the reverse-map helpers) confirms
+  the relative-path group fails without the hooks.
 
 ---
 
@@ -440,12 +439,12 @@ denied) is met on every repo smoke-tested to date.
 3. **P2 - B3: 8.3 short-name / non-ASCII case `-b` bypass.** Canonicalize paths
    (expand short names, normalize case-fold) before matching block entries.
    **Test:** `enforce_limitations` (short-name / non-ASCII cases).
-4. **P2 - B5: detour the raw NT attribute syscalls.** Add
-   `Detoured_NtQueryAttributesFile` / `Detoured_NtQueryFullAttributesFile` so a
-   direct `ntdll` caller cannot probe an undeclared file's existence past the
-   masked Win32/`NtCreateFile` surface. Low-risk (leaks presence, not content;
-   normal stat surfaces are already hooked). Mirror the `GetFileAttributesExW`
-   denial masking and add a probe op + consistency-matrix row.
+4. **P2 - B5: detour the raw NT attribute syscalls. — DONE.**
+   `Detoured_NtQueryAttributesFile` / `Detoured_NtQueryFullAttributesFile` now hook
+   the handle-less `ntdll` attribute probes (shared `DetoursNtQueryAttributesCommon`),
+   mirroring the `GetFileAttributesExW` reverse-map + denial masking. Motivated by
+   the `LoadLibrary` loader probe; covered by `OverlayRelativeLoadLibraryWorks`.
+   See B5 above.
 5. **P2 - >260 raw-path child truncation.** Child-side (CRT truncates the raw
    path before the engine sees it); not an engine bug. Kept as a `Note-Exit`.
    Only actionable by encouraging long-path-aware manifests in child tools.

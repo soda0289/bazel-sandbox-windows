@@ -37,6 +37,8 @@ enum class OverlayDeleteAction { PassThrough, RedirectToBacking, DenyAccess, Not
 bool ShouldRedirectToOverlay(const PolicyResult& pr);
 std::wstring OverlayBackingPath(const std::wstring& virtualPath);
 bool ReverseOverlayFinalPath(const std::wstring& finalPath, std::wstring& out);
+bool ReverseMapOverlayBackingOpen(const wchar_t* incoming, std::wstring& outNt);
+bool ReverseMapWin32Path(const wchar_t* lpFileName, std::wstring& out);
 void EnsureBackingParentDirs(const std::wstring& backingPath);
 bool OverlayPathExists(const std::wstring& p);
 bool OverlayIsDirectory(const std::wstring& p);

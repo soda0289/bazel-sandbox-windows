@@ -139,6 +139,91 @@ bool ReverseOverlayFinalPath(const std::wstring& finalPath, std::wstring& out)
     return true;
 }
 
+// Reverse-map a TOP-LEVEL backing-rooted open back to its virtual execroot path, in
+// \??\ NT form, for substitution into an NtCreateFile/ZwCreateFile ObjectAttributes.
+//
+// When a child process is launched with its current directory set to an overlay-only
+// scratch dir, the OS records the concrete BACKING directory in the PEB (the virtual
+// dir has no on-disk counterpart). ntdll's RtlDosPathNameToNtPathName_U therefore
+// joins RELATIVE paths (e.g. "..\input") against the backing store BEFORE any of our
+// file hooks run, so the NT-layer hook sees an already-absolute BACKING path with
+// RootDirectory==NULL and misses the real declared input. A PEB rewrite cannot fix
+// this reliably (ntdll caches the cwd length, so lengthening fails); usvfs shows the
+// robust fix is at the hook layer. Reverse-mapping the incoming backing path back to
+// its virtual path here lets the normal overlay resolution run on the logical path:
+// backing-first (a scratch file already written to the cwd redirects to backing) then
+// real-fallback (a relative reference to a real declared input opens the real file).
+//
+// Only reached for TOP-LEVEL opens: our own overlay redirects call Real_ directly with
+// DetouredScope disabled, so they never re-enter the hook and are never reverse-mapped.
+// `incoming` is the canonicalized path string (plain, no type prefix). Returns false
+// (no substitution) when the path is not under the backing root or the overlay is off.
+bool ReverseMapOverlayBackingOpen(const wchar_t* incoming, std::wstring& outNt)
+{
+    if (incoming == nullptr || incoming[0] == L'\0')
+    {
+        return false;
+    }
+    std::wstring virtualPath;
+    if (!ReverseOverlayFinalPath(std::wstring(incoming), virtualPath))
+    {
+        return false;  // not under the backing root (or overlay disabled)
+    }
+    // Strip any \\?\ / \??\ prefix ReverseOverlayFinalPath preserved, then emit \??\
+    // NT form (the form NtCreateFile expects for an absolute RootDirectory==NULL open).
+    if (virtualPath.compare(0, 4, L"\\\\?\\") == 0 || virtualPath.compare(0, 4, L"\\??\\") == 0)
+    {
+        virtualPath.erase(0, 4);
+    }
+    if (virtualPath.size() < 3 || virtualPath[1] != L':')
+    {
+        return false;  // expect a drive-letter virtual path
+    }
+    outNt = L"\\??\\" + virtualPath;
+    return true;
+}
+
+// Win32-layer reverse-map: resolve an incoming Win32 path (relative OR absolute) to an
+// absolute path, then map it from the backing store back to its virtual execroot path.
+//
+// The Win32 file hooks (Detoured_CreateFileW, GetFileAttributes*, FindFirstFileEx,
+// DeleteFile, CopyFile, MoveFile, ...) intercept ABOVE ntdll and, with nested detours
+// disabled, the NT-layer reverse-map in Detoured_NtCreateFile never runs for them. When
+// the process cwd is an overlay-only scratch dir, a RELATIVE name resolves against the
+// backing store (GetFullPathNameW uses the PEB cwd, which points at the concrete backing
+// dir), and an already-absolute backing path can also be handed in (e.g. a tool that
+// called GetFullPathNameW itself). In both cases the logical target is a virtual execroot
+// path. Resolving via GetFullPathNameW collapses "." / ".." for us; ReverseOverlayFinalPath
+// then maps backing->virtual. Substituting the result as the hook's path makes policy,
+// overlay resolution (backing-first / real-fallback), and the Real_ call all operate on the
+// virtual namespace. Returns false (no substitution) for paths not under the backing root
+// or when the overlay is off. `out` is a plain drive-letter virtual path.
+bool ReverseMapWin32Path(const wchar_t* lpFileName, std::wstring& out)
+{
+    if (!ShouldWriteOverlay()
+        || g_bazelWriteOverlayRoot == nullptr || g_bazelWriteOverlayRoot[0] == L'\0'
+        || g_bazelOverlaySourceRoot == nullptr || g_bazelOverlaySourceRoot[0] == L'\0'
+        || lpFileName == nullptr || lpFileName[0] == L'\0')
+    {
+        return false;
+    }
+    // Skip paths that are already NT-form or extended-length (\\?\ / \??\); those are
+    // handled at the NT layer and GetFullPathNameW does not normalize them usefully.
+    if (lpFileName[0] == L'\\' && (lpFileName[1] == L'\\' || lpFileName[1] == L'?'))
+    {
+        return false;
+    }
+    // Resolve relative names against the (backing) PEB cwd and collapse ".."/".".
+    // GetFullPathNameW is not detoured, so this reflects the real OS resolution.
+    DWORD need = GetFullPathNameW(lpFileName, 0, nullptr, nullptr);
+    if (need == 0) return false;
+    std::wstring abs(need, L'\0');
+    DWORD got = GetFullPathNameW(lpFileName, need, &abs[0], nullptr);
+    if (got == 0 || got >= need) return false;
+    abs.resize(got);
+    return ReverseOverlayFinalPath(abs, out);  // backing -> virtual (false if not under backing)
+}
+
 // detours on this thread), so no policy is re-applied. Failures are benign
 // (ERROR_ALREADY_EXISTS or a parent that a later step recreates).
 void EnsureBackingParentDirs(const std::wstring& backingPath)

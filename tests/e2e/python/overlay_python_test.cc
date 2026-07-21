@@ -249,6 +249,36 @@ TEST_F(OverlayTest, PythonSpawnOverlayOnlyCwd) {
     EXPECT_FALSE(Exists(Join(ws, L"spawndir"))) << "overlay cwd leaked onto real disk";
 }
 
+// Like PythonSpawnOverlayOnlyCwd, but the child touches files through cwd-RELATIVE
+// names from an overlay-only cwd. Exercises the hook-layer reverse-map on the real
+// CPython runtime: a relative write to an undeclared name lands in the overlay and
+// reads back, AND a relative read of a REAL declared input one level up
+// ("..\seedrel.txt", seeded on the real disk here) reaches it via the overlay's
+// real-fallback. CPython's open() passes the raw relative path to CreateFileW, so
+// ntdll joins it against the backing-store cwd; without the reverse-map the input
+// read resolves against the private backing store and misses (INERR).
+TEST_F(OverlayTest, PythonSpawnOverlayOnlyCwdRelativeReadWrite) {
+    std::wstring py = PythonExe();
+    if (py.empty()) GTEST_SKIP() << "python missing from runfiles (E2E_PYTHON)";
+    std::wstring script = Script("E2E_PY_SPAWNOPS");
+    if (script.empty()) GTEST_SKIP() << "spawn_ops.py missing (E2E_PY_SPAWNOPS)";
+
+    auto ws = NewWorkspace();
+    WriteText(Join(ws, L"seedrel.txt"), "SEEDIN");
+
+    auto r = RunOverlay(ws, {py, script, L"spawncwdrel", ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "CHILD=OK")) << "child failed from overlay-only cwd:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "WROTE=RELWROTE")) << "cwd-relative overlay write/read-back failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "INPUT=SEEDIN")) << "cwd-relative read of a real input did not resolve:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READBACK=RELWROTE")) << "child's overlay write not visible to parent:\n" << r.out;
+
+    EXPECT_FALSE(Exists(Join(ws, L"spawnreldir"))) << "overlay cwd leaked onto real disk";
+    EXPECT_FALSE(Exists(Join(ws, L"childrel.txt"))) << "cwd-relative overlay write leaked onto real disk";
+    EXPECT_TRUE(Exists(Join(ws, L"seedrel.txt"))) << "real declared input was disturbed";
+}
+
 // Declared outputs (-w) under --write-overlay write THROUGH to the real execroot
 // (how Bazel collects an action's declared outputs), while an undeclared sibling
 // write is redirected into the process-private overlay. Driven through CPython's

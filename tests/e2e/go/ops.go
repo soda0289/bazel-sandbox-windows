@@ -15,10 +15,16 @@
 //	filter <ws>         input-filtering: declared visible, undeclared masked
 //	filteroverlay <ws> <op>  combined filter+overlay edge cases
 //	spawncwd <ws>       mkdir an overlay-only dir, then os/exec a child with its
-//	                    cwd set to that dir; the child writes a file relative to
-//	                    cwd; parent reads it back through the overlay
-//	childcwd            child helper for spawncwd: writes a file into its cwd (a
-//	                    relative path -> resolves to the cwd) and prints a marker
+//	                    cwd set to that dir; the child writes an absolute output
+//	                    path under the execroot; parent reads it back via overlay
+//	spawncwdrel <ws>    like spawncwd, but the child touches files by cwd-RELATIVE
+//	                    names: write+read "childrel.txt" (overlay) and read a real
+//	                    input "..\seedrel.txt"; parent reads the write back
+//	getcwd <ws>         spawn a child whose cwd is set to an overlay-only dir; the
+//	                    child reports os.Getwd (GetCurrentDirectory), which must be
+//	                    the virtual execroot path, not the backing store location
+//	childcwd            child helper for spawncwd: writes an absolute output path
+//	childcwdrel         child helper for spawncwdrel: cwd-relative write/read
 package main
 
 import (
@@ -221,9 +227,9 @@ func filteroverlay(ws, op string) {
 // child launches from the concrete backing dir and writes its output file - the
 // way rules_go's compiler does, via an ABSOLUTE path under the (virtual)
 // execroot, which the overlay redirects into the backing store - and the parent
-// reads it back through the overlay. (A cwd-RELATIVE write would resolve against
-// the concrete backing path directly, outside the -W virtual cone; the Go
-// toolchain uses absolute output paths, so this mirrors the real pattern.)
+// reads it back through the overlay. (For the cwd-RELATIVE variant, where the
+// child touches files by names resolved against the cwd, see spawncwdrel: the
+// hook-layer reverse-map makes those resolve against the virtual execroot too.)
 func spawncwd(ws string) {
 	self, err := os.Executable()
 	if err != nil {
@@ -257,6 +263,94 @@ func childcwd(out string) {
 	fmt.Print("CHILD=OK")
 }
 
+// spawncwdrel: like spawncwd, but the child touches files through cwd-RELATIVE
+// names rather than absolute paths. From an overlay-only cwd the hook layer must
+// reverse-map the (backing-resolved) relative name back to the virtual execroot so
+// that (a) a relative write to an undeclared in-cone name lands in the overlay and
+// reads back, and (b) a relative read of a REAL declared input one level up
+// ("..\seedrel.txt", seeded on the real disk by the test) reaches it via the
+// overlay's real-fallback. The parent then reads the child's overlay write back
+// through the absolute virtual path.
+func spawncwdrel(ws string) {
+	self, err := os.Executable()
+	if err != nil {
+		die("os.Executable: %v", err)
+	}
+	dir := filepath.Join(ws, "spawnreldir")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		die("mkdir spawnreldir: %v", err)
+	}
+	cmd := exec.Command(self, "childcwdrel")
+	cmd.Dir = dir // lpCurrentDirectory = overlay-only dir -> redirected to backing
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("SPAWN=ERR:%v OUT=%s", err, string(combined))
+		os.Exit(1)
+	}
+	fmt.Printf("SPAWN=%s READBACK=%s", strings.TrimSpace(string(combined)),
+		readOrErr(filepath.Join(dir, "childrel.txt")))
+}
+
+// childcwdrel: the spawncwdrel child. Launched from an overlay-only cwd, it uses
+// only cwd-RELATIVE names: write+read "childrel.txt" (undeclared -> overlay) and
+// read "..\seedrel.txt" (a real declared input above the cwd).
+func childcwdrel() {
+	if err := os.WriteFile("childrel.txt", []byte("RELWROTE"), 0o644); err != nil {
+		fmt.Printf("CHILD=WRERR:%v", err)
+		os.Exit(3)
+	}
+	wb, err := os.ReadFile("childrel.txt")
+	if err != nil {
+		fmt.Printf("CHILD=RDERR:%v", err)
+		os.Exit(4)
+	}
+	ib, err := os.ReadFile(filepath.Join("..", "seedrel.txt"))
+	if err != nil {
+		fmt.Printf("CHILD=INERR:%v", err)
+		os.Exit(5)
+	}
+	fmt.Printf("CHILD=OK WROTE=%s INPUT=%s", string(wb), string(ib))
+}
+
+// getcwd: the GetCurrentDirectory reverse-map, exercised on the path that actually
+// leaks the backing store - a CHILD whose working directory is set to an overlay-only
+// dir. The parent's CreateProcess cwd redirect points the child at the concrete backing
+// dir, so the child inherits the backing path as its OS current directory; the child
+// reports os.Getwd (which on Windows always calls GetCurrentDirectory). Without the
+// reverse-map hook it observes the private backing path; with it, the logical execroot
+// path. (An in-process os.Chdir would NOT reproduce the leak: SetCurrentDirectory stores
+// the input string verbatim, so os.Getwd would echo the virtual path regardless.)
+func getcwd(ws string) {
+	self, err := os.Executable()
+	if err != nil {
+		die("os.Executable: %v", err)
+	}
+	dir := filepath.Join(ws, "cwddir")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		die("mkdir cwddir: %v", err)
+	}
+	cmd := exec.Command(self, "reportcwd")
+	cmd.Dir = dir // lpCurrentDirectory = overlay-only dir -> redirected to backing
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("WD=ERR:%v OUT=%s", err, string(combined))
+		os.Exit(1)
+	}
+	fmt.Printf("WD=%s", strings.TrimSpace(string(combined)))
+}
+
+// reportcwd: the getcwd child. Launched from an overlay-only cwd, it prints os.Getwd,
+// which must be the virtual execroot path once the reverse-map hook maps the inherited
+// backing cwd back.
+func reportcwd() {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("ERR:%v", err)
+		os.Exit(3)
+	}
+	fmt.Print(wd)
+}
+
 // writeout: write to a DECLARED OUTPUT path and to an UNDECLARED sibling, then
 // read both back. The test declares the first as -w (so it must write THROUGH to
 // the real execroot) and leaves the second undeclared (so it must be redirected
@@ -278,6 +372,14 @@ func main() {
 			die("usage: ops childcwd <abs-output-path>")
 		}
 		childcwd(os.Args[2])
+		return
+	}
+	if op == "reportcwd" {
+		reportcwd()
+		return
+	}
+	if op == "childcwdrel" {
+		childcwdrel()
 		return
 	}
 	if op == "writeout" {
@@ -304,8 +406,12 @@ func main() {
 			die("usage: ops filteroverlay <execroot> <op>")
 		}
 		filteroverlay(ws, os.Args[3])
+	case "getcwd":
+		getcwd(ws)
 	case "spawncwd":
 		spawncwd(ws)
+	case "spawncwdrel":
+		spawncwdrel(ws)
 	default:
 		die("unknown op: %s", op)
 	}

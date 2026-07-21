@@ -9,8 +9,10 @@
 // path under the virtual execroot) into the overlay, which the parent reads
 // back. The real execroot stays untouched.
 //
-// Run as: node spawn_ops.js <execroot>            # parent
+// Run as: node spawn_ops.js <execroot>            # parent (absolute-path child)
 //         node spawn_ops.js childcwd <out-path>   # child (self re-entry)
+//         node spawn_ops.js spawncwdrel <execroot>  # parent (cwd-RELATIVE child)
+//         node spawn_ops.js childcwdrel             # child (cwd-relative re-entry)
 // Parent emits:  SPAWN=<child-stdout> READBACK=<content-read-through-overlay>
 // Child emits:   CHILD=OK
 "use strict";
@@ -21,6 +23,33 @@ const cp = require("child_process");
 function childcwd(out) {
     fs.writeFileSync(out, "CHILDWROTE");
     process.stdout.write("CHILD=OK");
+}
+
+// childcwdrel: like childcwd, but touches files through cwd-RELATIVE names rather
+// than absolute paths. Launched from an overlay-only cwd, it writes+reads
+// "childrel.txt" (undeclared -> overlay) and reads "..\seedrel.txt" (a REAL
+// declared input one level up). The hook-layer reverse-map maps the backing-store
+// cwd resolution back to the virtual execroot so both resolve.
+function childcwdrel() {
+    fs.writeFileSync("childrel.txt", "RELWROTE");
+    const wb = fs.readFileSync("childrel.txt", "utf8");
+    const ib = fs.readFileSync(p.join("..", "seedrel.txt"), "utf8");
+    process.stdout.write("CHILD=OK WROTE=" + wb + " INPUT=" + ib);
+}
+
+function spawncwdrel(ws) {
+    const d = p.join(ws, "spawnreldir");
+    fs.mkdirSync(d);
+    const res = cp.spawnSync(process.execPath, [__filename, "childcwdrel"], {
+        cwd: d, // lpCurrentDirectory = overlay-only dir
+        encoding: "utf8",
+    });
+    if (res.status !== 0) {
+        process.stdout.write("SPAWN=ERR:" + res.status + " OUT=" + (res.stdout || "") + (res.stderr || ""));
+        process.exit(1);
+    }
+    const readback = fs.readFileSync(p.join(d, "childrel.txt"), "utf8");
+    process.stdout.write("SPAWN=" + (res.stdout || "").trim() + " READBACK=" + readback);
 }
 
 function spawncwd(ws) {
@@ -42,6 +71,10 @@ function spawncwd(ws) {
 const arg = process.argv[2];
 if (arg === "childcwd") {
     childcwd(process.argv[3]);
+} else if (arg === "childcwdrel") {
+    childcwdrel();
+} else if (arg === "spawncwdrel") {
+    spawncwdrel(process.argv[3]);
 } else {
     spawncwd(arg);
 }

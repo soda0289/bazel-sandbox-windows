@@ -155,6 +155,14 @@ DWORD WINAPI Detoured_GetFileAttributesW(
     __in  LPCWSTR lpFileName
     );
 
+// See GetCurrentDirectory on MSDN. Under the Bazel write-overlay, reports the logical
+// (virtual execroot) path instead of the private backing-store path when the current
+// directory is an overlay-redirected scratch dir. See DetouredFunctions.cpp.
+DWORD WINAPI Detoured_GetCurrentDirectoryW(
+    __in  DWORD  nBufferLength,
+    __out LPWSTR lpBuffer
+    );
+
 // See GetFileAttributes on MSDN: http://msdn.microsoft.com/en-us/library/windows/desktop/aa915578(v=vs.85).aspx
 DWORD WINAPI Detoured_GetFileAttributesA(
     __in  LPCSTR lpFileName
@@ -640,6 +648,17 @@ NTSTATUS NTAPI Detoured_NtOpenFile(
     __out PIO_STATUS_BLOCK IoStatusBlock,
     __in ULONG ShareAccess,
     __in ULONG OpenOptions
+    );
+
+// Handle-less metadata probes (image loader / LoadLibrary, etc.). See DetouredFunctionTypes.h.
+NTSTATUS NTAPI Detoured_NtQueryAttributesFile(
+    __in  POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PVOID              FileInformation
+    );
+
+NTSTATUS NTAPI Detoured_NtQueryFullAttributesFile(
+    __in  POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PVOID              FileInformation
     );
 
 // Handle-less attribute probe used by modern libuv's fs.stat / fs.lstat. See DetouredFunctionTypes.h.

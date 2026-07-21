@@ -9,8 +9,10 @@
 // output (an absolute path under the virtual execroot) into the overlay, which
 // the parent reads back. The real execroot stays untouched.
 //
-// Run as: spawn_ops spawncwd <execroot> <cmd.exe> <self-launcher.bat>  # parent
+// Run as: spawn_ops spawncwd <execroot> <cmd.exe> <self-launcher.bat>  # parent (absolute)
 //         spawn_ops childcwd <out-path>                                # child
+//         spawn_ops spawncwdrel <execroot> <cmd.exe> <self-launcher.bat>  # parent (relative)
+//         spawn_ops childcwdrel                                           # child
 // Parent emits:  SPAWN=<child-stdout> READBACK=<content-read-through-overlay>
 // Child emits:   CHILD=OK
 using System;
@@ -24,13 +26,59 @@ internal static class Program {
         return 0;
     }
 
+    // childcwdrel: like childcwd, but touches files through cwd-RELATIVE names
+    // rather than absolute paths. Launched from an overlay-only cwd, it
+    // writes+reads "childrel.txt" (undeclared -> overlay) and reads
+    // "..\seedrel.txt" (a REAL declared input one level up). The hook-layer
+    // reverse-map maps the backing-store cwd resolution back to the virtual
+    // execroot so both resolve.
+    private static int ChildCwdRel() {
+        File.WriteAllText("childrel.txt", "RELWROTE");
+        string wb = File.ReadAllText("childrel.txt");
+        string ib = File.ReadAllText(Path.Combine("..", "seedrel.txt"));
+        Console.Write("CHILD=OK WROTE=" + wb + " INPUT=" + ib);
+        return 0;
+    }
+
+    private static int SpawnCwdRel(string ws, string cmdExe, string self) {
+        string d = Path.Combine(ws, "spawnreldir");
+        Directory.CreateDirectory(d);
+        var psi = new ProcessStartInfo {
+            FileName = cmdExe,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = d,  // lpCurrentDirectory = overlay-only dir
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add(self);
+        psi.ArgumentList.Add("childcwdrel");
+
+        var p = Process.Start(psi);
+        string childOut = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0) {
+            Console.Write("SPAWN=ERR:" + p.ExitCode + " OUT=" + childOut);
+            return 1;
+        }
+        string readback = File.ReadAllText(Path.Combine(d, "childrel.txt"));
+        Console.Write("SPAWN=" + childOut.Trim() + " READBACK=" + readback);
+        return 0;
+    }
+
     private static int Main(string[] args) {
+        if (args.Length >= 1 && args[0] == "childcwdrel") {
+            return ChildCwdRel();
+        }
         if (args.Length < 2) {
             Console.Error.WriteLine("usage: spawn_ops spawncwd <execroot> <cmd> <self> | childcwd <out>");
             return 2;
         }
         if (args[0] == "childcwd") {
             return ChildCwd(args[1]);
+        }
+        if (args[0] == "spawncwdrel") {
+            return SpawnCwdRel(args[1], args[2], args[3]);
         }
         // parent: spawncwd <execroot> <cmd.exe> <self-launcher.bat>
         string ws = args[1];

@@ -15,6 +15,9 @@
 //                            redirect the child fails to launch (ERROR_DIRECTORY
 //                            267); with it, it runs and its relative write reads
 //                            back through the overlay.
+//   GoSpawnOverlayOnlyCwdRelativeReadWrite  as above, but the child touches files
+//                            by cwd-RELATIVE names (write to overlay + read a real
+//                            "..\seedrel.txt" input) - exercises the reverse-map.
 //   GoFilterInputsHidesUndeclared    declared -r input visible, undeclared masked.
 //   GoFilterOverlayMutations         combined filter+overlay collision edge cases.
 //
@@ -38,6 +41,15 @@ bool Contains(const std::string& hay, const char* needle) {
 }
 
 std::wstring OpsExe() { return OverlayTest::ToolFromEnv("E2E_GO_OPS"); }
+
+// Narrow an ASCII/UTF-8 wide path for substring assertions against tool output.
+std::string Narrow(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+    return s;
+}
 
 // write/read/rename/delete/move, each op visible to the next through the
 // overlay in a single invocation, none of it touching the real execroot.
@@ -116,6 +128,38 @@ TEST_F(OverlayTest, GoSpawnOverlayOnlyCwd) {
 
     EXPECT_TRUE(Snapshot(ws).empty()) << "spawn writes leaked onto the real execroot";
     EXPECT_FALSE(Exists(Join(ws, L"spawndir"))) << "overlay cwd leaked onto real disk";
+}
+
+// Like GoSpawnOverlayOnlyCwd, but the child touches files through cwd-RELATIVE
+// names from an overlay-only cwd. This exercises the hook-layer reverse-map on the
+// real Go runtime: a relative write to an undeclared name lands in the overlay and
+// reads back, AND a relative read of a REAL declared input one level up
+// ("..\seedrel.txt", seeded on the real disk here) reaches it via the overlay's
+// real-fallback. Without the reverse-map the relative input read resolves against
+// the private backing store and misses (INERR).
+TEST_F(OverlayTest, GoSpawnOverlayOnlyCwdRelativeReadWrite) {
+    std::wstring ops = OpsExe();
+    if (ops.empty()) GTEST_SKIP() << "go ops binary missing from runfiles (E2E_GO_OPS)";
+
+    auto ws = NewWorkspace();
+    // A real on-disk declared input the child reads via "..\seedrel.txt".
+    WriteText(Join(ws, L"seedrel.txt"), "SEEDIN");
+
+    auto r = RunOverlay(ws, {ops, L"spawncwdrel", ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // Child launched from the overlay-only cwd and completed all relative ops.
+    EXPECT_TRUE(Contains(r.out, "CHILD=OK")) << "child failed from overlay-only cwd:\n" << r.out;
+    // Relative write to an undeclared name landed in the overlay and read back.
+    EXPECT_TRUE(Contains(r.out, "WROTE=RELWROTE")) << "cwd-relative overlay write/read-back failed:\n" << r.out;
+    // Relative read of the REAL declared input resolved via the reverse-map + real-fallback.
+    EXPECT_TRUE(Contains(r.out, "INPUT=SEEDIN")) << "cwd-relative read of a real input did not resolve:\n" << r.out;
+    // Parent reads the child's overlay write back through the absolute virtual path.
+    EXPECT_TRUE(Contains(r.out, "READBACK=RELWROTE")) << "child's overlay write not visible to parent:\n" << r.out;
+
+    EXPECT_FALSE(Exists(Join(ws, L"spawnreldir"))) << "overlay cwd leaked onto real disk";
+    EXPECT_FALSE(Exists(Join(ws, L"childrel.txt"))) << "cwd-relative overlay write leaked onto real disk";
+    EXPECT_TRUE(Exists(Join(ws, L"seedrel.txt"))) << "real declared input was disturbed";
 }
 
 // Input-filtering (production mode): only declared -r inputs are visible. Driven
@@ -220,6 +264,32 @@ TEST_F(OverlayTest, GoDeclaredOutputWritesThrough) {
     EXPECT_FALSE(Exists(sib)) << "undeclared write leaked onto the real execroot";
     std::vector<std::wstring> snap = Snapshot(ws);
     EXPECT_EQ(1u, snap.size()) << "unexpected entries on the real execroot (only the -w output should be there)";
+}
+
+// GetCurrentDirectory overlay reverse-map. The program spawns a child (itself) whose
+// working directory is set to a directory that exists ONLY in the overlay backing store;
+// the parent's CreateProcess cwd redirect points the child at the concrete backing dir,
+// so the child inherits the backing path as its OS current directory. The child reports
+// os.Getwd (which on Windows always calls GetCurrentDirectory). Without the reverse-map
+// hook it observes the private backing path; with it, the logical execroot path
+// (ws\cwddir). An in-process os.Chdir would NOT reproduce the leak (SetCurrentDirectory
+// stores the input string verbatim), so this deliberately uses an inherited child cwd -
+// the same path the GoStdlib cwd fix targets. Real execroot stays untouched.
+TEST_F(OverlayTest, GoGetCurrentDirectoryReportsVirtualPath) {
+    std::wstring ops = OpsExe();
+    if (ops.empty()) GTEST_SKIP() << "go ops binary missing from runfiles (E2E_GO_OPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunOverlay(ws, {ops, L"getcwd", ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // The child, launched from the overlay-only cwd, reports the virtual execroot path.
+    EXPECT_TRUE(Contains(r.out, ("WD=" + Narrow(Join(ws, L"cwddir"))).c_str()))
+        << "child os.Getwd did not report the virtual execroot cwd:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "WD=ERR:")) << "child launch errored:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "getcwd writes leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"cwddir"))) << "overlay cwd leaked onto real disk";
 }
 
 }  // namespace

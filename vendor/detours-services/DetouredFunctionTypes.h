@@ -124,6 +124,11 @@ typedef DWORD (WINAPI *GetFileAttributesW_t)(
     __in LPCWSTR lpFileName
     );
 
+typedef DWORD (WINAPI *GetCurrentDirectoryW_t)(
+    __in  DWORD  nBufferLength,
+    __out LPWSTR lpBuffer
+    );
+
 typedef DWORD (WINAPI *GetFileAttributesA_t)(
     __in LPCSTR lpFileName
     );
@@ -535,6 +540,23 @@ typedef NTSTATUS(NTAPI *NtOpenFile_t)(
     __out PIO_STATUS_BLOCK IoStatusBlock,
     __in ULONG ShareAccess,
     __in ULONG OpenOptions
+    );
+
+// Handle-less metadata probes used by the image loader (LoadLibrary) and other callers to
+// check a file's existence/attributes WITHOUT opening a handle. Because they never route
+// through NtCreateFile/CreateFileW, an unhooked probe resolves relative paths against the
+// (physical backing) OS cwd and bypasses input-filtering policy. Hooking them lets the
+// overlay reverse-map + read-filtering run on these probes too. FileInformation is treated
+// opaquely (PVOID) so we don't depend on FILE_BASIC_INFORMATION /
+// FILE_NETWORK_OPEN_INFORMATION being declared by the SDK headers in use.
+typedef NTSTATUS(NTAPI *NtQueryAttributesFile_t)(
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PVOID FileInformation
+    );
+
+typedef NTSTATUS(NTAPI *NtQueryFullAttributesFile_t)(
+    __in POBJECT_ATTRIBUTES ObjectAttributes,
+    __out PVOID FileInformation
     );
 
 // Handle-less attribute probe (Windows 8+ / modern libuv fast path). libuv's fs.stat /

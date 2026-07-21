@@ -3386,6 +3386,15 @@ HANDLE WINAPI Detoured_CreateFileW(
             hTemplateFile);
     }
 
+    // BazelSandbox write-overlay: reverse-map an overlay-only-cwd RELATIVE name (or an
+    // absolute backing path) to its virtual execroot path before policy/redirect run.
+    // See ReverseMapWin32Path (overlay_engine.h).
+    std::wstring revCreateFileW;
+    if (ReverseMapWin32Path(lpFileName, revCreateFileW))
+    {
+        lpFileName = revCreateFileW.c_str();
+    }
+
     DWORD error = ERROR_SUCCESS;
 
     FileOperationContext opContext(
@@ -3781,6 +3790,65 @@ BOOL WINAPI Detoured_GetVolumePathNameW(
     return Real_GetVolumePathNameW(lpszFileName, lpszVolumePathName, cchBufferLength);
 }
 
+IMPLEMENTED(Detoured_GetCurrentDirectoryW)
+DWORD WINAPI Detoured_GetCurrentDirectoryW(
+    _In_  DWORD  nBufferLength,
+    _Out_writes_opt_(nBufferLength) LPWSTR lpBuffer)
+{
+    DetouredScope scope;
+    if (scope.Detoured_IsDisabled())
+    {
+        // Nested inside another detour (e.g. our own overlay helpers): report the
+        // real backing current directory unchanged - the engine relies on that.
+        return Real_GetCurrentDirectoryW(nBufferLength, lpBuffer);
+    }
+
+    // Query the real (possibly overlay-backing) current directory into our own buffer.
+    const DWORD realNeeded = Real_GetCurrentDirectoryW(0, nullptr);  // size incl null
+    if (realNeeded == 0)
+    {
+        return 0;  // preserve GetLastError from the real API
+    }
+    std::wstring real(realNeeded, L'\0');
+    const DWORD got = Real_GetCurrentDirectoryW(realNeeded, &real[0]);
+    if (got == 0 || got >= realNeeded)
+    {
+        // Raced/unexpected: defer to the real API's own semantics.
+        return Real_GetCurrentDirectoryW(nBufferLength, lpBuffer);
+    }
+    real.resize(got);
+
+    // If the current directory lives in this action's overlay backing store, report the
+    // logical execroot (virtual) path instead, so raw Win32 cwd reads (GetCurrentDirectory,
+    // Go's os.Getwd, Rust's current_dir, the CRT's _wgetcwd, ...) are hermetic. Paths not
+    // under the backing store are reported verbatim - identical to the real API.
+    std::wstring report;
+    if (ReverseOverlayFinalPath(real, report))
+    {
+        // ReverseOverlayFinalPath preserves any \\?\ prefix; strip it so callers observe a
+        // plain drive-letter path (the virtual execroot is never an extended-length path).
+        if (report.rfind(L"\\\\?\\", 0) == 0)
+        {
+            report.erase(0, 4);
+        }
+    }
+    else
+    {
+        report = real;
+    }
+
+    // Honor the GetCurrentDirectory buffer-size contract for the reported string:
+    //   - buffer too small / NULL: return required size INCLUDING the null terminator.
+    //   - success: return the length EXCLUDING the null terminator.
+    const DWORD needed = static_cast<DWORD>(report.size());
+    if (lpBuffer == nullptr || nBufferLength <= needed)
+    {
+        return needed + 1;
+    }
+    memcpy(lpBuffer, report.c_str(), (static_cast<size_t>(needed) + 1) * sizeof(wchar_t));
+    return needed;
+}
+
 IMPLEMENTED(Detoured_GetFileAttributesW)
 DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
 {
@@ -3789,6 +3857,12 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
     {
 #pragma warning(suppress: 6387)
         return Real_GetFileAttributesW(lpFileName);
+    }
+
+    std::wstring revGetAttrW;
+    if (ReverseMapWin32Path(lpFileName, revGetAttrW))
+    {
+        lpFileName = revGetAttrW.c_str();
     }
 
     FileOperationContext fileOperationContext = FileOperationContext::CreateForProbe(L"GetFileAttributes", lpFileName);
@@ -3863,6 +3937,12 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
     if (scope.Detoured_IsDisabled() || IsNullOrEmptyW(lpFileName) || IsSpecialDeviceName(lpFileName))
     {
         return Real_GetFileAttributesExW(lpFileName, fInfoLevelId, lpFileInformation);
+    }
+
+    std::wstring revGetAttrExW;
+    if (ReverseMapWin32Path(lpFileName, revGetAttrExW))
+    {
+        lpFileName = revGetAttrExW.c_str();
     }
 
     FileOperationContext fileOperationContext = FileOperationContext::CreateForProbe(L"GetFileAttributesEx", lpFileName);
@@ -4060,6 +4140,12 @@ static BOOL WINAPI DetoursCopyFileEx(
                 pbCancel,
                 dwCopyFlags);
     }
+
+    // Reverse-map an overlay-only-cwd relative/backing source or destination to the
+    // virtual execroot path (both operands may be relative to the scratch cwd).
+    std::wstring revCopySrc, revCopyDst;
+    if (ReverseMapWin32Path(lpExistingFileName, revCopySrc)) lpExistingFileName = revCopySrc.c_str();
+    if (ReverseMapWin32Path(lpNewFileName, revCopyDst)) lpNewFileName = revCopyDst.c_str();
 
     FileOperationContext sourceOpContext = FileOperationContext::CreateForRead(L"CopyFile_Source", lpExistingFileName);
     PolicyResult sourcePolicyResult;
@@ -4555,6 +4641,12 @@ BOOL WINAPI DetoursMoveFileWithProgress(
                 lpData,
                 dwFlags);
     }
+
+    // Reverse-map an overlay-only-cwd relative/backing source or destination to the
+    // virtual execroot path (both operands may be relative to the scratch cwd).
+    std::wstring revMoveSrc, revMoveDst;
+    if (ReverseMapWin32Path(lpExistingFileName, revMoveSrc)) lpExistingFileName = revMoveSrc.c_str();
+    if (lpNewFileName != nullptr && ReverseMapWin32Path(lpNewFileName, revMoveDst)) lpNewFileName = revMoveDst.c_str();
 
     bool moveDirectory = false;
     DWORD flagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
@@ -5112,6 +5204,12 @@ BOOL WINAPI Detoured_DeleteFileW(_In_ LPCWSTR lpFileName)
         IsSpecialDeviceName(lpFileName))
     {
         return Real_DeleteFileW(lpFileName);
+    }
+
+    std::wstring revDeleteW;
+    if (ReverseMapWin32Path(lpFileName, revDeleteW))
+    {
+        lpFileName = revDeleteW.c_str();
     }
 
     FileOperationContext opContext = FileOperationContext(
@@ -5877,6 +5975,12 @@ HANDLE WINAPI Detoured_FindFirstFileExW(
         IsSpecialDeviceName(lpFileName))
     {
         return Real_FindFirstFileExW(lpFileName, fInfoLevelId, lpFindFileData, fSearchOp, lpSearchFilter, dwAdditionalFlags);
+    }
+
+    std::wstring revFindW;
+    if (ReverseMapWin32Path(lpFileName, revFindW))
+    {
+        lpFileName = revFindW.c_str();
     }
 
     return ReportFindFirstFileExWAccesses(lpFileName, fInfoLevelId, lpFindFileData, fSearchOp, lpSearchFilter, dwAdditionalFlags);
@@ -7934,6 +8038,23 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
             EaLength);
     }
 
+    // BazelSandbox write-overlay: reverse-map a top-level backing-rooted open back to
+    // its virtual execroot path (see Detoured_NtCreateFile for the full rationale).
+    UNICODE_STRING revNtName;
+    OBJECT_ATTRIBUTES revObjectAttributes;
+    std::wstring revVirtualNt;
+    if (ReverseMapOverlayBackingOpen(path.GetPathStringWithoutTypePrefix(), revVirtualNt))
+    {
+        revNtName.Buffer = (PWSTR)revVirtualNt.c_str();
+        revNtName.Length = (USHORT)(revVirtualNt.size() * sizeof(wchar_t));
+        revNtName.MaximumLength = (USHORT)((revVirtualNt.size() + 1) * sizeof(wchar_t));
+        revObjectAttributes = *ObjectAttributes;
+        revObjectAttributes.RootDirectory = nullptr;  // virtual path is absolute
+        revObjectAttributes.ObjectName = &revNtName;
+        ObjectAttributes = &revObjectAttributes;
+        path = CanonicalizedPath::Canonicalize(revVirtualNt.c_str());
+    }
+
     DWORD win32Disposition = MapNtCreateDispositionToWin32Disposition(CreateDisposition);
     DWORD win32Options = MapNtCreateOptionsToWin32FileFlags(CreateOptions);
 
@@ -8268,6 +8389,137 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
     return result;
 }
 
+// Shared implementation for the two handle-less metadata probes NtQueryAttributesFile
+// (FILE_BASIC_INFORMATION) and NtQueryFullAttributesFile (FILE_NETWORK_OPEN_INFORMATION).
+// These are used by the image loader (LoadLibrary) and other callers to check a file's
+// existence/attributes WITHOUT opening a handle, so they never route through
+// NtCreateFile/CreateFileW. Left unhooked, a relative-path probe resolves against the
+// physical (backing) OS cwd and bypasses input-filtering policy. Hooking them runs the
+// same overlay reverse-map + read-filtering (mask denied reads as NOT_FOUND) as the
+// CreateFile/GetFileAttributes read paths. FileInformation is opaque here; attrOffset is
+// the byte offset of the ULONG FileAttributes field within the caller's info struct.
+static NTSTATUS DetoursNtQueryAttributesCommon(
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    PVOID FileInformation,
+    LPCWSTR operationName,
+    size_t attrOffset,
+    NtQueryFullAttributesFile_t realFn)
+{
+    DetouredScope scope;
+    CanonicalizedPath path;
+
+    if (scope.Detoured_IsDisabled() ||
+        ObjectAttributes == nullptr ||
+        !PathFromObjectAttributes(ObjectAttributes, 0, 0, path) ||
+        IsSpecialDeviceName(path.GetPathString()))
+    {
+        return realFn(ObjectAttributes, FileInformation);
+    }
+
+    // BazelSandbox write-overlay: reverse-map a TOP-LEVEL backing-rooted probe (produced
+    // by ntdll pre-joining a RELATIVE path against an overlay-only cwd) back to its
+    // virtual execroot path, mirroring Detoured_NtCreateFile. Both policy and the real
+    // probe then run on the logical path.
+    UNICODE_STRING revNtName;
+    OBJECT_ATTRIBUTES revObjectAttributes;
+    std::wstring revVirtualNt;
+    if (ReverseMapOverlayBackingOpen(path.GetPathStringWithoutTypePrefix(), revVirtualNt))
+    {
+        revNtName.Buffer = (PWSTR)revVirtualNt.c_str();
+        revNtName.Length = (USHORT)(revVirtualNt.size() * sizeof(wchar_t));
+        revNtName.MaximumLength = (USHORT)((revVirtualNt.size() + 1) * sizeof(wchar_t));
+        revObjectAttributes = *ObjectAttributes;
+        revObjectAttributes.RootDirectory = nullptr;  // virtual path is absolute
+        revObjectAttributes.ObjectName = &revNtName;
+        ObjectAttributes = &revObjectAttributes;
+        path = CanonicalizedPath::Canonicalize(revVirtualNt.c_str());
+    }
+
+    FileOperationContext opContext = FileOperationContext::CreateForProbe(operationName, path.GetPathString());
+
+    PolicyResult policyResult;
+    if (!policyResult.Initialize(path.GetPathString()))
+    {
+        policyResult.ReportIndeterminatePolicyAndSetLastError(opContext);
+        return realFn(ObjectAttributes, FileInformation);
+    }
+
+    if (!AdjustOperationContextAndPolicyResultWithFullyResolvedPath(opContext, policyResult, true))
+    {
+        return realFn(ObjectAttributes, FileInformation);
+    }
+
+    // Model W (write-overlay): a metadata probe of a path the action wrote into the
+    // overlay must observe the backing file. Re-issue the probe against the backing path.
+    POBJECT_ATTRIBUTES effectiveObjectAttributes = ObjectAttributes;
+    UNICODE_STRING ovlNtName;
+    OBJECT_ATTRIBUTES ovlObjectAttributes;
+    std::wstring overlayProbe = ResolveOverlayProbePath(policyResult);
+    if (!overlayProbe.empty())
+    {
+        // ResolveOverlayProbePath returns a Win32 \\?\ path; convert to the NT \??\ form.
+        if (overlayProbe.compare(0, 4, L"\\\\?\\") == 0)
+        {
+            overlayProbe.replace(0, 4, L"\\??\\");
+        }
+        ovlNtName.Buffer = (PWSTR)overlayProbe.c_str();
+        ovlNtName.Length = (USHORT)(overlayProbe.size() * sizeof(wchar_t));
+        ovlNtName.MaximumLength = (USHORT)((overlayProbe.size() + 1) * sizeof(wchar_t));
+        ovlObjectAttributes = *ObjectAttributes;
+        ovlObjectAttributes.RootDirectory = nullptr;
+        ovlObjectAttributes.ObjectName = &ovlNtName;
+        effectiveObjectAttributes = &ovlObjectAttributes;
+    }
+
+    NTSTATUS result = realFn(effectiveObjectAttributes, FileInformation);
+
+    FileReadContext readContext;
+    readContext.InferExistenceFromNtStatus(result);
+    readContext.OpenedDirectory = false;
+    if (result >= 0 && FileInformation != nullptr)
+    {
+        DWORD fileAttributes = *(const DWORD*)((const BYTE*)FileInformation + attrOffset);
+        readContext.OpenedDirectory = IsDirectoryFromAttributes(
+            fileAttributes,
+            ShouldTreatDirectoryReparsePointAsFile(opContext.DesiredAccess, opContext.FlagsAndAttributes, policyResult));
+        opContext.OpenedFileOrDirectoryAttributes = fileAttributes;
+    }
+
+    AccessCheckResult accessCheck = policyResult.CheckReadAccess(RequestedReadAccess::Probe, readContext);
+
+    if (accessCheck.ShouldDenyAccess())
+    {
+        // Mask denied read/probes as NOT_FOUND under --filter-inputs, matching the
+        // CreateFile/GetFileAttributes read paths, so a hidden undeclared input is
+        // consistently absent to existence probes as well.
+        result = accessCheck.DenialNtStatus(ShouldDeniedReadsAsNotFound());
+    }
+
+    ReportIfNeeded(accessCheck, opContext, policyResult, RtlNtStatusToDosError(result));
+
+    return result;
+}
+
+IMPLEMENTED(Detoured_NtQueryAttributesFile)
+NTSTATUS NTAPI Detoured_NtQueryAttributesFile(
+    _In_  POBJECT_ATTRIBUTES ObjectAttributes,
+    _Out_ PVOID              FileInformation)
+{
+    // FILE_BASIC_INFORMATION: 4 x LARGE_INTEGER (32 bytes) then ULONG FileAttributes.
+    return DetoursNtQueryAttributesCommon(
+        ObjectAttributes, FileInformation, L"NtQueryAttributesFile", 32, Real_NtQueryAttributesFile);
+}
+
+IMPLEMENTED(Detoured_NtQueryFullAttributesFile)
+NTSTATUS NTAPI Detoured_NtQueryFullAttributesFile(
+    _In_  POBJECT_ATTRIBUTES ObjectAttributes,
+    _Out_ PVOID              FileInformation)
+{
+    // FILE_NETWORK_OPEN_INFORMATION: 6 x LARGE_INTEGER (48 bytes) then ULONG FileAttributes.
+    return DetoursNtQueryAttributesCommon(
+        ObjectAttributes, FileInformation, L"NtQueryFullAttributesFile", 48, Real_NtQueryFullAttributesFile);
+}
+
 IMPLEMENTED(Detoured_NtCreateFile)
 NTSTATUS NTAPI Detoured_NtCreateFile(
     _Out_    PHANDLE            FileHandle,
@@ -8308,6 +8560,28 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
             CreateOptions,
             EaBuffer,
             EaLength);
+    }
+
+    // BazelSandbox write-overlay: reverse-map a TOP-LEVEL backing-rooted open (produced
+    // by ntdll pre-joining a RELATIVE path against an overlay-only cwd) back to its
+    // virtual execroot path, so policy + overlay resolution run on the logical path.
+    // See ReverseMapOverlayBackingOpen (overlay_engine.h). The rewritten ObjectAttributes
+    // becomes the base for the rest of this call, so both the overlay redirect and the
+    // real-fallback open target the virtual namespace. Our own nested redirects call
+    // Real_ with DetouredScope disabled, so they never re-enter here (top-level only).
+    UNICODE_STRING revNtName;
+    OBJECT_ATTRIBUTES revObjectAttributes;
+    std::wstring revVirtualNt;
+    if (ReverseMapOverlayBackingOpen(path.GetPathStringWithoutTypePrefix(), revVirtualNt))
+    {
+        revNtName.Buffer = (PWSTR)revVirtualNt.c_str();
+        revNtName.Length = (USHORT)(revVirtualNt.size() * sizeof(wchar_t));
+        revNtName.MaximumLength = (USHORT)((revVirtualNt.size() + 1) * sizeof(wchar_t));
+        revObjectAttributes = *ObjectAttributes;
+        revObjectAttributes.RootDirectory = nullptr;  // virtual path is absolute
+        revObjectAttributes.ObjectName = &revNtName;
+        ObjectAttributes = &revObjectAttributes;
+        path = CanonicalizedPath::Canonicalize(revVirtualNt.c_str());
     }
 
     DWORD error = ERROR_SUCCESS;

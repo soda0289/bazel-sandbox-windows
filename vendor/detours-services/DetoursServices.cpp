@@ -126,9 +126,18 @@ extern "C" {
         _In_     BOOLEAN                ReturnSingleEntry,
         _In_opt_ PUNICODE_STRING        FileName,
         _In_     BOOLEAN                RestartScan);
-}
 
-#pragma warning( disable : 4711)
+    // Handle-less metadata probes (used by the image loader / LoadLibrary and other
+    // callers). FileInformation is declared PVOID so we don't depend on
+    // FILE_BASIC_INFORMATION / FILE_NETWORK_OPEN_INFORMATION from the SDK headers.
+    NTSTATUS NTAPI NtQueryAttributesFile(
+        _In_  POBJECT_ATTRIBUTES ObjectAttributes,
+        _Out_ PVOID              FileInformation);
+
+    NTSTATUS NTAPI NtQueryFullAttributesFile(
+        _In_  POBJECT_ATTRIBUTES ObjectAttributes,
+        _Out_ PVOID              FileInformation);
+}
 
 /*
 
@@ -315,6 +324,7 @@ CreateFileA_t Real_CreateFileA;
 GetVolumePathNameW_t Real_GetVolumePathNameW;
 GetFileAttributesA_t Real_GetFileAttributesA;
 GetFileAttributesW_t Real_GetFileAttributesW;
+GetCurrentDirectoryW_t Real_GetCurrentDirectoryW;
 GetFileAttributesExW_t Real_GetFileAttributesExW;
 GetFileAttributesExA_t Real_GetFileAttributesExA;
 CloseHandle_t Real_CloseHandle;
@@ -376,6 +386,8 @@ GetFinalPathNameByHandleA_t Real_GetFinalPathNameByHandleA;
 NtClose_t Real_NtClose;
 NtCreateFile_t Real_NtCreateFile;
 NtOpenFile_t Real_NtOpenFile;
+NtQueryAttributesFile_t Real_NtQueryAttributesFile;
+NtQueryFullAttributesFile_t Real_NtQueryFullAttributesFile;
 GetFileInformationByName_t Real_GetFileInformationByName;
 ZwCreateFile_t Real_ZwCreateFile;
 ZwOpenFile_t Real_ZwOpenFile;
@@ -1265,6 +1277,7 @@ static bool DllProcessAttach()
             ATTACH(GetFileAttributesW);
             ATTACH(GetFileAttributesExW);
             ATTACH(GetFileAttributesExA);
+            ATTACH(GetCurrentDirectoryW);
 
             // GetFileInformationByName is a modern (Win8+/Win11) handle-less attribute probe
             // resolved dynamically: it may be absent on older OSes and isn't guaranteed to be
@@ -1357,6 +1370,8 @@ static bool DllProcessAttach()
 
             ATTACH(NtCreateFile);
             ATTACH(NtOpenFile);
+            ATTACH(NtQueryAttributesFile);
+            ATTACH(NtQueryFullAttributesFile);
             ATTACH(ZwCreateFile);
             ATTACH(ZwOpenFile);
             ATTACH(NtQueryDirectoryFile);

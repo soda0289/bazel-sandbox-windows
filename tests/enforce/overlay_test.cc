@@ -132,6 +132,196 @@ TEST_F(EnforceTest, OverlaySpawnWithOverlayOnlyCwd) {
     EXPECT_FALSE(Exists(scratch));
 }
 
+// GetCurrentDirectory overlay reverse-map. A child spawned with its working directory
+// set to a directory that exists ONLY in the overlay backing store (the parent's
+// CreateProcess detour rewrites the overlay-only cwd to the concrete backing dir so the
+// child can launch) must observe the VIRTUAL execroot path from GetCurrentDirectoryW,
+// not the private backing-store path. This is the scenario that actually leaks the
+// backing path - an inherited/injected child cwd - unlike an in-process
+// SetCurrentDirectoryW (which stores the input string verbatim). Without the reverse-map
+// hook the child sees the backing path and the probe returns kOtherError. Real execroot
+// stays untouched.
+TEST_F(EnforceTest, OverlayGetCurrentDirectoryReportsVirtualPath) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawncwdis", scratch, ProbePath(), scratch}));
+    EXPECT_FALSE(Exists(scratch));
+}
+
+// --- Relative-path resolution from an overlay-only cwd ------------------------
+//
+// A child launched with cwd = a directory that exists only in the overlay backing
+// store must resolve RELATIVE paths against the VIRTUAL execroot, so that a
+// relative reference to a real declared input ("..\seed.txt") reaches the shipped
+// file via the overlay's real-fallback. Windows stores the BACKING path in the
+// PEB CurrentDirectory.DosPath, and ntdll joins relative names against it BEFORE
+// our hooks run. We can't reliably rewrite the PEB DosPath (ntdll caches the cwd
+// length), so instead each hook REVERSE-MAPS the resulting backing-rooted absolute
+// path back to its virtual execroot path before policy + overlay resolution run
+// (ReverseMapWin32Path / ReverseMapOverlayBackingOpen). The loader's handle-less
+// existence probe additionally needs the NtQueryAttributesFile /
+// NtQueryFullAttributesFile hooks. seed.txt is a declared input ("seed-data").
+TEST_F(EnforceTest, OverlayRelativeReadWWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relread_w", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeReadAWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relread_a", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeCreateFile2Works) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relread_2", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeGetFileAttributesWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relstat_w", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeGetFileAttributesExWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relstat_ex", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeFindFirstFileWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relfind", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeLoadLibraryWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    // LOAD_LIBRARY_AS_DATAFILE still validates the PE header, so the relative
+    // target must be a real image (a plain text seed yields ERROR_BAD_EXE_FORMAT
+    // even once resolution succeeds). Copy the probe exe (a valid PE) in as a
+    // declared input and load it via a path relative to the overlay-only cwd:
+    // this exercises the loader's handle-less NtQueryAttributesFile existence
+    // probe, which must resolve against the virtual execroot.
+    std::error_code ec;
+    std::filesystem::copy_file(ProbePath(), std::filesystem::path(ws) / L"seed.dll",
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relloadlib", L"..\\seed.dll"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeGetFullPathNameWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relfullpathread", L"..\\seed.txt"}));
+}
+
+TEST_F(EnforceTest, OverlayRelativeSetFileAttributesWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relsetattr", L"..\\seed.txt"}));
+    // Overlay must protect the shipped input: real execroot copy is untouched.
+    EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
+}
+
+// A RELATIVE delete of a visible lower input (resolved from an overlay-only cwd) must
+// resolve to the virtual execroot and be DENIED, exactly like the absolute-path
+// OverlayDeleteVisibleLowerFileDenied. kDenied (not kNotFound) proves the relative name
+// resolved to the real visible input rather than missing in the backing store.
+TEST_F(EnforceTest, OverlayRelativeDeleteVisibleInputDenied) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                                   {L"mkdirspawnrel", scratch, ProbePath(), L"reldelete", L"..\\seed.txt"}));
+    // Real execroot input survives untouched.
+    EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
+}
+
+TEST_F(EnforceTest, OverlayRelativeCopyFileSourceWorks) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel2", scratch, ProbePath(), L"relcopy",
+                                L"..\\seed.txt", L"copied.txt"}));
+}
+
+// A RELATIVE move whose SOURCE is a visible lower input must resolve to the virtual
+// execroot and be DENIED, like the absolute OverlayRenamePathReadonlyInputDenied.
+// kDenied (not kNotFound) proves the relative source resolved to the real input.
+TEST_F(EnforceTest, OverlayRelativeMoveVisibleInputDenied) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                                   {L"mkdirspawnrel2", scratch, ProbePath(), L"relmove",
+                                    L"..\\seed.txt", L"moved.txt"}));
+    // The real shipped input is never mutated.
+    EXPECT_TRUE(StartsWithSeedData(Join(ws, L"seed.txt")));
+}
+
+// A RELATIVE write (from an overlay-only cwd) to an UNDECLARED in-cone path is
+// redirected into the overlay backing store and reads straight back through the
+// same relative name (backing-first), while the REAL execroot stays untouched.
+// (This particular case converges with/without the reverse-map because the backing
+// store is a 1:1 mirror of the virtual tree, so a relative write bound for the
+// overlay lands at the same backing location either way; it is kept as a functional
+// round-trip + no-real-leak guard. The reverse-map discriminator for writes is the
+// -w write-through test below.)
+TEST_F(EnforceTest, OverlayRelativeWriteUndeclaredRedirectedAndReadBack) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    // Child writes "..\gen.txt" (-> ws\gen.txt, undeclared) then reads it back.
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel2", scratch, ProbePath(), L"relwriteread",
+                                L"..\\gen.txt", L"RELDATA"}));
+    // The undeclared relative write must NOT have leaked onto the real execroot.
+    EXPECT_FALSE(Exists(Join(ws, L"gen.txt")))
+        << "undeclared relative write leaked onto the real execroot";
+}
+
+// A RELATIVE write (from an overlay-only cwd) whose target resolves to a -w DECLARED
+// OUTPUT must write THROUGH to the real execroot (not the overlay), and read back
+// from there. This is the relative-path analog of
+// OverlayDeclaredOutputFileWritesThroughToRealDisk.
+TEST_F(EnforceTest, OverlayRelativeWriteDeclaredOutputWritesThroughToRealDisk) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    auto out = Join(ws, L"wout.txt");  // declared -w output reached via "..\wout.txt"
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay", L"-w", out},
+                               {L"mkdirspawnrel2", scratch, ProbePath(), L"relwriteread",
+                                L"..\\wout.txt", L"RELDATA"}));
+    // The declared -w output reached via a relative name must reach the real disk.
+    EXPECT_TRUE(Exists(out))
+        << "declared -w relative write was not written through to the real execroot";
+}
+
 // Multi-call enumeration cursor stress: each spliced overlay entry appears once.
 TEST_F(EnforceTest, OverlayMultiCallEnum) {
     SetOverlayNames(L"");

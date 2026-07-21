@@ -140,7 +140,10 @@ the Windows cert store (matches the root repo).
   (`EPERM`); the cc_test's runfiles library yields the real path, so it matches.
   `NodeSpawnOverlayOnlyCwd` (`scripts/spawn_ops.js`) covers the CreateProcess
   working-directory redirect (the GoStdlib regression) via
-  `child_process.spawnSync({cwd})` into an overlay-only dir, and
+  `child_process.spawnSync({cwd})` into an overlay-only dir,
+  `NodeSpawnOverlayOnlyCwdRelativeReadWrite` extends it to **cwd-RELATIVE** names
+  (a relative write → overlay + a relative read of a real `..\seedrel.txt` input,
+  exercising the hook-layer reverse-map), and
   `NodeDeclaredOutputWritesThrough` (`scripts/writeout_ops.js`) covers
   declared-output (`-w`) write-through vs. undeclared-sibling redirect.
 * **`dotnet`** — pins a hermetic **.NET 10 SDK** via `rules_dotnet`
@@ -168,7 +171,10 @@ the Windows cert store (matches the root repo).
   `docs/design/detours-write-overlay-vfs.md` §6.3.1), so the real entries always
   enumerate through the passthrough unchanged. `DotnetSpawnOverlayOnlyCwd` covers
   the CreateProcess working-directory redirect (the GoStdlib regression) via
-  `ProcessStartInfo.WorkingDirectory` set to an overlay-only dir, and
+  `ProcessStartInfo.WorkingDirectory` set to an overlay-only dir,
+  `DotnetSpawnOverlayOnlyCwdRelativeReadWrite` extends it to **cwd-RELATIVE**
+  names (a relative write → overlay + a relative read of a real `..\seedrel.txt`
+  input, exercising the hook-layer reverse-map), and
   `DotnetDeclaredOutputWritesThrough` covers declared-output (`-w`) write-through
   vs. undeclared-sibling redirect.
 * **`python`** — pins a hermetic **CPython** via `rules_python`
@@ -187,8 +193,12 @@ the Windows cert store (matches the root repo).
   destination write redirected into the backing store). `PythonSpawnOverlayOnlyCwd`
   (`scripts/spawn_ops.py`) covers the CreateProcess working-directory redirect
   (the GoStdlib regression) via `subprocess.run(cwd=...)` into an overlay-only
-  dir, and `PythonDeclaredOutputWritesThrough` (`scripts/writeout_ops.py`) covers
-  declared-output (`-w`) write-through vs. undeclared-sibling redirect.
+  dir, `PythonSpawnOverlayOnlyCwdRelativeReadWrite` extends it to **cwd-RELATIVE**
+  names (a relative write → overlay + a relative read of a real `..\seedrel.txt`
+  input — CPython's `open()` passes the raw relative path to `CreateFileW`, so
+  ntdll joins it against the backing-store cwd and the hook-layer reverse-map must
+  map it back), and `PythonDeclaredOutputWritesThrough` (`scripts/writeout_ops.py`)
+  covers declared-output (`-w`) write-through vs. undeclared-sibling redirect.
 * **`java`** — pins a fully hermetic **JDK** via `rules_java` (a downloaded
   `remotejdk_21` for both the target and tool runtimes — `.bazelrc` sets
   `--java_runtime_version`/`--tool_java_runtime_version=remotejdk_21` so nothing
@@ -206,7 +216,10 @@ the Windows cert store (matches the root repo).
   re-exported by the `jdk_tool` rule (`jdk_tools.bzl`).
   `JavaSpawnOverlayOnlyCwd` (`SpawnOps.java`) covers the CreateProcess
   working-directory redirect (the GoStdlib regression) via
-  `ProcessBuilder.directory()` set to an overlay-only dir, and
+  `ProcessBuilder.directory()` set to an overlay-only dir,
+  `JavaSpawnOverlayOnlyCwdRelativeReadWrite` extends it to **cwd-RELATIVE** names
+  (a relative write → overlay + a relative read of a real `..\seedrel.txt` input,
+  exercising the hook-layer reverse-map), and
   `JavaDeclaredOutputWritesThrough` (`WriteOut.java`) covers declared-output
   (`-w`) write-through vs. undeclared-sibling redirect.
   Fully hermetic (JDK is Bazel-fetched), so no machine Java and no network after
@@ -232,8 +245,18 @@ the Windows cert store (matches the root repo).
   declared output writes THROUGH to the real execroot (how Bazel collects an
   action's outputs) while an undeclared sibling write is redirected into the
   overlay — the test asserts only the `-w` file lands on real disk and the sibling
-  does not. Fully hermetic (SDK is Bazel-fetched), so no machine Go and no network
-  after the first fetch.
+  does not. **`GoGetCurrentDirectoryReportsVirtualPath`** covers the
+  **`GetCurrentDirectory` overlay reverse-map**: the program spawns a child (itself)
+  whose working directory is set to an overlay-only dir — the parent's `CreateProcess`
+  cwd redirect points the child at the concrete backing dir, so the child inherits the
+  backing path as its OS current directory — and the child reports `os.Getwd` (which on
+  Windows always calls `GetCurrentDirectory`). Without the hook the child leaks the
+  private backing path; with it, the detour reverse-maps it to the logical execroot path
+  (`ws\cwddir`) so raw Win32 cwd reads stay hermetic. (An in-process `os.Chdir` would NOT
+  reproduce the leak — `SetCurrentDirectory` stores the input string verbatim — so the
+  test deliberately uses an inherited child cwd, the same path the GoStdlib cwd fix
+  targets.) Fully hermetic (SDK is Bazel-fetched), so no machine Go and no network after
+  the first fetch.
 * **`native`** — fetches **no tool**: it exercises the overlay against Windows'
   own always-present built-ins, so it always runs (no download, no skip).
   `cmd.exe`'s internal commands (`mkdir`/`del`/`rmdir`/`dir`/`type`, resolved by

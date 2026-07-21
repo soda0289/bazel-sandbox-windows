@@ -296,6 +296,36 @@ TEST_F(OverlayTest, JavaSpawnOverlayOnlyCwd) {
     EXPECT_FALSE(Exists(Join(ws, L"spawndir"))) << "overlay cwd leaked onto real disk";
 }
 
+// Like JavaSpawnOverlayOnlyCwd, but the child touches files through cwd-RELATIVE
+// names from an overlay-only cwd. Exercises the hook-layer reverse-map on the real
+// JVM: a relative write to an undeclared name lands in the overlay and reads back,
+// AND a relative read of a REAL declared input one level up ("..\seedrel.txt",
+// seeded on the real disk here) reaches it via the overlay's real-fallback.
+// Without the reverse-map the input read resolves against the private backing
+// store and misses (INERR).
+TEST_F(OverlayTest, JavaSpawnOverlayOnlyCwdRelativeReadWrite) {
+    std::wstring launcher = OverlayTest::ToolFromEnv("E2E_JAVA_SPAWNOPS");
+    if (launcher.empty())
+        GTEST_SKIP() << "spawn_ops java_binary launcher missing (E2E_JAVA_SPAWNOPS)";
+
+    auto ws = NewWorkspace();
+    WriteText(Join(ws, L"seedrel.txt"), "SEEDIN");
+
+    // The child re-enters the same launcher; pass its path so ProcessBuilder can
+    // re-launch it with the overlay-only working directory.
+    auto r = RunOverlay(ws, {launcher, L"spawncwdrel", ws, launcher});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "CHILD=OK")) << "child failed from overlay-only cwd:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "WROTE=RELWROTE")) << "cwd-relative overlay write/read-back failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "INPUT=SEEDIN")) << "cwd-relative read of a real input did not resolve:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READBACK=RELWROTE")) << "child's overlay write not visible to parent:\n" << r.out;
+
+    EXPECT_FALSE(Exists(Join(ws, L"spawnreldir"))) << "overlay cwd leaked onto real disk";
+    EXPECT_FALSE(Exists(Join(ws, L"childrel.txt"))) << "cwd-relative overlay write leaked onto real disk";
+    EXPECT_TRUE(Exists(Join(ws, L"seedrel.txt"))) << "real declared input was disturbed";
+}
+
 // Declared outputs (-w) under --write-overlay write THROUGH to the real execroot
 // (how Bazel collects an action's declared outputs), while an undeclared sibling
 // write is redirected into the process-private overlay. Driven through

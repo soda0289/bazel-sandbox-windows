@@ -1339,6 +1339,227 @@ int DoCwdIs(const wchar_t* expected) {
     return (_wcsicmp(buf, expected) == 0) ? kOk : kOtherError;
 }
 
+// Creates an overlay-only <dir>, then spawns <childExe> with its working directory
+// set to that dir (lpCurrentDirectory = the overlay-only path, which the CreateProcess
+// detour rewrites to the concrete backing directory so the child can launch). The child
+// runs `cwdis <expected>`: it must observe <expected> (the VIRTUAL execroot path) from
+// GetCurrentDirectoryW. This exercises the GetCurrentDirectory overlay reverse-map on
+// the path that actually leaks the backing store - a child whose initial cwd was set to
+// the backing directory by the parent's CreateProcess. Without the hook the child sees
+// the raw backing path and returns kOtherError. (Note: an in-process SetCurrentDirectoryW
+// stores the input string verbatim, so it would NOT reproduce the leak - only an
+// inherited/injected child cwd does.)
+int DoMkdirSpawnCwdIs(const wchar_t* dir, const wchar_t* childExe, const wchar_t* expected) {
+    if (!CreateDirectoryW(dir, nullptr)) return MapLastError();
+    std::wstring cmd = L"\"";
+    cmd += childExe; cmd += L"\" cwdis \""; cmd += expected; cmd += L"\"";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, dir, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// --- Relative-path resolution probes (cwd-leak / PEB DosPath coverage) --------
+//
+// These run in a CHILD spawned with its working directory set to an overlay-only
+// directory (physically the backing store). A relative path like "..\seed.txt"
+// must resolve against the VIRTUAL execroot (so it finds the real declared input
+// via the overlay's real-fallback), NOT against the private backing store (where
+// the input was never copied). The relative->absolute join happens inside ntdll
+// using the PEB CurrentDirectory.DosPath BEFORE our NtCreateFile hook runs, so
+// hooking a single API cannot fix it - the DosPath itself must name the virtual
+// path. Each verb returns kOk if the relative op reached the real input, kNotFound
+// if it resolved against backing and missed, kOtherError otherwise.
+
+int DoRelReadW(const wchar_t* rel) {
+    HANDLE h = CreateFileW(rel, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    CloseHandle(h);
+    return kOk;
+}
+
+int DoRelReadA(const wchar_t* rel) {
+    char relA[1024];
+    WideCharToMultiByte(CP_ACP, 0, rel, -1, relA, sizeof(relA), nullptr, nullptr);
+    HANDLE h = CreateFileA(relA, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    CloseHandle(h);
+    return kOk;
+}
+
+int DoRelRead2(const wchar_t* rel) {
+    CREATEFILE2_EXTENDED_PARAMETERS ep{};
+    ep.dwSize = sizeof(ep);
+    ep.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
+    HANDLE h = CreateFile2(rel, GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, &ep);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    CloseHandle(h);
+    return kOk;
+}
+
+int DoRelStatW(const wchar_t* rel) {
+    DWORD attrs = GetFileAttributesW(rel);
+    if (attrs == INVALID_FILE_ATTRIBUTES) return MapLastError();
+    return kOk;
+}
+
+int DoRelStatEx(const wchar_t* rel) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(rel, GetFileExInfoStandard, &data)) return MapLastError();
+    return kOk;
+}
+
+int DoRelFind(const wchar_t* rel) {
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileExW(rel, FindExInfoStandard, &fd, FindExSearchNameMatch,
+                                nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    FindClose(h);
+    return kOk;
+}
+
+// LoadLibraryExW with LOAD_LIBRARY_AS_DATAFILE maps the file without requiring a
+// valid PE image, so a plain declared input can stand in for a DLL. The relative
+// name must resolve against the virtual execroot to be found.
+int DoRelLoadLib(const wchar_t* rel) {
+    HMODULE m = LoadLibraryExW(rel, nullptr, LOAD_LIBRARY_AS_DATAFILE);
+    if (m == nullptr) return MapLastError();
+    FreeLibrary(m);
+    return kOk;
+}
+
+// GetFullPathNameW joins the relative name with the PEB DosPath, then we open the
+// result. Both the join and the open must land on the virtual path for this to hit.
+int DoRelFullPathRead(const wchar_t* rel) {
+    wchar_t full[MAX_PATH * 4];
+    DWORD n = GetFullPathNameW(rel, _countof(full), full, nullptr);
+    if (n == 0 || n >= _countof(full)) return kOtherError;
+    HANDLE h = CreateFileW(full, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    CloseHandle(h);
+    return kOk;
+}
+
+// DeleteFileW on a declared input reached via a relative path. Resolution must
+// reach the virtual path (the overlay then tombstones it); if it resolves against
+// backing the source is absent -> kNotFound. The real execroot file is protected
+// by the overlay, so this never mutates the shipped input.
+int DoRelDelete(const wchar_t* rel) {
+    if (DeleteFileW(rel)) return kOk;
+    return MapLastError();
+}
+
+int DoRelSetAttr(const wchar_t* rel) {
+    if (SetFileAttributesW(rel, FILE_ATTRIBUTE_NORMAL)) return kOk;
+    return MapLastError();
+}
+
+// CopyFileW with a relative SOURCE (the real declared input) and a destination in
+// the current (overlay-only) directory. The leak is in the source resolution.
+int DoRelCopy(const wchar_t* relSrc, const wchar_t* dst) {
+    if (CopyFileW(relSrc, dst, FALSE)) return kOk;
+    return MapLastError();
+}
+
+// MoveFileW with a relative SOURCE. Source resolution is the leak point.
+int DoRelMove(const wchar_t* relSrc, const wchar_t* dst) {
+    if (MoveFileW(relSrc, dst)) return kOk;
+    return MapLastError();
+}
+
+// Write <content> to a RELATIVE path, then read it straight back through the same
+// relative name. From an overlay-only cwd both the write and the read must resolve
+// against the VIRTUAL execroot. Two placements are exercised by the callers:
+//   * undeclared in-cone target -> the write is redirected into the overlay backing
+//     store and the read-back returns it (backing-first), while the real execroot
+//     stays untouched (asserted by the caller).
+//   * -w declared-output target -> the write passes THROUGH to the real execroot and
+//     the read-back returns it from there.
+// Returns kOk iff the write succeeds AND the read-back matches <content> byte-for-byte.
+int DoRelWriteRead(const wchar_t* rel, const wchar_t* content) {
+    const DWORD n = static_cast<DWORD>(wcslen(content) * sizeof(wchar_t));
+    HANDLE h = CreateFileW(rel, GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    DWORD wrote = 0;
+    BOOL wok = WriteFile(h, content, n, &wrote, nullptr);
+    CloseHandle(h);
+    if (!wok || wrote != n) return kOtherError;
+
+    HANDLE r = CreateFileW(rel, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (r == INVALID_HANDLE_VALUE) return MapLastError();
+    std::vector<wchar_t> buf(wcslen(content) + 4, L'\0');
+    DWORD got = 0;
+    BOOL rok = ReadFile(r, buf.data(), static_cast<DWORD>(buf.size() * sizeof(wchar_t)), &got, nullptr);
+    CloseHandle(r);
+    if (!rok || got != n || memcmp(buf.data(), content, n) != 0) return kOtherError;
+    return kOk;
+}
+
+// Parent-side: creates an overlay-only <dir>, then spawns <childExe> with cwd set
+// to <dir> (the CreateProcess detour rewrites the overlay-only cwd to the concrete
+// backing dir) running "<childOp> <rel>". Returns the child's exit code. Drives the
+// single-relative-arg relop verbs above from an overlay-only working directory.
+int DoMkdirSpawnRel(const wchar_t* dir, const wchar_t* childExe,
+                    const wchar_t* childOp, const wchar_t* rel) {
+    if (!CreateDirectoryW(dir, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return MapLastError();
+    std::wstring cmd = L"\"";
+    cmd += childExe; cmd += L"\" "; cmd += childOp; cmd += L" \"";
+    cmd += rel; cmd += L"\"";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, dir, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+// Like DoMkdirSpawnRel but for two-argument relops (copy/move): runs
+// "<childOp> <rel> <dst>" with cwd=<dir>.
+int DoMkdirSpawnRel2(const wchar_t* dir, const wchar_t* childExe,
+                     const wchar_t* childOp, const wchar_t* rel,
+                     const wchar_t* dst) {
+    if (!CreateDirectoryW(dir, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return MapLastError();
+    std::wstring cmd = L"\"";
+    cmd += childExe; cmd += L"\" "; cmd += childOp; cmd += L" \"";
+    cmd += rel; cmd += L"\" \""; cmd += dst; cmd += L"\"";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, dir, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
 // Creates a temp file in <dir> via GetTempFileNameW (an intercepted API) and
 // reports whether the sandbox allowed it.
 int DoTempFile(const wchar_t* dir) {
@@ -1624,6 +1845,51 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"exit") return DoExit(argv[2]);
     if (op == L"sleep") return DoSleep(argv[2]);
     if (op == L"cwdis") return DoCwdIs(argv[2]);
+    if (op == L"mkdirspawncwdis") {
+        if (argc < 5) {
+            fwprintf(stderr, L"usage: probe mkdirspawncwdis <dir> <childExe> <expected>\n");
+            return kBadUsage;
+        }
+        return DoMkdirSpawnCwdIs(argv[2], argv[3], argv[4]);
+    }
+    // Child-side relative-op verbs (run with cwd = overlay-only dir):
+    if (op == L"relread_w") return DoRelReadW(argv[2]);
+    if (op == L"relread_a") return DoRelReadA(argv[2]);
+    if (op == L"relread_2") return DoRelRead2(argv[2]);
+    if (op == L"relstat_w") return DoRelStatW(argv[2]);
+    if (op == L"relstat_ex") return DoRelStatEx(argv[2]);
+    if (op == L"relfind") return DoRelFind(argv[2]);
+    if (op == L"relloadlib") return DoRelLoadLib(argv[2]);
+    if (op == L"relfullpathread") return DoRelFullPathRead(argv[2]);
+    if (op == L"reldelete") return DoRelDelete(argv[2]);
+    if (op == L"relsetattr") return DoRelSetAttr(argv[2]);
+    if (op == L"relcopy") {
+        if (argc < 4) return kBadUsage;
+        return DoRelCopy(argv[2], argv[3]);
+    }
+    if (op == L"relmove") {
+        if (argc < 4) return kBadUsage;
+        return DoRelMove(argv[2], argv[3]);
+    }
+    if (op == L"relwriteread") {
+        if (argc < 4) return kBadUsage;
+        return DoRelWriteRead(argv[2], argv[3]);
+    }
+    // Parent-side drivers that spawn the above from an overlay-only cwd:
+    if (op == L"mkdirspawnrel") {
+        if (argc < 6) {
+            fwprintf(stderr, L"usage: probe mkdirspawnrel <dir> <childExe> <childOp> <rel>\n");
+            return kBadUsage;
+        }
+        return DoMkdirSpawnRel(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (op == L"mkdirspawnrel2") {
+        if (argc < 7) {
+            fwprintf(stderr, L"usage: probe mkdirspawnrel2 <dir> <childExe> <childOp> <rel> <dst>\n");
+            return kBadUsage;
+        }
+        return DoMkdirSpawnRel2(argv[2], argv[3], argv[4], argv[5], argv[6]);
+    }
     if (op == L"tempfile") return DoTempFile(argv[2]);
     if (op == L"ntread") return DoNtRead(argv[2]);
     if (op == L"ntwriteread") return DoNtWriteRead(argv[2]);

@@ -1374,6 +1374,31 @@ subtractive path is byte-for-byte unchanged.
    actions, under both `local` and `windows-sandbox`; add enforce cases for merge
    enumeration, delete/rename denial of pre-existing files, overlay-only directories,
    file/directory name collisions across actions, and cross-process visibility.
+8. **[done] Relative-path resolution from an overlay-only cwd (hook-layer
+   reverse-map).** A child launched with its current directory set to an
+   overlay-only scratch dir has the *concrete backing* path recorded in its PEB
+   `CurrentDirectory.DosPath` (the virtual dir has no on-disk counterpart), so
+   `ntdll` joins RELATIVE names against the backing store *before* any hook runs —
+   a relative reference to a real declared input (e.g. `..\seed.txt`) would miss.
+   A **PEB DosPath rewrite was tried and abandoned**: `ntdll` caches the cwd
+   *length* at process init, so `GetCurrentDirectory`/`GetFullPathName` read only
+   that many chars and a longer virtual path (the common case for deep Bazel
+   execroots) is truncated. The robust fix (as in usvfs, which touches no PEB) is a
+   **hook-layer reverse-map**: each file hook maps the resulting backing-rooted
+   absolute path back to its virtual execroot path *before* policy + overlay
+   resolution run, so the existing backing-first / real-fallback resolution then
+   operates on the logical path. Implemented as `ReverseMapWin32Path`
+   (Win32-layer: `CreateFileW`, `GetFileAttributes[Ex]W`, `FindFirstFileExW`,
+   `DeleteFileW`, `CopyFileEx`, `MoveFileWithProgress`, `SetFileAttributes`) and
+   `ReverseMapOverlayBackingOpen` (NT-layer: `NtCreateFile`/`ZwCreateFile`), both in
+   `src/overlay_engine.cpp`. The image loader's (`LoadLibrary`) handle-less
+   existence probe additionally required hooking `NtQueryAttributesFile` /
+   `NtQueryFullAttributesFile` (see parity finding B5). Both Win32 and NT layers are
+   needed because a Win32 hook's nested internal `NtCreateFile` runs with detours
+   disabled, so the NT-layer reverse-map alone only covers APIs *not* wrapped at the
+   Win32 layer. Pinned by the `OverlayRelative*` group in
+   `tests/enforce/overlay_test.cc` (12 ops incl. read/stat/find/loadlib/copy/move,
+   with a disabled-baseline proving they fail without the reverse-map).
 
 ---
 

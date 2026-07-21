@@ -9,8 +9,10 @@
 // dir and writes its output (an absolute path under the virtual execroot) into
 // the overlay, which the parent reads back. The real execroot stays untouched.
 //
-// Run as: spawn_ops spawncwd <execroot> <self-launcher-path>   # parent
+// Run as: spawn_ops spawncwd <execroot> <self-launcher-path>   # parent (absolute)
 //         spawn_ops childcwd <out-path>                        # child re-entry
+//         spawn_ops spawncwdrel <execroot> <self-launcher-path>  # parent (relative)
+//         spawn_ops childcwdrel                                   # child re-entry
 // Parent emits:  SPAWN=<child-stdout> READBACK=<content-read-through-overlay>
 // Child emits:   CHILD=OK
 import java.io.IOException;
@@ -25,13 +27,56 @@ public final class SpawnOps {
         System.out.flush();
     }
 
+    // childcwdrel: like childcwd, but touches files through cwd-RELATIVE names
+    // rather than absolute paths. Launched from an overlay-only cwd, it
+    // writes+reads "childrel.txt" (undeclared -> overlay) and reads
+    // "..\seedrel.txt" (a REAL declared input one level up). The hook-layer
+    // reverse-map maps the backing-store cwd resolution back to the virtual
+    // execroot so both resolve.
+    private static void childcwdrel() throws IOException {
+        Files.writeString(Path.of("childrel.txt"), "RELWROTE");
+        String wb = Files.readString(Path.of("childrel.txt"));
+        String ib = Files.readString(Path.of("..", "seedrel.txt"));
+        System.out.write(("CHILD=OK WROTE=" + wb + " INPUT=" + ib).getBytes(StandardCharsets.UTF_8));
+        System.out.flush();
+    }
+
+    private static void spawncwdrel(String ws, String self)
+            throws IOException, InterruptedException {
+        Path d = Path.of(ws, "spawnreldir");
+        Files.createDirectories(d);
+        ProcessBuilder pb = new ProcessBuilder(self, "childcwdrel");
+        pb.directory(d.toFile());  // lpCurrentDirectory = overlay-only dir
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String childOut = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int code = p.waitFor();
+        if (code != 0) {
+            System.out.write(("SPAWN=ERR:" + code + " OUT=" + childOut).getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            System.exit(1);
+        }
+        String readback = Files.readString(d.resolve("childrel.txt"));
+        System.out.write(
+            ("SPAWN=" + childOut.trim() + " READBACK=" + readback).getBytes(StandardCharsets.UTF_8));
+        System.out.flush();
+    }
+
     public static void main(String[] args) throws IOException, InterruptedException {
+        if (args.length >= 1 && args[0].equals("childcwdrel")) {
+            childcwdrel();
+            return;
+        }
         if (args.length < 2) {
             System.err.println("usage: spawn_ops spawncwd <execroot> <self> | childcwd <out>");
             System.exit(2);
         }
         if (args[0].equals("childcwd")) {
             childcwd(args[1]);
+            return;
+        }
+        if (args[0].equals("spawncwdrel")) {
+            spawncwdrel(args[1], args[2]);
             return;
         }
         // parent: spawncwd <execroot> <self-launcher-path>
