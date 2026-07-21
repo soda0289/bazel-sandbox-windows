@@ -384,6 +384,29 @@ std::wstring ResolveOverlayOpenPath(
     return std::wstring();
 }
 
+// See overlay_engine.h.
+std::wstring ResolveOverlayWorkingDirectory(const wchar_t* workingDirectory)
+{
+    if (!ShouldWriteOverlay() || workingDirectory == nullptr || workingDirectory[0] == L'\0')
+    {
+        return std::wstring();
+    }
+
+    PolicyResult policy;
+    if (!policy.Initialize(workingDirectory))
+    {
+        return std::wstring();
+    }
+
+    // A process-private overlay scratch directory (one this action created, redirected
+    // into the backing store) has no counterpart on the real execroot, so CreateProcess
+    // cannot set it as the child's current directory - the launch fails with
+    // ERROR_DIRECTORY (267). Resolve it to the concrete backing directory so the child
+    // starts with a real cwd. ResolveOverlayOpenPath returns "" when the directory
+    // exists on the real disk (no redirect needed) or lies outside the overlay cone.
+    return ResolveOverlayOpenPath(policy, GENERIC_READ, OPEN_EXISTING);
+}
+
 // Model W (write-overlay) delete/rename-source resolution. Decides how removing
 // policyResult's path must be handled so the real execroot is NEVER mutated. See
 // docs/design/detours-write-overlay-vfs.md §6.3.1 (backing-store-as-truth, no

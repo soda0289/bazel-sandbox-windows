@@ -43,6 +43,12 @@ bool OverlayIsDirectory(const std::wstring& p);
 void ListBackingChildren(const std::wstring& virtualDir, std::vector<std::wstring>& out);
 bool OverlayRealFileHiddenByFilter(const PolicyResult& policyResult);
 std::wstring ResolveOverlayOpenPath(const PolicyResult& policyResult, DWORD dwDesiredAccess, DWORD dwCreationDisposition);
+// Resolves a child process's working directory through the write-overlay. Returns the
+// concrete backing directory when `workingDirectory` names a process-private overlay
+// scratch dir that has no counterpart on the real execroot (so CreateProcess would
+// otherwise fail with ERROR_DIRECTORY / 267); returns "" when the directory exists on
+// the real disk, is outside the overlay cone, or the overlay is disabled.
+std::wstring ResolveOverlayWorkingDirectory(const wchar_t* workingDirectory);
 OverlayDeleteAction ResolveOverlayDelete(PolicyResult& policyResult, std::wstring& backingOut);
 std::wstring ResolveOverlayRenameDest(PolicyResult& policyResult);
 std::wstring ResolveOverlayProbePath(PolicyResult& policyResult);

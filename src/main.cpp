@@ -771,6 +771,12 @@ int wmain(int argc, wchar_t** argv) {
     if (!mb.AddScope(o.workingDir, Policy_MaskAll, workingDirPolicy))
         Die(L"bad working dir: " + o.workingDir);
     dbg(o.hermetic ? L"na" : L"ro", o.workingDir);
+    // Declared inputs (-r) and the tool are strictly read-only (linux-sandbox parity:
+    // input files are symlinked read-only into the throwaway execroot). Policy_MaskAll
+    // makes each scope REPLACE the execroot cone's policy for its subtree; new scratch
+    // paths a tool creates inside an input directory are handled by the execroot cone
+    // itself (they resolve outside the -r subtree) or fail exactly as linux-sandbox
+    // would deny a write to a read-only input.
     // Allow reading the tool itself.
     if (!mb.AddScope(toolPath, Policy_MaskAll,
                      Policy_AllowRead | Policy_AllowReadIfNonExistent | Policy_DeclaredInput))

@@ -2949,6 +2949,21 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
     AccessCheckResult readCheck(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
     PolicyResult policyResult;
 
+    // Model W (write-overlay): if the image to launch lives only in this action's
+    // process-private overlay backing store - an undeclared write-then-execute, e.g.
+    // rules_go's builder copying itself to builder_reset\builder.exe and re-exec'ing
+    // it - the real execroot path does not exist (the write was redirected into the
+    // backing store), so the OS image load fails with "cannot find the file" / "the
+    // directory name is invalid". Redirect the loaded image to the backing copy,
+    // mirroring the CreateFileW/NtCreateFile open redirect. Only lpApplicationName
+    // (the module the OS loads) is swapped; lpCommandLine is left untouched so the
+    // child still observes its normal argv (including argv0). The nested image open
+    // inside Real_CreateProcess runs in this detour's active DetouredScope, so the
+    // NtCreateFile-layer redirect is suppressed there - the swap has to happen at this
+    // Win32 layer.
+    LPCWSTR effectiveApplicationName = lpApplicationName;
+    std::wstring overlayImagePath;
+
     if (!imagePath.IsNull() && !IgnoreCreateProcessReport())
     {
         if (!policyResult.Initialize(imagePath.GetPathString()))
@@ -2962,14 +2977,27 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
             return INVALID_FILE_ATTRIBUTES;
         }
 
-        if (ExistsAsFile(imagePath.GetPathString()))
+        // Resolve the overlay redirect BEFORE the read-access check. Under
+        // --filter-inputs an undeclared execroot path is masked to NOT_FOUND, so a
+        // read of the image would be DENIED here - returning before the launch, which
+        // is exactly the write-then-execute failure. When the image exists in this
+        // action's overlay backing store the file legitimately exists for this action
+        // (it just wrote it), so the read is allowed and the OS loads the backing copy.
+        overlayImagePath = ResolveOverlayOpenPath(policyResult, GENERIC_READ, OPEN_EXISTING);
+        const bool imageInOverlay = !overlayImagePath.empty();
+        if (imageInOverlay)
+        {
+            effectiveApplicationName = overlayImagePath.c_str();
+        }
+
+        if (ExistsAsFile(imagePath.GetPathString()) || imageInOverlay)
         {
             readContext.Existence = FileExistence::Existent;
         }
 
         readCheck = policyResult.CheckReadAccess(RequestedReadAccess::Read, readContext);
 
-        if (readCheck.ShouldDenyAccess())
+        if (readCheck.ShouldDenyAccess() && !imageInOverlay)
         {
             const bool maskRead = ShouldDeniedReadsAsNotFound();
             DWORD denyError = readCheck.DenialError(maskRead);
@@ -2978,10 +3006,25 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
             return FALSE;
         }
 
-        if (!EnforceChainOfReparsePointAccessesForNonCreateFile(operationContext, policyResult))
+        if (!imageInOverlay && !EnforceChainOfReparsePointAccessesForNonCreateFile(operationContext, policyResult))
         {
             return FALSE;
         }
+    }
+
+    // Model W (write-overlay): if the child's working directory is a scratch directory
+    // that this action created only in its process-private overlay backing store (e.g.
+    // rules_go's GoStdlib builder creates per-package output dirs under bazel-out and
+    // runs the compiler with its cwd set there), the real execroot path does not exist,
+    // so CreateProcess cannot set the current directory and fails with ERROR_DIRECTORY
+    // (267). Redirect the working directory to the concrete backing directory, mirroring
+    // the image / CreateFileW open redirect. Returns "" (leaving lpCurrentDirectory
+    // untouched) when the directory exists on the real disk or is outside the overlay.
+    LPCWSTR effectiveWorkingDirectory = lpCurrentDirectory;
+    std::wstring overlayWorkingDir = ResolveOverlayWorkingDirectory(lpCurrentDirectory);
+    if (!overlayWorkingDir.empty())
+    {
+        effectiveWorkingDirectory = overlayWorkingDir.c_str();
     }
 
     bool retryCreateProcess = true;
@@ -2993,14 +3036,14 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
         // Make sure we pass the Real_CreateProcessW such that it calls into the prior entry point
         CreateDetouredProcessStatus status = InternalCreateDetouredProcess(
             hToken,
-            lpApplicationName,
+            effectiveApplicationName,
             lpCommandLine,
             lpProcessAttributes,
             lpThreadAttributes,
             bInheritHandles,
             dwCreationFlags,
             lpEnvironment,
-            lpCurrentDirectory,
+            effectiveWorkingDirectory,
             lpStartupInfo,
             (HANDLE)0,
             g_pDetouredProcessInjector,

@@ -1,5 +1,5 @@
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DataTypes.h b/Public/Src/Sandbox/Windows/DetoursServices/DataTypes.h
-index e28fdf3..e7b87fd 100644
+index e28fdf31..e7b87fd1 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DataTypes.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DataTypes.h
 @@ -111,7 +111,23 @@ inline bool CheckReportAnyAccess(FileAccessManifestFlag flags, bool accessDenied
@@ -49,7 +49,7 @@ index e28fdf3..e7b87fd 100644
      // BuildXL uses this information to discover dynamic dependencies, such as #include-ed files.
      FileAccessPolicy_ReportAccess = FileAccessPolicy_ReportAccessIfNonExistent | FileAccessPolicy_ReportAccessIfExistent,
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctionTypes.h b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctionTypes.h
-index 6a7116a..32bbdff 100644
+index 6a7116ac..32bbdff4 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctionTypes.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctionTypes.h
 @@ -170,6 +170,12 @@ typedef BOOL (WINAPI *CopyFileExA_t)(
@@ -114,15 +114,9 @@ index 6a7116a..32bbdff 100644
      __out PHANDLE FileHandle,
      __in ACCESS_MASK DesiredAccess,
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
-index 9993def..41d437a 100644
+index 5096afd0..76da8cb1 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.cpp
-@@ -1,4 +1,4 @@
--﻿// Copyright (c) Microsoft. All rights reserved.
-+// Copyright (c) Microsoft. All rights reserved.
- // Licensed under the MIT license. See LICENSE file in the project root for full license information.
- 
- #include "stdafx.h"
 @@ -13,7 +13,14 @@
  #include "SubstituteProcessExecution.h"
  #include "UnicodeConverter.h"
@@ -306,9 +300,55 @@ index 9993def..41d437a 100644
      SetLastError(lastError);
  
      NTSTATUS result = Real_ZwSetInformationFile(
-@@ -2859,9 +2971,10 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
+@@ -2837,6 +2949,21 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
+     AccessCheckResult readCheck(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
+     PolicyResult policyResult;
  
-         if (readCheck.ShouldDenyAccess())
++    // Model W (write-overlay): if the image to launch lives only in this action's
++    // process-private overlay backing store - an undeclared write-then-execute, e.g.
++    // rules_go's builder copying itself to builder_reset\builder.exe and re-exec'ing
++    // it - the real execroot path does not exist (the write was redirected into the
++    // backing store), so the OS image load fails with "cannot find the file" / "the
++    // directory name is invalid". Redirect the loaded image to the backing copy,
++    // mirroring the CreateFileW/NtCreateFile open redirect. Only lpApplicationName
++    // (the module the OS loads) is swapped; lpCommandLine is left untouched so the
++    // child still observes its normal argv (including argv0). The nested image open
++    // inside Real_CreateProcess runs in this detour's active DetouredScope, so the
++    // NtCreateFile-layer redirect is suppressed there - the swap has to happen at this
++    // Win32 layer.
++    LPCWSTR effectiveApplicationName = lpApplicationName;
++    std::wstring overlayImagePath;
++
+     if (!imagePath.IsNull() && !IgnoreCreateProcessReport())
+     {
+         if (!policyResult.Initialize(imagePath.GetPathString()))
+@@ -2850,27 +2977,56 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
+             return INVALID_FILE_ATTRIBUTES;
+         }
+ 
+-        if (ExistsAsFile(imagePath.GetPathString()))
++        // Resolve the overlay redirect BEFORE the read-access check. Under
++        // --filter-inputs an undeclared execroot path is masked to NOT_FOUND, so a
++        // read of the image would be DENIED here - returning before the launch, which
++        // is exactly the write-then-execute failure. When the image exists in this
++        // action's overlay backing store the file legitimately exists for this action
++        // (it just wrote it), so the read is allowed and the OS loads the backing copy.
++        overlayImagePath = ResolveOverlayOpenPath(policyResult, GENERIC_READ, OPEN_EXISTING);
++        const bool imageInOverlay = !overlayImagePath.empty();
++        if (imageInOverlay)
++        {
++            effectiveApplicationName = overlayImagePath.c_str();
++        }
++
++        if (ExistsAsFile(imagePath.GetPathString()) || imageInOverlay)
+         {
+             readContext.Existence = FileExistence::Existent;
+         }
+ 
+         readCheck = policyResult.CheckReadAccess(RequestedReadAccess::Read, readContext);
+ 
+-        if (readCheck.ShouldDenyAccess())
++        if (readCheck.ShouldDenyAccess() && !imageInOverlay)
          {
 -            DWORD denyError = readCheck.DenialError();
 +            const bool maskRead = ShouldDeniedReadsAsNotFound();
@@ -319,7 +359,49 @@ index 9993def..41d437a 100644
              return FALSE;
          }
  
-@@ -3196,6 +3309,11 @@ static bool TryGetUsn(
+-        if (!EnforceChainOfReparsePointAccessesForNonCreateFile(operationContext, policyResult))
++        if (!imageInOverlay && !EnforceChainOfReparsePointAccessesForNonCreateFile(operationContext, policyResult))
+         {
+             return FALSE;
+         }
+     }
+ 
++    // Model W (write-overlay): if the child's working directory is a scratch directory
++    // that this action created only in its process-private overlay backing store (e.g.
++    // rules_go's GoStdlib builder creates per-package output dirs under bazel-out and
++    // runs the compiler with its cwd set there), the real execroot path does not exist,
++    // so CreateProcess cannot set the current directory and fails with ERROR_DIRECTORY
++    // (267). Redirect the working directory to the concrete backing directory, mirroring
++    // the image / CreateFileW open redirect. Returns "" (leaving lpCurrentDirectory
++    // untouched) when the directory exists on the real disk or is outside the overlay.
++    LPCWSTR effectiveWorkingDirectory = lpCurrentDirectory;
++    std::wstring overlayWorkingDir = ResolveOverlayWorkingDirectory(lpCurrentDirectory);
++    if (!overlayWorkingDir.empty())
++    {
++        effectiveWorkingDirectory = overlayWorkingDir.c_str();
++    }
++
+     bool retryCreateProcess = true;
+     unsigned retryCount = 0;
+ 
+@@ -2880,14 +3036,14 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
+         // Make sure we pass the Real_CreateProcessW such that it calls into the prior entry point
+         CreateDetouredProcessStatus status = InternalCreateDetouredProcess(
+             hToken,
+-            lpApplicationName,
++            effectiveApplicationName,
+             lpCommandLine,
+             lpProcessAttributes,
+             lpThreadAttributes,
+             bInheritHandles,
+             dwCreationFlags,
+             lpEnvironment,
+-            lpCurrentDirectory,
++            effectiveWorkingDirectory,
+             lpStartupInfo,
+             (HANDLE)0,
+             g_pDetouredProcessInjector,
+@@ -3196,6 +3352,11 @@ static bool TryGetUsn(
  // If we are not attached this is not App use of RAM but the OS proess startup side of the world.
  extern bool g_isAttached;
  
@@ -331,7 +413,7 @@ index 9993def..41d437a 100644
  IMPLEMENTED(Detoured_CreateFileW)
  HANDLE WINAPI Detoured_CreateFileW(
      _In_     LPCWSTR               lpFileName,
-@@ -3207,7 +3325,6 @@ HANDLE WINAPI Detoured_CreateFileW(
+@@ -3207,7 +3368,6 @@ HANDLE WINAPI Detoured_CreateFileW(
      _In_opt_ HANDLE                hTemplateFile)
  {
      DetouredScope scope;
@@ -339,7 +421,7 @@ index 9993def..41d437a 100644
      // The are potential complication here: How to handle a call to CreateFile with the FILE_FLAG_OPEN_REPARSE_POINT?
      // Is it a real file access. Some code in Windows (urlmon.dll) inspects reparse points when mapping a path to a particular security "Zone".
      if (scope.Detoured_IsDisabled() || IsNullOrEmptyW(lpFileName) || IsSpecialDeviceName(lpFileName))
-@@ -3282,9 +3399,10 @@ HANDLE WINAPI Detoured_CreateFileW(
+@@ -3282,9 +3442,10 @@ HANDLE WINAPI Detoured_CreateFileW(
  
          if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
          {
@@ -352,7 +434,7 @@ index 9993def..41d437a 100644
              return INVALID_HANDLE_VALUE;
          }
  
-@@ -3318,8 +3436,15 @@ HANDLE WINAPI Detoured_CreateFileW(
+@@ -3318,8 +3479,15 @@ HANDLE WINAPI Detoured_CreateFileW(
          }
      }
  
@@ -369,7 +451,7 @@ index 9993def..41d437a 100644
          desiredAccess,
          sharedAccess,
          lpSecurityAttributes,
-@@ -3446,6 +3571,56 @@ HANDLE WINAPI Detoured_CreateFileW(
+@@ -3446,6 +3614,56 @@ HANDLE WINAPI Detoured_CreateFileW(
          policyResult.GetCanonicalizedPath().GetPathStringWithoutTypePrefix(),
          policyResult);
  
@@ -426,7 +508,7 @@ index 9993def..41d437a 100644
      // It is possible that we only reached a deny action under some access check combinations above (rather than a direct check),
      // so log and maybe break here as well now that it is final.
      if (accessCheck.Result != ResultAction::Allow)
-@@ -3457,7 +3632,7 @@ HANDLE WINAPI Detoured_CreateFileW(
+@@ -3457,7 +3675,7 @@ HANDLE WINAPI Detoured_CreateFileW(
  
      if (accessCheck.ShouldDenyAccess())
      {
@@ -435,7 +517,7 @@ index 9993def..41d437a 100644
          reportedError = error;
  
          if (handle != INVALID_HANDLE_VALUE)
-@@ -3583,7 +3758,12 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
+@@ -3583,7 +3801,12 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
          return INVALID_FILE_ATTRIBUTES;
      }
  
@@ -449,7 +531,7 @@ index 9993def..41d437a 100644
      DWORD error = GetLastError();
      DWORD reportedError = GetReportedError(attributes != INVALID_FILE_ATTRIBUTES, error);
  
-@@ -3599,7 +3779,7 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
+@@ -3599,7 +3822,7 @@ DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
  
      if (accessCheck.ShouldDenyAccess())
      {
@@ -458,7 +540,7 @@ index 9993def..41d437a 100644
          reportedError = error;
          attributes = INVALID_FILE_ATTRIBUTES;
      }
-@@ -3666,6 +3846,17 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
+@@ -3666,6 +3889,17 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
          return FALSE;
      }
  
@@ -476,7 +558,7 @@ index 9993def..41d437a 100644
      // Now we can make decisions based on existence and type.
      FileReadContext fileReadContext;
      fileReadContext.InferExistenceFromError(reportedError);
-@@ -3685,7 +3876,14 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
+@@ -3685,7 +3919,14 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
      // then GetFileAttributes returns attributes for the symbolic link.
      if (accessCheck.ShouldDenyAccess())
      {
@@ -492,7 +574,7 @@ index 9993def..41d437a 100644
          reportedError = error;
          querySucceeded = FALSE;
      }
-@@ -3896,18 +4094,48 @@ static BOOL WINAPI DetoursCopyFileEx(
+@@ -3896,18 +4137,48 @@ static BOOL WINAPI DetoursCopyFileEx(
      // Now we can safely try to copy, but note that the corresponding read of the source file may end up disallowed
      // (maybe the source file exists, as CopyFileW requires, but we only allow non-existence probes for this path).
  
@@ -545,7 +627,7 @@ index 9993def..41d437a 100644
              lpProgressRoutine,
              lpData,
              pbCancel,
-@@ -3930,7 +4158,10 @@ static BOOL WINAPI DetoursCopyFileEx(
+@@ -3930,7 +4201,10 @@ static BOOL WINAPI DetoursCopyFileEx(
      if (sourceAccessCheck.ShouldDenyAccess())
      {
          result = FALSE;
@@ -557,7 +639,7 @@ index 9993def..41d437a 100644
      }
  
      SetLastError(error);
-@@ -4049,6 +4280,115 @@ BOOL WINAPI Detoured_CopyFileTransactedA(
+@@ -4049,6 +4323,115 @@ BOOL WINAPI Detoured_CopyFileTransactedA(
          hTransaction);
  }
  
@@ -673,7 +755,7 @@ index 9993def..41d437a 100644
  // Below are detours of various Move functions. Looking up the actual
  // implementation of these functions, one finds that they are all wrappers
  // around the MoveFileWithProgress.
-@@ -4292,19 +4632,54 @@ BOOL WINAPI DetoursMoveFileWithProgress(
+@@ -4292,19 +4675,54 @@ BOOL WINAPI DetoursMoveFileWithProgress(
          }
      }
  
@@ -732,7 +814,7 @@ index 9993def..41d437a 100644
              lpProgressRoutine,
              lpData,
              dwFlags);
-@@ -4448,19 +4823,131 @@ BOOL WINAPI Detoured_ReplaceFileW(
+@@ -4448,19 +4866,131 @@ BOOL WINAPI Detoured_ReplaceFileW(
      __reserved LPVOID  lpExclude,
      __reserved LPVOID  lpReserved)
  {
@@ -873,7 +955,7 @@ index 9993def..41d437a 100644
  }
  
  BOOL WINAPI Detoured_ReplaceFileA(
-@@ -4620,7 +5107,34 @@ BOOL WINAPI Detoured_DeleteFileW(_In_ LPCWSTR lpFileName)
+@@ -4620,7 +5150,34 @@ BOOL WINAPI Detoured_DeleteFileW(_In_ LPCWSTR lpFileName)
          return FALSE;
      }
  
@@ -909,7 +991,7 @@ index 9993def..41d437a 100644
      error = GetLastError();
      DWORD reportedError = GetReportedError(result, error);
  
-@@ -4724,9 +5238,33 @@ BOOL WINAPI Detoured_CreateHardLinkW(
+@@ -4724,9 +5281,33 @@ BOOL WINAPI Detoured_CreateHardLinkW(
      // (maybe the source file exists, as CreateHardLink requires, but we only allow non-existence probes).
      // Recall that failure of CreateHardLink is orthogonal to access-check failure.
  
@@ -945,7 +1027,7 @@ index 9993def..41d437a 100644
          lpSecurityAttributes);
      DWORD error = GetLastError();
      DWORD reportedError = GetReportedError(result, error);
-@@ -4740,7 +5278,10 @@ BOOL WINAPI Detoured_CreateHardLinkW(
+@@ -4740,7 +5321,10 @@ BOOL WINAPI Detoured_CreateHardLinkW(
      if (sourceAccessCheck.ShouldDenyAccess())
      {
          result = FALSE;
@@ -957,7 +1039,7 @@ index 9993def..41d437a 100644
          reportedError = error;
      }
  
-@@ -4786,7 +5327,6 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
+@@ -4786,7 +5370,6 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
  {
      DetouredScope scope;
      if (scope.Detoured_IsDisabled() ||
@@ -965,7 +1047,7 @@ index 9993def..41d437a 100644
          IsNullOrEmptyW(lpSymlinkFileName) ||
          IsNullOrEmptyW(lpTargetFileName) ||
          IsSpecialDeviceName(lpSymlinkFileName) ||
-@@ -4798,6 +5338,31 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
+@@ -4798,6 +5381,31 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
              dwFlags);
      }
  
@@ -997,7 +1079,7 @@ index 9993def..41d437a 100644
      // Check to see if we can write at the symlink location.
      FileOperationContext opContextSrc = FileOperationContext(
          L"CreateSymbolicLink_Source",
-@@ -4845,8 +5410,18 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
+@@ -4845,8 +5453,18 @@ BOOLEAN WINAPI Detoured_CreateSymbolicLinkW(
          return FALSE;
      }
  
@@ -1017,7 +1099,7 @@ index 9993def..41d437a 100644
          lpTargetFileName,
          dwFlags);
      error = GetLastError();
-@@ -4908,6 +5483,10 @@ HANDLE WINAPI Detoured_FindFirstFileA(
+@@ -4908,6 +5526,10 @@ HANDLE WINAPI Detoured_FindFirstFileA(
      // TODO: Note that we can't simply forward to FindFirstFileW here after a unicode conversion.
      // The output value differs too - WIN32_FIND_DATA{A, W}
  }
@@ -1028,7 +1110,7 @@ index 9993def..41d437a 100644
  
  /// <summary>
  /// Enforces allowed access for a path that leads to the target of a reparse point.
-@@ -4955,13 +5534,86 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
+@@ -4955,13 +5577,86 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
      }
  
      DWORD error = ERROR_SUCCESS;
@@ -1116,10 +1198,12 @@ index 9993def..41d437a 100644
      // ERROR_DIRECTORY means we had an lpFileName like X:\a\b where X:\a is a file rather than a directory.
      // In other words, this access is equivalent to a non-enumerating probe on a file X:\a.
      bool searchPathIsFile = error == ERROR_DIRECTORY;
-@@ -4969,6 +5621,26 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
+@@ -4969,8 +5664,28 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
      bool isEnumeration = !searchPathIsFile && PathContainsWildcard(filter);
      bool isProbeOfLastComponent = !isEnumeration && !searchPathIsFile;
  
+-    // Read context used for access-checking a probe to the search-directory.
+-    // This is only used if searchPathIsFile, i.e., we got ERROR_DIRECTORY.
 +    // Bazel input filtering: advance past undeclared entries so that the first
 +    // result we report and return is a visible (declared) one. "." and ".." always
 +    // match a wildcard filter, so enumerating an existing directory keeps at least
@@ -1140,10 +1224,12 @@ index 9993def..41d437a 100644
 +        }
 +    }
 +
-     // Read context used for access-checking a probe to the search-directory.
-     // This is only used if searchPathIsFile, i.e., we got ERROR_DIRECTORY.
++    // Read context used for access-checking a probe to the search-directory.
++    // This is only used if searchPathIsFile, i.e., we got ERROR_DIRECTORY.
      FileReadContext directoryProbeContext;
-@@ -5062,7 +5734,11 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
+     directoryProbeContext.Existence = FileExistence::Existent;
+     directoryProbeContext.OpenedDirectory = !searchPathIsFile;
+@@ -5062,7 +5777,11 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
          if (fileAccessCheck.ShouldDenyAccess())
          {
              // Note that we won't hard-deny enumeration probes (isEnumeration == true, requested EnumerationProbe). See CheckReadAccess.
@@ -1156,13 +1242,11 @@ index 9993def..41d437a 100644
              reportedError = error;
  
              if (searchHandle != INVALID_HANDLE_VALUE)
-@@ -5075,9 +5751,22 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
+@@ -5075,6 +5794,19 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
          {
              // We are returning a find handle that might return more results; mark it so that we can respond to FindNextFile on it.
              RegisterHandleOverlay(searchHandle, directoryAccessCheck, directoryPolicyResult, HandleType::Find);
--        }
- 
--        if (success && filePolicyResult.ShouldOverrideTimestamps(fileAccessCheck))
++
 +            // Model W write-overlay (gap #1): remember the caller's wildcard on the Find
 +            // handle so the overlay tail appended at FindNextFile exhaustion is filtered
 +            // by the same pattern the OS applied to the real entries.
@@ -1175,13 +1259,10 @@ index 9993def..41d437a 100644
 +                    ov->OverlayEnumFilterSet = true;
 +                }
 +            }
-+        }
-+
-+        if (success && filePolicyResult.ShouldOverrideTimestamps(fileAccessCheck))
-         {
- #if SUPER_VERBOSE
-             Dbg(L"FindFirstFileExW: Overriding timestamps for %s", filePolicyResult.GetCanonicalizedPath().GetPathString());
-@@ -5095,6 +5784,25 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
+         }
+ 
+         if (success && filePolicyResult.ShouldOverrideTimestamps(fileAccessCheck))
+@@ -5095,6 +5827,25 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
          ReportIfNeeded(fileAccessCheck, fileOperationContext, filePolicyResult, reportedError, error);
      }
  
@@ -1207,7 +1288,7 @@ index 9993def..41d437a 100644
      SetLastError(error);
      return searchHandle;
  }
-@@ -5152,6 +5860,7 @@ HANDLE WINAPI Detoured_FindFirstFileExA(
+@@ -5152,6 +5903,7 @@ HANDLE WINAPI Detoured_FindFirstFileExA(
          lpSearchFilter,
          dwAdditionalFlags);
  }
@@ -1215,7 +1296,7 @@ index 9993def..41d437a 100644
  
  IMPLEMENTED(Detoured_FindNextFileW)
  BOOL WINAPI Detoured_FindNextFileW(
-@@ -5170,6 +5879,18 @@ BOOL WINAPI Detoured_FindNextFileW(
+@@ -5170,6 +5922,18 @@ BOOL WINAPI Detoured_FindNextFileW(
  
      if (!result)
      {
@@ -1234,7 +1315,7 @@ index 9993def..41d437a 100644
          // TODO: This is likely ERROR_NO_MORE_FILES; is there anything more to check or report when enumeration ends?
          return result;
      }
-@@ -5177,6 +5898,29 @@ BOOL WINAPI Detoured_FindNextFileW(
+@@ -5177,6 +5941,29 @@ BOOL WINAPI Detoured_FindNextFileW(
      HandleOverlayRef overlay = TryLookupHandleOverlay(hFindFile);
      if (overlay != nullptr)
      {
@@ -1264,7 +1345,7 @@ index 9993def..41d437a 100644
          FileOperationContext fileOperationContext = FileOperationContext::CreateForProbe(L"FindNextFile", overlay->Policy.GetCanonicalizedPath().GetPathString());
  
          wchar_t const* enumeratedComponent = &lpFindFileData->cFileName[0];
-@@ -5252,7 +5996,89 @@ BOOL WINAPI Detoured_GetFileInformationByHandleEx(
+@@ -5252,7 +6039,89 @@ BOOL WINAPI Detoured_GetFileInformationByHandleEx(
          dwBufferSize);
      error = GetLastError();
  
@@ -1355,7 +1436,7 @@ index 9993def..41d437a 100644
      {
          return result;
      }
-@@ -5376,6 +6202,23 @@ static BOOL DeleteUsingSetFileInformationByHandle(
+@@ -5376,6 +6245,23 @@ static BOOL DeleteUsingSetFileInformationByHandle(
          return FALSE;
      }
  
@@ -1379,7 +1460,7 @@ index 9993def..41d437a 100644
      BOOL result = Real_SetFileInformationByHandle(
          hFile,
          FileInformationClass,
-@@ -5483,6 +6326,23 @@ static BOOL RenameUsingSetFileInformationByHandle(
+@@ -5483,6 +6369,23 @@ static BOOL RenameUsingSetFileInformationByHandle(
          return FALSE;
      }
  
@@ -1403,7 +1484,7 @@ index 9993def..41d437a 100644
      vector<ReportData> filesAndDirectoriesToReport;
      if (renameDirectory)
      {
-@@ -5497,11 +6357,39 @@ static BOOL RenameUsingSetFileInformationByHandle(
+@@ -5497,11 +6400,39 @@ static BOOL RenameUsingSetFileInformationByHandle(
          }
      }
  
@@ -1445,7 +1526,7 @@ index 9993def..41d437a 100644
      DWORD error = GetLastError();
      DWORD reportedError = GetReportedError(result, error);
  
-@@ -5803,9 +6691,34 @@ BOOL WINAPI Detoured_CreateDirectoryW(
+@@ -5803,9 +6734,34 @@ BOOL WINAPI Detoured_CreateDirectoryW(
          return FALSE;
      }
  
@@ -1482,7 +1563,7 @@ index 9993def..41d437a 100644
      if (!result && accessCheck.Result != ResultAction::Allow)
      {
          // On error, no directory creation happened, but we need to ensure that ResultAction::Warn acts like ResultAction::Deny.
-@@ -5934,7 +6847,35 @@ BOOL WINAPI Detoured_RemoveDirectoryW(_In_ LPCWSTR lpPathName)
+@@ -5934,7 +6890,35 @@ BOOL WINAPI Detoured_RemoveDirectoryW(_In_ LPCWSTR lpPathName)
  
      PathCache_Invalidate(policyResult.GetCanonicalizedPath().GetPathStringWithoutTypePrefix(), true, policyResult);
  
@@ -1519,7 +1600,7 @@ index 9993def..41d437a 100644
      DWORD error = GetLastError();
      DWORD reportedError = GetReportedError(result, error);
  
-@@ -6158,12 +7099,8 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
+@@ -6158,12 +7142,8 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
          return length;
      }
  
@@ -1534,7 +1615,7 @@ index 9993def..41d437a 100644
      wstring nonNormalizedPath;
      if (length < cchFilePath)
      {
-@@ -6185,6 +7122,23 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
+@@ -6185,6 +7165,23 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
          nonNormalizedPath.assign(buffer.get());
      }
  
@@ -1558,7 +1639,7 @@ index 9993def..41d437a 100644
      wstring normalizedPath;
      TranslateFilePath(nonNormalizedPath, normalizedPath);
  
-@@ -6351,6 +7305,31 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
+@@ -6351,6 +7348,31 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
              return DETOURS_STATUS_ACCESS_DENIED;
          }
  
@@ -1590,7 +1671,7 @@ index 9993def..41d437a 100644
          // Only report the enumeration if specified by the policy
          bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
          bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
-@@ -6500,6 +7479,31 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
+@@ -6500,6 +7522,31 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
                  return DETOURS_STATUS_ACCESS_DENIED;
              }
  
@@ -1622,7 +1703,7 @@ index 9993def..41d437a 100644
              // Only report the enumeration if specified by the policy
              bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
              bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
-@@ -6526,6 +7530,165 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
+@@ -6526,6 +7573,165 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
      return result;
  }
  
@@ -1788,7 +1869,7 @@ index 9993def..41d437a 100644
  static bool PathFromObjectAttributesViaId(POBJECT_ATTRIBUTES objectAttributes, ULONG fileAttributes, CanonicalizedPath& path)
  {
      DetouredScope scope;
-@@ -6735,6 +7898,14 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+@@ -6735,6 +7941,14 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
          win32Options,
          path.GetPathString());
  
@@ -1803,7 +1884,7 @@ index 9993def..41d437a 100644
      PolicyResult policyResult;
      if (!policyResult.Initialize(path.GetPathString()))
      {
-@@ -6817,9 +7988,10 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+@@ -6817,9 +8031,10 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
  
          if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
          {
@@ -1817,7 +1898,7 @@ index 9993def..41d437a 100644
          }
  
          SetLastError(error);
-@@ -6847,10 +8019,33 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+@@ -6847,10 +8062,33 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
          sharedAccess = sharedAccess | readSharingIfNeeded | FILE_SHARE_DELETE;
      }
  
@@ -1852,7 +1933,7 @@ index 9993def..41d437a 100644
          IoStatusBlock,
          AllocationSize,
          FileAttributes,
-@@ -6967,9 +8162,41 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+@@ -6967,9 +8205,41 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
          policyResult);
  
      bool hasValidHandle = NT_SUCCESS(result) && !IsNullOrInvalidHandle(*FileHandle);
@@ -1895,7 +1976,7 @@ index 9993def..41d437a 100644
  
          if (hasValidHandle)
          {
-@@ -6977,7 +8204,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
+@@ -6977,7 +8247,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
          }
  
          *FileHandle = INVALID_HANDLE_VALUE;
@@ -1904,7 +1985,7 @@ index 9993def..41d437a 100644
      }
      else if (hasValidHandle)
      {
-@@ -7038,6 +8265,17 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+@@ -7038,6 +8308,17 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
  
      DWORD error = ERROR_SUCCESS;
  
@@ -1922,7 +2003,7 @@ index 9993def..41d437a 100644
      DWORD win32Disposition = MapNtCreateDispositionToWin32Disposition(CreateDisposition);
      DWORD win32Options = MapNtCreateOptionsToWin32FileFlags(CreateOptions);
  
-@@ -7134,9 +8372,10 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+@@ -7134,9 +8415,10 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
  
          if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
          {
@@ -1936,7 +2017,7 @@ index 9993def..41d437a 100644
          }
  
          SetLastError(error);
-@@ -7169,10 +8408,36 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+@@ -7169,10 +8451,36 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
          }
      }
  
@@ -1974,7 +2055,7 @@ index 9993def..41d437a 100644
          IoStatusBlock,
          AllocationSize,
          FileAttributes,
-@@ -7291,9 +8556,42 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+@@ -7291,9 +8599,42 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
  
      bool hasValidHandle = NT_SUCCESS(result) && !IsNullOrInvalidHandle(*FileHandle);
  
@@ -2018,7 +2099,7 @@ index 9993def..41d437a 100644
  
          if (hasValidHandle)
          {
-@@ -7301,7 +8599,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
+@@ -7301,7 +8642,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
          }
  
          *FileHandle = INVALID_HANDLE_VALUE;
@@ -2027,7 +2108,7 @@ index 9993def..41d437a 100644
      }
      else if (hasValidHandle)
      {
-@@ -7374,6 +8672,154 @@ NTSTATUS NTAPI Detoured_NtOpenFile(
+@@ -7374,6 +8715,154 @@ NTSTATUS NTAPI Detoured_NtOpenFile(
      );
  }
  
@@ -2183,7 +2264,7 @@ index 9993def..41d437a 100644
  NTSTATUS NTAPI Detoured_NtClose(_In_ HANDLE handle)
  {
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.h b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.h
-index 53ee9f8..232d7fd 100644
+index 53ee9f8b..232d7fd1 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DetouredFunctions.h
 @@ -208,6 +208,13 @@ BOOL WINAPI Detoured_CopyFileExA(
@@ -2239,7 +2320,7 @@ index 53ee9f8..232d7fd 100644
  NTSTATUS NTAPI Detoured_ZwCreateFile(
      __out PHANDLE FileHandle,
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.cpp b/Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.cpp
-index 6d72ea0..896d7cc 100644
+index 6d72ea01..896d7cc3 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.cpp
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DetoursHelpers.cpp
 @@ -1000,6 +1000,35 @@ bool ParseFileAccessManifest(
@@ -2279,7 +2360,7 @@ index 6d72ea0..896d7cc 100644
      VerifyManifestRoot(g_manifestTreeRoot);
  
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp b/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
-index 059fbf1..1bf7791 100644
+index 059fbf1e..1bf7791f 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/DetoursServices.cpp
 @@ -34,6 +34,10 @@
@@ -2418,7 +2499,7 @@ index 059fbf1..1bf7791 100644
      {
          HMODULE hMods[1024];
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.h b/Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.h
-index 00c5363..5c7f1cd 100644
+index 00c5363c..5c7f1cd7 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/FileAccessHelpers.h
 @@ -254,6 +254,27 @@ public:
@@ -2479,7 +2560,7 @@ index 00c5363..5c7f1cd 100644
  };
  
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.h b/Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.h
-index 0795796..3fc41b8 100644
+index 07957968..3fc41b8e 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/HandleOverlay.h
 @@ -26,7 +26,8 @@ struct HandleOverlay {
@@ -2533,7 +2614,7 @@ index 0795796..3fc41b8 100644
  
  // Sets up structures for recording handle overlays.
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.cpp b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.cpp
-index d2af6cc..bf93212 100644
+index d2af6cca..bf932124 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.cpp
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.cpp
 @@ -6,6 +6,12 @@
@@ -2683,7 +2764,7 @@ index d2af6cc..bf93212 100644
  }
 \ No newline at end of file
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.h b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.h
-index d203892..f67b404 100644
+index d203892a..f67b4043 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult.h
 @@ -177,6 +177,14 @@ public:
@@ -2747,7 +2828,7 @@ index d203892..f67b404 100644
 +bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix);
 +#endif // _WIN32
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult_common.cpp b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult_common.cpp
-index 26dafff..4ee2d3a 100644
+index 26dafff1..4ee2d3a3 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult_common.cpp
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/PolicyResult_common.cpp
 @@ -92,7 +92,16 @@ AccessCheckResult PolicyResult::CheckReadAccess(RequestedReadAccess readAccessRe
@@ -2769,7 +2850,7 @@ index 26dafff..4ee2d3a 100644
      ResultAction result = allowAccess 
          ? ResultAction::Allow 
 diff --git a/Public/Src/Sandbox/Windows/DetoursServices/globals.h b/Public/Src/Sandbox/Windows/DetoursServices/globals.h
-index 6ed3a2a..c420429 100644
+index 6ed3a2ac..c4204292 100644
 --- a/Public/Src/Sandbox/Windows/DetoursServices/globals.h
 +++ b/Public/Src/Sandbox/Windows/DetoursServices/globals.h
 @@ -115,6 +115,24 @@ typedef BOOL(__stdcall* SubstituteProcessExecutionPluginFunc)(

@@ -38,6 +38,11 @@
 //                                 <childExe> enumfindntdirect <dir> <name>; returns
 //                                 the child's code (verifies the overlay index is
 //                                 shared cross-process and inserted into enumeration)
+//   probe mkdirspawncwd <dir> <childExe>
+//                                 create overlay-only <dir> in this process, then spawn
+//                                 <childExe> with its working directory set to <dir>;
+//                                 returns the child's code (verifies CreateProcess
+//                                 redirects an overlay-only cwd to the backing dir)
 //   probe connect <host> <port>   attempt an outbound TCP connect
 //                                 (used to verify -N / -n network sandboxing)
 //   probe stdio                   verify all three std handles are usable
@@ -1267,6 +1272,35 @@ int DoSpawn(int argc, wchar_t** argv) {
     return static_cast<int>(code);
 }
 
+// Model W write-overlay, CROSS-PROCESS working directory: create an overlay-only
+// directory in THIS (parent) process - CreateDirectoryW redirects it into the
+// process-private backing store, so the real execroot path never exists - then
+// spawn a child whose CURRENT DIRECTORY is set to that overlay-only dir. This is
+// rules_go's GoStdlib builder pattern (it creates per-package output dirs under
+// bazel-out and runs the compiler with its cwd set there). Without the CreateProcess
+// working-directory overlay redirect the OS cannot resolve the (absent) real dir and
+// CreateProcess fails with ERROR_DIRECTORY (267 -> kOtherError). With the redirect the
+// child launches from the concrete backing dir and exits 0 (kOk). argv[2] = dir,
+// argv[3] = child probe exe.
+int DoMkdirSpawnCwd(const wchar_t* dir, const wchar_t* childExe) {
+    if (!CreateDirectoryW(dir, nullptr)) return MapLastError();
+    std::wstring cmd = L"\"";
+    cmd += childExe; cmd += L"\" exit 0";
+    std::wstring mutableCmd = cmd;
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, dir, &si, &pi)) {
+        return kOtherError;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = kOtherError;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
 int DoExit(const wchar_t* code) {
     return static_cast<int>(wcstol(code, nullptr, 10));
 }
@@ -1440,6 +1474,13 @@ int wmain(int argc, wchar_t** argv) {
             return kBadUsage;
         }
         return DoWriteSpawnEnum(argv[2], argv[3], argv[4]);
+    }
+    if (op == L"mkdirspawncwd") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe mkdirspawncwd <dir> <childExe>\n");
+            return kBadUsage;
+        }
+        return DoMkdirSpawnCwd(argv[2], argv[3]);
     }
     if (op == L"delete") return DoDelete(argv[2]);
     if (op == L"deleteh") return DoDeleteByHandle(argv[2]);

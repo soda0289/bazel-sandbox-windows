@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "gtest/gtest.h"
@@ -116,6 +117,19 @@ TEST_F(EnforceTest, OverlayCrossProcessEnum) {
     EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
                                {L"writespawnenum", ws, L"xpenum.txt", ProbePath()}));
     EXPECT_FALSE(Exists(Join(ws, L"xpenum.txt")));
+}
+
+// Working directory that exists only in the overlay: a child can be launched with its
+// cwd set to an overlay-only scratch dir (rules_go GoStdlib builder pattern). Without
+// the CreateProcess working-directory overlay redirect this fails with ERROR_DIRECTORY
+// (267). The scratch dir must not leak onto the real execroot.
+TEST_F(EnforceTest, OverlaySpawnWithOverlayOnlyCwd) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"pkgout");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawncwd", scratch, ProbePath()}));
+    EXPECT_FALSE(Exists(scratch));
 }
 
 // Multi-call enumeration cursor stress: each spliced overlay entry appears once.
@@ -280,6 +294,25 @@ TEST_F(EnforceTest, OverlayRenamePathReadonlyInputDenied) {
                                    {L"rename", Join(ws, L"a.txt"), Join(ws, L"a_moved.txt")}));
     EXPECT_TRUE(Exists(Join(ws, L"a.txt")));
     EXPECT_FALSE(Exists(Join(ws, L"a_moved.txt")));
+}
+
+// A file inside a declared-input (-r) directory cone is itself a declared input and is
+// strictly read-only, even under --write-overlay: overwriting it is DENIED and the real
+// bytes are untouched. Mirrors linux-sandbox, where materialized files under a declared
+// input dir are read-only symlinks. (New scratch paths inside a -r input dir are likewise
+// denied - the write-overlay bits are granted only to the execroot cone, not to declared
+// inputs.)
+TEST_F(EnforceTest, OverlayExistingFileInReadonlyDirConeReadOnly) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();  // seeds an empty sub/ directory
+    auto sub = Join(ws, L"sub");
+    auto input = Join(sub, L"input.txt");
+    {
+        std::ofstream(std::filesystem::path(input), std::ios::binary) << "orig-input";
+    }
+    EXPECT_EQ(kDenied, RunProbeRaw({L"-W", ws, L"--write-overlay", L"-r", sub},
+                                   {L"write", input, L"x"}));
+    EXPECT_EQ("orig-input", ReadText(input));
 }
 
 // --- Composite-op redirect (mw-composite-ops) ---------------------------------
