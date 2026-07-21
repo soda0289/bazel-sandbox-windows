@@ -271,5 +271,79 @@ TEST_F(OverlayTest, CoreutilsFilterOverlayMutations) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Working-directory behavior under the write-overlay: cmd sequences the `cd`s
+// (its chdir is redirected into the backing store through the hooked
+// NtCreateFile) while the uutils tools - each spawned from the overlay-only cwd
+// (exercising the ResolveOverlayWorkingDirectory de-prefix fix) - resolve their
+// relative paths against that cwd. Relative writes/reads land in the backing
+// store and the real execroot stays clean.
+// ---------------------------------------------------------------------------
+
+// `cd` into an overlay-only scratch dir, then a uutils tool spawned from that
+// cwd copies a real input to a RELATIVE destination (resolved against the
+// backing cwd) and reads it back; `ls` of the cwd lists it. Proves a real tool
+// launched with an overlay-only current directory resolves relative outputs
+// into the backing store, with no real-execroot leak.
+TEST_F(OverlayTest, CoreutilsChdirIntoOverlayDirRelativeToolIO) {
+    REQUIRE_TOOL(mkdir, "E2E_UU_MKDIR");
+    REQUIRE_TOOL(cp, "E2E_UU_CP");
+    REQUIRE_TOOL(ls, "E2E_UU_LS");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    auto ws = NewWorkspace();
+    auto in = Join(ws, L"in.txt");
+    WriteText(in, "OVUU-CD");  // real, in-cone input (absolute source)
+
+    auto r = RunOverlayBat(ws, {
+        Q(mkdir) + L" scratch",
+        L"cd scratch",
+        // absolute source (real input) -> RELATIVE dest, resolved against the
+        // overlay-only cwd -> lands in the backing store.
+        Q(cp) + L" " + Q(in) + L" out.txt",
+        Q(cat) + L" out.txt",
+        Q(ls),
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVUU-CD"))
+        << "relative copy/read-back from the overlay cwd failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "out.txt")) << "ls did not list the relative overlay copy:\n" << r.out;
+    // Only the seeded input remains on the real execroot; the scratch tree stayed virtual.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_EQ(L"in.txt", snap[0]);
+    EXPECT_FALSE(Exists(Join(ws, L"scratch"))) << "overlay scratch dir leaked onto real disk";
+}
+
+// Nested `cd` into overlay-only dirs, then a uutils tool (spawned from the
+// deepest overlay-only cwd) writes a RELATIVE file at depth and reads it back.
+// Exercises the overlay-cwd redirect for a spawned real tool at directory depth.
+TEST_F(OverlayTest, CoreutilsNestedChdirRelativeToolWrite) {
+    REQUIRE_TOOL(mkdir, "E2E_UU_MKDIR");
+    REQUIRE_TOOL(cp, "E2E_UU_CP");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    auto ws = NewWorkspace();
+    auto in = Join(ws, L"in.txt");
+    WriteText(in, "OVUU-NESTED");
+
+    auto r = RunOverlayBat(ws, {
+        Q(mkdir) + L" a",
+        L"cd a",
+        Q(mkdir) + L" b",
+        L"cd b",
+        Q(cp) + L" " + Q(in) + L" deep.txt",
+        Q(cat) + L" deep.txt",
+    });
+
+    EXPECT_TRUE(Contains(r.out, "OVUU-NESTED"))
+        << "relative write at overlay depth did not read back:\n" << r.out;
+    // Only the seeded input remains; the nested overlay scratch stayed virtual.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "nested overlay scratch leaked onto the real execroot";
+    EXPECT_EQ(L"in.txt", snap[0]);
+    EXPECT_FALSE(Exists(Join(ws, L"a"))) << "overlay scratch dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e

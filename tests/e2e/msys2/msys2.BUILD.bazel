@@ -11,6 +11,7 @@
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
+    "usr/bin/bash.exe",
     "usr/bin/cat.exe",
     "usr/bin/cp.exe",
     "usr/bin/grep.exe",

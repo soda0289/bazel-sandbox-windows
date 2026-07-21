@@ -384,12 +384,91 @@ std::wstring ResolveOverlayOpenPath(
     return std::wstring();
 }
 
+// Strip the \\?\ extended-length prefix from an overlay backing directory before it
+// becomes a child process's current directory. cmd.exe (and other \\?\-averse tools)
+// reject an extended-length or UNC current directory - "UNC paths are not supported.
+// Defaulting to Windows directory." - and silently start in C:\Windows, which breaks
+// cwd-relative I/O. OverlayBackingPath always \\?\-prefixes the backing path (to clear
+// the MAX_PATH ceiling for deep trees), so a child inheriting or receiving it hits that
+// degradation. De-prefix to the plain form so cmd accepts it, but only when the plain
+// path stays within MAX_PATH (a current directory cannot exceed MAX_PATH without the
+// \\?\ prefix); for longer paths keep the \\?\ form (the pre-existing behavior - a deep
+// cmd child there still degrades, but non-cmd children accept it and the launch works).
+static std::wstring PlainChildWorkingDirectory(const std::wstring& backing)
+{
+    if (backing.rfind(L"\\\\?\\", 0) != 0)
+    {
+        return backing;  // already a plain path
+    }
+    std::wstring plain = backing.substr(4);
+    if (plain.size() >= MAX_PATH)
+    {
+        return backing;  // too long to de-prefix safely; keep the \\?\ form
+    }
+    return plain;
+}
+
+// lpCurrentDirectory == NULL case for ResolveOverlayWorkingDirectory: the child
+// inherits THIS process's current directory. If this action previously cd'd into an
+// overlay-only scratch dir (SetCurrentDirectoryW's internal directory-open is redirected
+// through the write-overlay), the PEB current directory is the \\?\-prefixed backing
+// path, and a cmd.exe child rejects it and degrades to C:\Windows. Detect that and
+// return the de-prefixed backing path so the caller can pass it explicitly; return ""
+// (leave the inherited cwd untouched) when the current directory is not inside this
+// action's overlay backing store (the real execroot, an outside-cone dir, etc.).
+static std::wstring InheritedOverlayWorkingDirectory()
+{
+    if (g_bazelWriteOverlayRoot == nullptr || g_bazelWriteOverlayRoot[0] == L'\0')
+    {
+        return std::wstring();
+    }
+
+    const DWORD len = GetCurrentDirectoryW(0, nullptr);
+    if (len == 0)
+    {
+        return std::wstring();
+    }
+    std::wstring cwd(len, L'\0');
+    const DWORD got = GetCurrentDirectoryW(len, &cwd[0]);
+    if (got == 0 || got >= len)
+    {
+        return std::wstring();
+    }
+    cwd.resize(got);
+
+    std::wstring probe = cwd;
+    if (probe.rfind(L"\\\\?\\", 0) == 0)
+    {
+        probe = probe.substr(4);
+    }
+    std::wstring root(g_bazelWriteOverlayRoot);
+    while (!root.empty() && root.back() == L'\\') root.pop_back();  // trim trailing sep
+    const size_t n = root.size();
+    const bool underBackingRoot =
+        n != 0 &&
+        probe.size() >= n &&
+        _wcsnicmp(probe.c_str(), root.c_str(), n) == 0 &&
+        (probe.size() == n || probe[n] == L'\\');
+    if (!underBackingRoot)
+    {
+        return std::wstring();
+    }
+    return PlainChildWorkingDirectory(cwd);
+}
+
 // See overlay_engine.h.
 std::wstring ResolveOverlayWorkingDirectory(const wchar_t* workingDirectory)
 {
-    if (!ShouldWriteOverlay() || workingDirectory == nullptr || workingDirectory[0] == L'\0')
+    if (!ShouldWriteOverlay())
     {
         return std::wstring();
+    }
+
+    // NULL working directory: the child inherits this process's (possibly overlay
+    // backing) current directory. See InheritedOverlayWorkingDirectory.
+    if (workingDirectory == nullptr || workingDirectory[0] == L'\0')
+    {
+        return InheritedOverlayWorkingDirectory();
     }
 
     PolicyResult policy;
@@ -404,7 +483,12 @@ std::wstring ResolveOverlayWorkingDirectory(const wchar_t* workingDirectory)
     // ERROR_DIRECTORY (267). Resolve it to the concrete backing directory so the child
     // starts with a real cwd. ResolveOverlayOpenPath returns "" when the directory
     // exists on the real disk (no redirect needed) or lies outside the overlay cone.
-    return ResolveOverlayOpenPath(policy, GENERIC_READ, OPEN_EXISTING);
+    std::wstring backing = ResolveOverlayOpenPath(policy, GENERIC_READ, OPEN_EXISTING);
+    if (backing.empty())
+    {
+        return std::wstring();
+    }
+    return PlainChildWorkingDirectory(backing);
 }
 
 // Model W (write-overlay) delete/rename-source resolution. Decides how removing

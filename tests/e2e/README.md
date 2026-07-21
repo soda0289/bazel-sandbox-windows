@@ -66,7 +66,13 @@ the Windows cert store (matches the root repo).
   enumeration case, and a **mixed real+overlay enumeration** case (a directory
   seeded with real on-disk files into which overlay-only entries are spliced;
   one `ls` must show the merged view while the real execroot keeps only its
-  seeded files).
+  seeded files). Two **working-directory** cases
+  (`CoreutilsChdirIntoOverlayDirRelativeToolIO`,
+  `CoreutilsNestedChdirRelativeToolWrite`) `cd` (via cmd) into an overlay-only
+  scratch dir — nested in the second — then run a uutils tool *spawned from that
+  overlay-only cwd* (exercising the `ResolveOverlayWorkingDirectory` de-prefix
+  fix): it resolves a RELATIVE destination against the backing cwd, the write
+  reads back, and the real execroot stays clean.
 * **`msys2`** — the same three cases as `coreutils` (single-file cp read-back,
   multi-file enumeration, mixed real+overlay splice) but against the **msys2 GNU
   coreutils**, fetched **hermetically** from the official `msys2-base` release
@@ -78,7 +84,17 @@ the Windows cert store (matches the root repo).
   uutils `coreutils` module because it exercises the overlay against the MSYS
   (Cygwin) runtime's POSIX file ops and its Windows↔POSIX path translation (the
   applets are handed forward-slash paths), which the pure-Windows uutils build
-  does not cover. No dependency on a machine `C:\msys64` install.
+  does not cover. No dependency on a machine `C:\msys64` install. Three
+  **bash-driven** cases add working-directory + script-execution coverage
+  through the Cygwin layer: `Msys2BashChdirIntoOverlayDirRelativeIO` (`cd` into
+  an overlay-only scratch dir + relative I/O; `pwd` reports the virtual POSIX
+  path), `Msys2BashScriptStoredInOverlayExecutedFromExecroot` (a shell script
+  that lives ONLY in the overlay backing store is read + executed by bash while
+  its cwd is the execroot, and the script's relative write redirects to the
+  backing store), and `Msys2BashSpawnFromOverlayOnlyCwd` (the regression for the
+  spawn-from-overlay-cwd fix, seen from bash: a child process spawned from an
+  overlay-only cwd starts in the correct backing dir and its relative write
+  reads back). `bash.exe` rides as `data` alongside the applets.
 * **`nodejs`** — gets its Node.js interpreter from the `rules_nodejs`
   toolchain (`@nodejs_host//:node_bin`, version-pinned via
   `node.toolchain(node_version = ...)`). It runs `node` directly against the
@@ -122,6 +138,11 @@ the Windows cert store (matches the root repo).
   `bazel-out` runfiles path**, never the `bazel-bin` convenience-junction form,
   or the launcher's self-location resolves output writes outside the cone
   (`EPERM`); the cc_test's runfiles library yields the real path, so it matches.
+  `NodeSpawnOverlayOnlyCwd` (`scripts/spawn_ops.js`) covers the CreateProcess
+  working-directory redirect (the GoStdlib regression) via
+  `child_process.spawnSync({cwd})` into an overlay-only dir, and
+  `NodeDeclaredOutputWritesThrough` (`scripts/writeout_ops.js`) covers
+  declared-output (`-w`) write-through vs. undeclared-sibling redirect.
 * **`dotnet`** — pins a hermetic **.NET 10 SDK** via `rules_dotnet`
   (`dotnet.toolchain(dotnet_version = ...)`, fully downloaded — no machine-wide
   dotnet install required) and compiles a **`csharp_binary`** (`fs_ops.cs`) that
@@ -145,7 +166,11 @@ the Windows cert store (matches the root repo).
   entries: a real visible in-cone file is immutable (delete/rename is denied by
   design — backing-store-as-truth with no whiteout markers, see
   `docs/design/detours-write-overlay-vfs.md` §6.3.1), so the real entries always
-  enumerate through the passthrough unchanged.
+  enumerate through the passthrough unchanged. `DotnetSpawnOverlayOnlyCwd` covers
+  the CreateProcess working-directory redirect (the GoStdlib regression) via
+  `ProcessStartInfo.WorkingDirectory` set to an overlay-only dir, and
+  `DotnetDeclaredOutputWritesThrough` covers declared-output (`-w`) write-through
+  vs. undeclared-sibling redirect.
 * **`python`** — pins a hermetic **CPython** via `rules_python`
   (`python.toolchain(python_version = ...)`, a python-build-standalone
   distribution downloaded by Bazel — no machine Python needed) and exposes the
@@ -159,7 +184,11 @@ the Windows cert store (matches the root repo).
   overlay's historical enumeration trouble spot (a stale last-error / `WinError
   203` leaking out of the merged enumeration). `PythonShutilCopyOverlay`
   (`scripts/copy_ops.py`) additionally drives `shutil.copy` (source read +
-  destination write redirected into the backing store).
+  destination write redirected into the backing store). `PythonSpawnOverlayOnlyCwd`
+  (`scripts/spawn_ops.py`) covers the CreateProcess working-directory redirect
+  (the GoStdlib regression) via `subprocess.run(cwd=...)` into an overlay-only
+  dir, and `PythonDeclaredOutputWritesThrough` (`scripts/writeout_ops.py`) covers
+  declared-output (`-w`) write-through vs. undeclared-sibling redirect.
 * **`java`** — pins a fully hermetic **JDK** via `rules_java` (a downloaded
   `remotejdk_21` for both the target and tool runtimes — `.bazelrc` sets
   `--java_runtime_version`/`--tool_java_runtime_version=remotejdk_21` so nothing
@@ -175,8 +204,36 @@ the Windows cert store (matches the root repo).
   path), and `JavacCompileIntoOverlay` runs `javac` compiling into the overlay
   then `java` running the result — both driving the hermetic JDK's `java`/`javac`
   re-exported by the `jdk_tool` rule (`jdk_tools.bzl`).
+  `JavaSpawnOverlayOnlyCwd` (`SpawnOps.java`) covers the CreateProcess
+  working-directory redirect (the GoStdlib regression) via
+  `ProcessBuilder.directory()` set to an overlay-only dir, and
+  `JavaDeclaredOutputWritesThrough` (`WriteOut.java`) covers declared-output
+  (`-w`) write-through vs. undeclared-sibling redirect.
   Fully hermetic (JDK is Bazel-fetched), so no machine Java and no network after
   the first fetch.
+* **`go`** — pins a fully hermetic **Go SDK** via `rules_go` (`go_sdk.download`,
+  a Bazel-downloaded toolchain — no machine Go install) and compiles one
+  statically-linked `go_binary` (`ops.go`, op dispatched on `argv[1]`) run
+  **directly under the sandbox**. `GoFsMutationOps` and `GoEnumerationSplice`
+  drive write/read-back/rename/move/delete and the enumeration splice through Go's
+  `os` package (`os.Create`/`os.Rename`/`os.Remove`/`os.ReadDir` →
+  `CreateFileW`/`MoveFileEx`/`DeleteFile`/`FindFirstFile`), a distinct caller
+  from .NET/node/python/java. Unique to this module, **`GoSpawnOverlayOnlyCwd`**
+  regression-tests the **CreateProcess working-directory overlay redirect**: the
+  program creates a directory that exists **only** in the overlay backing store,
+  then `os/exec`s a child whose working directory is set to that overlay-only dir
+  — the rules_go GoStdlib pattern (a compiler spawned with its cwd set to a
+  per-package output dir that lives only in the overlay). Without the redirect the
+  child cannot launch (`ERROR_DIRECTORY`, 267, exactly the GoStdlib failure); with
+  it the child launches from the concrete backing dir and writes its output (an
+  absolute path under the virtual execroot, the way the Go compiler does) into the
+  overlay, which reads back — real execroot untouched. `GoDeclaredOutputWritesThrough`
+  covers the complementary declared-output (`-w`) path: under `--write-overlay` a
+  declared output writes THROUGH to the real execroot (how Bazel collects an
+  action's outputs) while an undeclared sibling write is redirected into the
+  overlay — the test asserts only the `-w` file lands on real disk and the sibling
+  does not. Fully hermetic (SDK is Bazel-fetched), so no machine Go and no network
+  after the first fetch.
 * **`native`** — fetches **no tool**: it exercises the overlay against Windows'
   own always-present built-ins, so it always runs (no download, no skip).
   `cmd.exe`'s internal commands (`mkdir`/`del`/`rmdir`/`dir`/`type`, resolved by
@@ -204,6 +261,25 @@ the Windows cert store (matches the root repo).
   (This fixed a bug where the destination name was left as the virtual execroot
   path, so a handle rename leaked the moved file onto real disk; a real `-r`
   input still cannot be renamed/moved — the source open for `DELETE` is denied.)
+
+  A final group covers **working-directory behavior under the write-overlay**:
+  `NativeBatchScriptCorrectWorkingDirectory` (a batch script starts with cwd =
+  the `-W` execroot, and `cd` into a real subdir round-trips);
+  `NativeCmdChdirIntoOverlayDirRelativeIO` (`cd` into an overlay-only scratch dir
+  succeeds — `SetCurrentDirectoryW`'s internal directory-open is redirected
+  through the hooked `NtCreateFile` — and relative I/O from that cwd redirects to
+  the backing store); `NativeCmdNestedChdirRelativeReadOfRealInput` (nested `cd`,
+  a relative write at depth, then `cd ..\..` back and a relative read of a real
+  declared input); `NativeGeneratedBatchScriptExecutesFromOverlay` (a script
+  generated in the overlay runs via `call`, same process, cwd = execroot); and
+  `NativeSpawnCmdFromOverlayOnlyCwd` — the regression for the spawn-from-overlay-cwd
+  fix: a **new** cmd process spawned from an overlay-only cwd must start in the
+  correct backing scratch dir, not degrade to `C:\Windows`. Before the fix the
+  child inherited the parent's `\\?\`-prefixed PEB cwd, which cmd rejects ("UNC
+  paths are not supported. Defaulting to Windows directory."), sending its relative
+  write to `C:\Windows`; `ResolveOverlayWorkingDirectory` now de-prefixes the
+  inherited backing path, so the grandchild's relative write lands in the backing
+  store and the parent reads it back.
 
 ### Input-filtering coverage (`*FilterInputsHidesUndeclared`)
 

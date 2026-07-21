@@ -333,5 +333,57 @@ TEST_F(OverlayTest, NodeFilterOverlayMutations) {
     }
 }
 
+// The rules_go GoStdlib regression, through Node's child_process (the Python/
+// Java/.NET analogue of GoSpawnOverlayOnlyCwd). spawn_ops.js creates an
+// overlay-only directory and spawns itself with cwd set to it (CreateProcessW
+// lpCurrentDirectory, no preceding SetCurrentDirectory). Without the working-
+// directory overlay redirect the child cannot launch (ERROR_DIRECTORY 267);
+// with it the child launches from the concrete backing dir, writes its output
+// into the overlay, and the parent reads it back. Real execroot untouched.
+TEST_F(OverlayTest, NodeSpawnOverlayOnlyCwd) {
+    std::wstring node = NodeExe();
+    if (node.empty()) GTEST_SKIP() << "node.exe missing from runfiles (E2E_NODE)";
+    std::wstring script = Script("E2E_JS_SPAWNOPS");
+    if (script.empty()) GTEST_SKIP() << "spawn_ops.js missing (E2E_JS_SPAWNOPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunOverlay(ws, {node, script, ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "SPAWN=CHILD=OK")) << "child failed to launch from overlay-only cwd:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "SPAWN=ERR:")) << "child launch errored:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READBACK=CHILDWROTE")) << "child write not visible in overlay:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "spawn writes leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"spawndir"))) << "overlay cwd leaked onto real disk";
+}
+
+// Declared outputs (-w) under --write-overlay write THROUGH to the real execroot
+// (how Bazel collects an action's declared outputs), while an undeclared sibling
+// write is redirected into the process-private overlay. Driven through Node's
+// fs.writeFileSync (CreateFileW): both files read back in-process, but on the
+// real disk only the declared output appears - the undeclared sibling does not.
+TEST_F(OverlayTest, NodeDeclaredOutputWritesThrough) {
+    std::wstring node = NodeExe();
+    if (node.empty()) GTEST_SKIP() << "node.exe missing from runfiles (E2E_NODE)";
+    std::wstring script = Script("E2E_JS_WRITEOUTOPS");
+    if (script.empty()) GTEST_SKIP() << "writeout_ops.js missing (E2E_JS_WRITEOUTOPS)";
+
+    auto ws = NewWorkspace();
+    auto out = Join(ws, L"out.txt");
+    auto sib = Join(ws, L"sibling.txt");
+
+    auto r = RunOverlayWithWritable(ws, {out}, {node, script, out, sib});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "OUT=DECLARED-OUT")) << "declared output not readable in-process:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "SIB=UNDECLARED-SIB")) << "sibling not readable through the overlay:\n" << r.out;
+
+    EXPECT_TRUE(Exists(out)) << "declared -w output did not reach the real execroot";
+    EXPECT_EQ("DECLARED-OUT", ReadText(out));
+    EXPECT_FALSE(Exists(sib)) << "undeclared write leaked onto the real execroot";
+    EXPECT_EQ(1u, Snapshot(ws).size()) << "unexpected entries on the real execroot (only the -w output should be there)";
+}
+
 }  // namespace
 }  // namespace bsxe2e

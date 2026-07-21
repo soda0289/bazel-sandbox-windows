@@ -3012,14 +3012,18 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
         }
     }
 
-    // Model W (write-overlay): if the child's working directory is a scratch directory
-    // that this action created only in its process-private overlay backing store (e.g.
-    // rules_go's GoStdlib builder creates per-package output dirs under bazel-out and
-    // runs the compiler with its cwd set there), the real execroot path does not exist,
-    // so CreateProcess cannot set the current directory and fails with ERROR_DIRECTORY
-    // (267). Redirect the working directory to the concrete backing directory, mirroring
-    // the image / CreateFileW open redirect. Returns "" (leaving lpCurrentDirectory
-    // untouched) when the directory exists on the real disk or is outside the overlay.
+    // Model W (write-overlay): resolve the child's working directory through the
+    // write-overlay. If it names a scratch directory this action created only in its
+    // process-private overlay backing store (e.g. rules_go's GoStdlib builder creates
+    // per-package output dirs under bazel-out and runs the compiler with its cwd set
+    // there), the real execroot path does not exist, so CreateProcess cannot set the
+    // current directory and fails with ERROR_DIRECTORY (267); redirect it to the concrete
+    // backing directory. If lpCurrentDirectory is NULL, the child inherits this process's
+    // current directory - when this action has cd'd into an overlay-only scratch dir that
+    // is the \\?\-prefixed backing path, which a cmd.exe child rejects (degrading to
+    // C:\Windows); pass the de-prefixed backing path explicitly. Returns "" (leaving
+    // lpCurrentDirectory untouched) when the directory exists on the real disk, is outside
+    // the overlay, or the overlay is disabled.
     LPCWSTR effectiveWorkingDirectory = lpCurrentDirectory;
     std::wstring overlayWorkingDir = ResolveOverlayWorkingDirectory(lpCurrentDirectory);
     if (!overlayWorkingDir.empty())

@@ -85,6 +85,28 @@ java_binary(
     visibility = ["//visibility:public"],
 )
 
+# Java program exercising the CreateProcess working-directory overlay redirect
+# (the rules_go GoStdlib regression): it ProcessBuilder-launches itself with a
+# working directory that exists only in the overlay backing store. Same launcher
+# shape as fs_ops.
+java_binary(
+    name = "spawn_ops",
+    srcs = ["SpawnOps.java"],
+    main_class = "SpawnOps",
+    visibility = ["//visibility:public"],
+)
+
+# Java program exercising declared-output (-w) write-through under
+# --write-overlay: a -w output writes THROUGH to the real execroot while an
+# undeclared sibling is redirected into the overlay. Same launcher shape as
+# fs_ops.
+java_binary(
+    name = "writeout_ops",
+    srcs = ["WriteOut.java"],
+    main_class = "WriteOut",
+    visibility = ["//visibility:public"],
+)
+
 # The hermetic remote JDK's java + javac executables, re-exported at their real
 # runfiles paths so the classpath-load and javac-into-overlay cases can invoke
 # them directly (rather than via a java_binary launcher). Used to drive the raw
@@ -121,6 +143,8 @@ cc_test(
         ":fs_ops",
         ":jdk_java",
         ":jdk_javac",
+        ":spawn_ops",
+        ":writeout_ops",
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
@@ -130,6 +154,8 @@ cc_test(
         "E2E_JAVA_FILTEROVERLAYOPS": "$(rlocationpath :filter_overlay_ops)",
         "E2E_JAVA_JAVA": "$(rlocationpath :jdk_java)",
         "E2E_JAVA_JAVAC": "$(rlocationpath :jdk_javac)",
+        "E2E_JAVA_SPAWNOPS": "$(rlocationpath :spawn_ops)",
+        "E2E_JAVA_WRITEOUTOPS": "$(rlocationpath :writeout_ops)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

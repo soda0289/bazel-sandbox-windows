@@ -33,6 +33,27 @@ bool Contains(const std::string& hay, const char* needle) {
     return hay.find(needle) != std::string::npos;
 }
 
+// UTF-8 narrows a workspace path so runtime %CD% output (ASCII temp paths) can be
+// compared against the expected execroot / subdirectory.
+std::string Narrow(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+// Case-insensitive substring test - Windows path case (drive letter, temp dirs)
+// is not guaranteed to match how cmd echoes %CD%.
+bool ContainsCI(const std::string& hay, const std::string& needle) {
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return s;
+    };
+    return lower(hay).find(lower(needle)) != std::string::npos;
+}
+
 // Resolves an always-present in-box tool from the OS system directory (env-
 // independent). Empty if the file is absent (older Windows without it).
 std::wstring SysTool(const wchar_t* name) {
@@ -561,6 +582,171 @@ TEST_F(OverlayTest, NativeFilterOverlayBareRenameUndeclaredNoop) {
     EXPECT_EQ("REAL-SECRET", ReadText(secret)) << "undeclared input was renamed via the sandbox";
     EXPECT_TRUE(Exists(secret)) << "real undeclared input vanished";
     EXPECT_FALSE(Exists(moved)) << "rename produced a real dest from a masked source";
+}
+
+// ---------------------------------------------------------------------------
+// Working-directory behavior under the write-overlay: batch scripts start with
+// cwd = the -W execroot, `cd` into overlay-only scratch dirs works (its internal
+// directory-open is redirected through the hooked NtCreateFile, so the chdir
+// succeeds and the OS records the virtual path), relative I/O from such a cwd
+// redirects to the backing store, and a NEW process spawned from an overlay-only
+// cwd starts in the correct backing dir (the ResolveOverlayWorkingDirectory
+// de-prefix fix) instead of degrading to C:\Windows.
+// ---------------------------------------------------------------------------
+
+// A batch script starts with cwd = the -W execroot, and `cd` into a real in-cone
+// subdir (then back up) tracks correctly. Proves the launcher hands the child the
+// execroot as its current directory and plain chdir round-trips.
+TEST_F(OverlayTest, NativeBatchScriptCorrectWorkingDirectory) {
+    auto ws = NewWorkspace();
+    auto realdir = Join(ws, L"realdir");
+    ASSERT_TRUE(CreateDirectoryW(realdir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS);
+
+    auto r = RunOverlayBat(ws, {
+        L"echo START=%CD%",
+        L"cd realdir",
+        L"echo REALCWD=%CD%",
+        L"cd ..",
+        L"echo BACK=%CD%",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "START=" + Narrow(ws)))
+        << "batch script did not start at the execroot:\n" << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "REALCWD=" + Narrow(realdir)))
+        << "cd into a real subdir did not track:\n" << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "BACK=" + Narrow(ws)))
+        << "cd .. back to the execroot did not track:\n" << r.out;
+    // The seeded realdir is the only real-disk entry; nothing leaked.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "unexpected real-execroot leak:\n" << r.out;
+    EXPECT_EQ(L"realdir", snap[0]);
+}
+
+// `cd` into an overlay-only scratch dir (one that exists only in the backing
+// store) succeeds - SetCurrentDirectoryW's internal directory-open goes through
+// the hooked NtCreateFile and is redirected to the backing store - and %CD%
+// reports the virtual path. A relative write from that cwd lands in the backing
+// store (read back), and the real execroot stays clean.
+TEST_F(OverlayTest, NativeCmdChdirIntoOverlayDirRelativeIO) {
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"scratch");
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir scratch",
+        L"cd scratch",
+        L"echo CWD=%CD%",
+        L"echo overlaydata>rel.txt",
+        L"type rel.txt",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "CWD=" + Narrow(scratch)))
+        << "cd into an overlay-only dir did not report the virtual path:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "overlaydata"))
+        << "relative write/read-back from the overlay cwd failed:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_FALSE(Exists(scratch)) << "overlay scratch dir leaked onto real disk";
+}
+
+// Nested `cd` into overlay-only dirs, a relative write from the deepest one, then
+// `cd ..\..` back to the execroot and a relative read of a REAL declared input.
+// Exercises the virtual-cwd -> backing redirect at depth and confirms relative
+// reads of real inputs still resolve once back on a real path.
+TEST_F(OverlayTest, NativeCmdNestedChdirRelativeReadOfRealInput) {
+    auto ws = NewWorkspace();
+    auto realin = Join(ws, L"realin.txt");
+    WriteText(realin, "REALINPUT");
+    auto deep = Join(Join(ws, L"a"), L"b");
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir a",
+        L"cd a",
+        L"mkdir b",
+        L"cd b",
+        L"echo NESTED=%CD%",
+        L"echo deepdata>rel.txt",
+        L"type rel.txt",
+        L"cd ..\\..",
+        L"echo BACK=%CD%",
+        L"type realin.txt",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "NESTED=" + Narrow(deep)))
+        << "nested cd did not report the virtual path:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "deepdata")) << "relative write at depth failed:\n" << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "BACK=" + Narrow(ws)))
+        << "cd ..\\.. back to the execroot did not track:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "REALINPUT"))
+        << "relative read of a real input after returning to the execroot failed:\n" << r.out;
+    // Only the seeded real input remains; the overlay scratch tree stayed virtual.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_EQ(L"realin.txt", snap[0]);
+}
+
+// A batch script generates a second script inside the overlay and runs it with
+// `call` (same cmd process, so cwd stays the execroot). The generated script
+// reads back and runs, and none of it lands on the real execroot. `%%CD%%` writes
+// a literal %CD% into the generated script so it expands at the child's runtime.
+TEST_F(OverlayTest, NativeGeneratedBatchScriptExecutesFromOverlay) {
+    auto ws = NewWorkspace();
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir gen",
+        L"echo @echo off>gen\\child.bat",
+        L"echo echo CHILDMARKER=RAN>>gen\\child.bat",
+        L"echo echo CHILDCWD=%%CD%%>>gen\\child.bat",
+        L"call gen\\child.bat",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "CHILDMARKER=RAN"))
+        << "generated overlay batch script did not execute:\n" << r.out;
+    EXPECT_TRUE(ContainsCI(r.out, "CHILDCWD=" + Narrow(ws)))
+        << "called script did not run with cwd = execroot:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "generated script leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"gen"))) << "overlay gen dir leaked onto real disk";
+}
+
+// Regression for the spawn-from-overlay-cwd fix: a NEW process (cmd grandchild)
+// spawned from an overlay-only cwd must start in the correct backing scratch dir,
+// not degrade to C:\Windows. Before the fix the child inherited the parent's
+// \\?\-prefixed PEB cwd, which cmd.exe rejects ("UNC paths are not supported.
+// Defaulting to Windows directory."), so its relative write went to C:\Windows and
+// the parent could not read it back. ResolveOverlayWorkingDirectory now de-prefixes
+// the inherited backing path, so the grandchild lands in the scratch dir: its
+// relative write lands in the backing store and the parent reads it back, with no
+// degradation message and no real-execroot leak.
+TEST_F(OverlayTest, NativeSpawnCmdFromOverlayOnlyCwd) {
+    auto ws = NewWorkspace();
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir scratch",
+        L"cd scratch",
+        // spawn a NEW cmd process (NULL lpCurrentDirectory -> inherits our cwd);
+        // it writes a relative file and echoes its own cwd.
+        L"cmd /c \"echo relchild>childrel.txt & type childrel.txt & echo GC_CWD=%%CD%%\"",
+        // the parent (still cd'd into the same overlay scratch) reads it back.
+        L"echo PARENT-READBACK:",
+        L"type childrel.txt",
+    });
+
+    EXPECT_EQ(0, r.code) << r.out;
+    // No cmd cwd degradation: the grandchild did not fall back to C:\Windows.
+    EXPECT_FALSE(ContainsCI(r.out, "UNC paths are not supported"))
+        << "spawned cmd degraded its overlay cwd to C:\\Windows:\n" << r.out;
+    EXPECT_FALSE(ContainsCI(r.out, "Defaulting to Windows directory"))
+        << "spawned cmd degraded its overlay cwd to C:\\Windows:\n" << r.out;
+    // The grandchild's relative write landed in the SAME backing scratch dir the
+    // parent is in - proven by the parent reading it back after PARENT-READBACK.
+    auto pos = r.out.find("PARENT-READBACK:");
+    ASSERT_NE(std::string::npos, pos) << r.out;
+    EXPECT_TRUE(Contains(r.out.substr(pos), "relchild"))
+        << "parent could not read the grandchild's relative write (wrong cwd):\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "spawned-process writes leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"scratch"))) << "overlay scratch dir leaked onto real disk";
 }
 
 }  // namespace

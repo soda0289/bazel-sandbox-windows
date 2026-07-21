@@ -270,5 +270,57 @@ TEST_F(OverlayTest, JavaFilterOverlayMutations) {
     }
 }
 
+// The rules_go GoStdlib regression, through Java's ProcessBuilder (the Python/
+// Node/.NET analogue of GoSpawnOverlayOnlyCwd). spawn_ops launches itself with a
+// working directory that exists only in the overlay backing store (CreateProcessW
+// lpCurrentDirectory, no preceding SetCurrentDirectory). Without the working-
+// directory overlay redirect the child cannot launch (ERROR_DIRECTORY 267); with
+// it the child launches from the concrete backing dir, writes its output into
+// the overlay, and the parent reads it back. Real execroot untouched.
+TEST_F(OverlayTest, JavaSpawnOverlayOnlyCwd) {
+    std::wstring launcher = OverlayTest::ToolFromEnv("E2E_JAVA_SPAWNOPS");
+    if (launcher.empty())
+        GTEST_SKIP() << "spawn_ops java_binary launcher missing (E2E_JAVA_SPAWNOPS)";
+
+    auto ws = NewWorkspace();
+    // The child re-enters the same launcher; pass its path so ProcessBuilder can
+    // re-launch it with the overlay-only working directory.
+    auto r = RunOverlay(ws, {launcher, L"spawncwd", ws, launcher});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "SPAWN=CHILD=OK")) << "child failed to launch from overlay-only cwd:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "SPAWN=ERR:")) << "child launch errored:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READBACK=CHILDWROTE")) << "child write not visible in overlay:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "spawn writes leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"spawndir"))) << "overlay cwd leaked onto real disk";
+}
+
+// Declared outputs (-w) under --write-overlay write THROUGH to the real execroot
+// (how Bazel collects an action's declared outputs), while an undeclared sibling
+// write is redirected into the process-private overlay. Driven through
+// java.nio.file.Files.writeString (CreateFileW): both files read back in-process,
+// but on the real disk only the declared output appears - the sibling does not.
+TEST_F(OverlayTest, JavaDeclaredOutputWritesThrough) {
+    std::wstring launcher = OverlayTest::ToolFromEnv("E2E_JAVA_WRITEOUTOPS");
+    if (launcher.empty())
+        GTEST_SKIP() << "writeout_ops java_binary launcher missing (E2E_JAVA_WRITEOUTOPS)";
+
+    auto ws = NewWorkspace();
+    auto out = Join(ws, L"out.txt");
+    auto sib = Join(ws, L"sibling.txt");
+
+    auto r = RunOverlayWithWritable(ws, {out}, {launcher, out, sib});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "OUT=DECLARED-OUT")) << "declared output not readable in-process:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "SIB=UNDECLARED-SIB")) << "sibling not readable through the overlay:\n" << r.out;
+
+    EXPECT_TRUE(Exists(out)) << "declared -w output did not reach the real execroot";
+    EXPECT_EQ("DECLARED-OUT", ReadText(out));
+    EXPECT_FALSE(Exists(sib)) << "undeclared write leaked onto the real execroot";
+    EXPECT_EQ(1u, Snapshot(ws).size()) << "unexpected entries on the real execroot (only the -w output should be there)";
+}
+
 }  // namespace
 }  // namespace bsxe2e

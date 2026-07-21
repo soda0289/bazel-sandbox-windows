@@ -53,6 +53,7 @@ cc_test(
     data = [
         "@bazel_sandbox_windows//:BazelSandbox",
         "@msys2_base//:runtime_dlls",
+        "@msys2_base//:usr/bin/bash.exe",
         "@msys2_base//:usr/bin/cat.exe",
         "@msys2_base//:usr/bin/cp.exe",
         "@msys2_base//:usr/bin/grep.exe",
@@ -63,6 +64,7 @@ cc_test(
     ],
     env = {
         "E2E_SANDBOX": "$(rlocationpath @bazel_sandbox_windows//:BazelSandbox)",
+        "E2E_MSYS_BASH": "$(rlocationpath @msys2_base//:usr/bin/bash.exe)",
         "E2E_MSYS_CAT": "$(rlocationpath @msys2_base//:usr/bin/cat.exe)",
         "E2E_MSYS_CP": "$(rlocationpath @msys2_base//:usr/bin/cp.exe)",
         "E2E_MSYS_GREP": "$(rlocationpath @msys2_base//:usr/bin/grep.exe)",

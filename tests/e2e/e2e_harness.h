@@ -104,6 +104,16 @@ class OverlayTest : public ::testing::Test {
     RunResult RunOverlay(const std::wstring& ws,
                          const std::vector<std::wstring>& toolCmd);
 
+    // Runs "BazelSandbox --write-overlay -W <ws> -w <out> ... -- <toolCmd...>":
+    // the write-overlay mode PLUS declared outputs (-w). A declared-output path is
+    // NOT redirected into the backing store - it writes THROUGH to the real
+    // execroot (that is how Bazel collects an action's declared outputs), while
+    // every other write under the cone still lands in the process-private overlay.
+    // Public so free helpers in the test TUs can drive it.
+    RunResult RunOverlayWithWritable(const std::wstring& ws,
+                                     const std::vector<std::wstring>& writableOutputs,
+                                     const std::vector<std::wstring>& toolCmd);
+
     // Runs "BazelSandbox --filter-inputs -W <ws> -r <in> ... -- <toolCmd...>"
     // and returns the exit code plus captured stdout+stderr. This drives the
     // *input-filtering* mode Bazel relies on in production: `declaredInputs`

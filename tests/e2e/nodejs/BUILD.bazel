@@ -74,6 +74,8 @@ cc_test(
         "E2E_JS_ENUMOPS": "$(rlocationpath scripts/enum_ops.js)",
         "E2E_JS_FILTEROPS": "$(rlocationpath scripts/filter_ops.js)",
         "E2E_JS_FILTEROVERLAYOPS": "$(rlocationpath scripts/filter_overlay_ops.js)",
+        "E2E_JS_SPAWNOPS": "$(rlocationpath scripts/spawn_ops.js)",
+        "E2E_JS_WRITEOUTOPS": "$(rlocationpath scripts/writeout_ops.js)",
         "E2E_JS_NODEMODULES": "$(rlocationpath scripts/node_modules_stress.js)",
         "E2E_VITE_REACT": "$(rlocationpath //apps/react_app:build)",
         "E2E_NGC_ANGULAR": "$(rlocationpath //apps/ng_app:build)",

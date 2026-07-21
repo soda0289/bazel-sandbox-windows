@@ -1,0 +1,48 @@
+"""End-to-end write-overlay VFS tests against a hermetic Go binary.
+
+This is its own Bazel module (module-per-scenario pattern): it pins its own Go
+SDK via rules_go, independently of the root repo, and is excluded from the root
+workspace via the root .bazelignore. It consumes the sandbox under test from
+this repo via local_path_override.
+
+The Go program (ops.go) drives the same read/write/rename/move/delete and
+enumeration-splice lanes as the other modules, but through the Go runtime's own
+OS-API calls (os.Create/os.Rename/os.Remove/os.ReadDir). It ALSO carries the
+`spawncwd` case, unique to this module: it os/exec's a child whose working
+directory is a directory that exists only in the write-overlay backing store -
+the rules_go GoStdlib pattern (a compiler spawned with cwd set to a per-package
+output dir) that motivated the CreateProcess working-directory overlay redirect.
+Without that redirect the child cannot launch (ERROR_DIRECTORY, 267).
+
+rules_go's go_sdk extension downloads the pinned Go toolchain hermetically, and
+a go_binary links statically, so the compiled .exe runs under the sandbox with
+no machine Go install and no runtime deps.
+
+Run from this directory:
+
+    bazel test //...
+"""
+
+module(
+    name = "e2e_go",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_go", version = "0.61.1")
+
+# The system under test: BazelSandbox.exe + DetoursServices.dll + the shared
+# e2e harness, consumed from this repo.
+bazel_dep(name = "bazel_sandbox_windows", version = "0.1.0")
+local_path_override(
+    module_name = "bazel_sandbox_windows",
+    path = "../../..",
+)
+
+# Hermetic Go SDK. rules_go's go_sdk extension downloads the pinned toolchain
+# and auto-registers it, so the compiled go_binary builds + runs under the
+# sandbox without any machine-wide Go install. Bump version to refresh.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.24.5")

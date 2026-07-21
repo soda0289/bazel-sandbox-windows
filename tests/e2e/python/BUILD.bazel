@@ -60,6 +60,8 @@ cc_test(
         "E2E_PY_FILTEROPS": "$(rlocationpath scripts/filter_ops.py)",
         "E2E_PY_COPYOPS": "$(rlocationpath scripts/copy_ops.py)",
         "E2E_PY_FILTEROVERLAYOPS": "$(rlocationpath scripts/filter_overlay_ops.py)",
+        "E2E_PY_SPAWNOPS": "$(rlocationpath scripts/spawn_ops.py)",
+        "E2E_PY_WRITEOUTOPS": "$(rlocationpath scripts/writeout_ops.py)",
     },
     env_inherit = _ENV_INHERIT,
     local_defines = _HELPER_DEFINES,

@@ -309,5 +309,101 @@ TEST_F(OverlayTest, Msys2FilterOverlayMutations) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Working-directory + script-execution behavior under the write-overlay, driven
+// by the MSYS bash shell (the coreutils applets are dynamically linked against
+// the same MSYS runtime, so bash exercises the overlay through the Cygwin POSIX
+// layer). Covers: `cd` into an overlay-only scratch dir + relative I/O, running
+// a shell script that lives only in the overlay backing store while the shell's
+// cwd is the execroot, and spawning a NEW process from an overlay-only cwd (the
+// ResolveOverlayWorkingDirectory de-prefix fix, seen from the MSYS side).
+// ---------------------------------------------------------------------------
+
+// bash `cd`s into an overlay-only scratch dir it just created (the chdir's
+// internal directory-open is redirected through the hooked NtCreateFile, so it
+// succeeds), then a relative write from that cwd lands in the backing store and
+// reads back. `pwd` reports the virtual (POSIX) path. The real execroot stays
+// clean.
+TEST_F(OverlayTest, Msys2BashChdirIntoOverlayDirRelativeIO) {
+    REQUIRE_MSYS(bash, "E2E_MSYS_BASH");
+
+    auto ws = NewWorkspace();
+    std::wstring script =
+        L"cd '" + Fwd(ws) + L"' && mkdir -p wd/scratch && cd wd/scratch && "
+        L"echo CWD=$(pwd) && echo overlaydata > rel.txt && cat rel.txt";
+    auto r = RunOverlay(ws, {bash, L"-c", script});
+
+    EXPECT_TRUE(Contains(r.out, "overlaydata"))
+        << "relative write/read-back from the overlay cwd failed:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "/wd/scratch"))
+        << "bash pwd did not report the virtual overlay path:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay directory leaked onto real disk";
+}
+
+// A shell script that exists ONLY in the overlay backing store (copied there
+// this action) is read and executed by bash while the shell's cwd is the real
+// execroot; the script's own relative write (from the execroot cwd) is an
+// undeclared write and lands in the backing store, read back afterwards. Proves
+// a command stored in the overlay is executable and that writes from the
+// execroot cwd redirect correctly. The seed script uses LF endings.
+TEST_F(OverlayTest, Msys2BashScriptStoredInOverlayExecutedFromExecroot) {
+    REQUIRE_MSYS(bash, "E2E_MSYS_BASH");
+    REQUIRE_MSYS(cp, "E2E_MSYS_CP");
+    REQUIRE_MSYS(cat, "E2E_MSYS_CAT");
+
+    auto ws = NewWorkspace();
+    auto src = Join(ws, L"src.sh");
+    WriteText(src, "echo BASHMARKER=RAN\necho data > out.txt\n");  // real, in-cone input
+
+    std::wstring genrun = Fwd(Join(ws, L"gen/run.sh"));
+    std::wstring script =
+        L"cd '" + Fwd(ws) + L"' && mkdir -p gen && "
+        L"'" + Fwd(cp) + L"' '" + Fwd(src) + L"' '" + genrun + L"' && "
+        L"'" + Fwd(bash) + L"' '" + genrun + L"' && "
+        L"'" + Fwd(cat) + L"' '" + Fwd(Join(ws, L"out.txt")) + L"'";
+    auto r = RunOverlay(ws, {bash, L"-c", script});
+
+    EXPECT_TRUE(Contains(r.out, "BASHMARKER=RAN"))
+        << "overlay-resident script did not execute:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "data"))
+        << "relative write from the execroot cwd did not read back:\n" << r.out;
+    // Only the seeded script source remains on the real execroot.
+    std::vector<std::wstring> snap = Snapshot(ws);
+    ASSERT_EQ(1u, snap.size()) << "generated script / output leaked onto the real execroot";
+    EXPECT_EQ(L"src.sh", snap[0]);
+    EXPECT_FALSE(Exists(Join(ws, L"gen"))) << "overlay gen dir leaked onto real disk";
+    EXPECT_FALSE(Exists(Join(ws, L"out.txt"))) << "overlay output leaked onto real disk";
+}
+
+// Regression for the spawn-from-overlay-cwd fix, seen from bash: a parent shell
+// cd'd into an overlay-only scratch dir spawns a NEW bash process; the child
+// must start in the correct backing scratch dir (its `pwd` reports the virtual
+// path), its relative write lands in the backing store, and the parent reads it
+// back. Before the fix the child inherited the \\?\-prefixed backing cwd and a
+// cmd/degrading tool would lose it; the MSYS child confirms the corrected path.
+TEST_F(OverlayTest, Msys2BashSpawnFromOverlayOnlyCwd) {
+    REQUIRE_MSYS(bash, "E2E_MSYS_BASH");
+    REQUIRE_MSYS(cat, "E2E_MSYS_CAT");
+
+    auto ws = NewWorkspace();
+    std::wstring script =
+        L"cd '" + Fwd(ws) + L"' && mkdir -p scratch && cd scratch && "
+        L"'" + Fwd(bash) + L"' -c 'echo relchild > childrel.txt; echo GC=$(pwd)' && "
+        L"echo PARENT-READBACK: && '" + Fwd(cat) + L"' childrel.txt";
+    auto r = RunOverlay(ws, {bash, L"-c", script});
+
+    // The spawned child wrote into the SAME backing scratch dir the parent is in,
+    // proven by the parent reading it back after the PARENT-READBACK marker.
+    auto pos = r.out.find("PARENT-READBACK:");
+    ASSERT_NE(std::string::npos, pos) << r.out;
+    EXPECT_TRUE(Contains(r.out.substr(pos), "relchild"))
+        << "parent could not read the spawned child's relative write (wrong cwd):\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "/scratch"))
+        << "spawned child did not report the virtual overlay cwd:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "spawned-process writes leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"scratch"))) << "overlay scratch dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e

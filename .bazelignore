@@ -9,3 +9,4 @@ tests/e2e/msys2
 tests/e2e/python
 tests/e2e/native
 tests/e2e/java
+tests/e2e/go

@@ -219,6 +219,19 @@ RunResult OverlayTest::RunOverlay(const std::wstring& ws,
     return RunArgs(args);
 }
 
+RunResult OverlayTest::RunOverlayWithWritable(const std::wstring& ws,
+                                              const std::vector<std::wstring>& writableOutputs,
+                                              const std::vector<std::wstring>& toolCmd) {
+    std::vector<std::wstring> args = {L"--write-overlay", L"-W", ws};
+    for (const auto& w : writableOutputs) {
+        args.push_back(L"-w");
+        args.push_back(w);
+    }
+    args.push_back(L"--");
+    for (const auto& a : toolCmd) args.push_back(a);
+    return RunArgs(args);
+}
+
 RunResult OverlayTest::RunFiltered(const std::wstring& ws,
                                    const std::vector<std::wstring>& declaredInputs,
                                    const std::vector<std::wstring>& toolCmd) {

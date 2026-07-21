@@ -315,6 +315,54 @@ TEST_F(EnforceTest, OverlayExistingFileInReadonlyDirConeReadOnly) {
     EXPECT_EQ("orig-input", ReadText(input));
 }
 
+// --- Declared outputs (-w) under --write-overlay ------------------------------
+// A DECLARED OUTPUT (-w) is how Bazel names the files/dirs an action is allowed
+// to produce; Bazel collects them from the real execroot after the action. So a
+// write to a -w path must NOT be redirected into the process-private overlay -
+// it must write THROUGH to the real disk. Mechanically, -w grants
+// Policy_AllowAll, which lacks the OverrideAllowWriteForExistingFiles bit that
+// ShouldRedirectToOverlay keys on, so its more-specific scope suppresses the
+// execroot cone's overlay redirect for that subtree. Undeclared writes elsewhere
+// in the cone still land in the overlay. These pin that split for both a -w FILE
+// and a -w DIRECTORY.
+
+// A -w FILE writes through to the real execroot (and the launcher pre-creates its
+// parent dirs, linux-sandbox parity), even under --write-overlay.
+TEST_F(EnforceTest, OverlayDeclaredOutputFileWritesThroughToRealDisk) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto out = Join(ws, L"outdir\\out.txt");  // nested: also exercises parent auto-create
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay", L"-w", out},
+                               {L"write", out}));
+    EXPECT_TRUE(Exists(out)) << "declared -w output was not written through to the real execroot";
+}
+
+// With the SAME manifest, an UNDECLARED sibling write (no -w) is still redirected
+// into the overlay - it must not appear on the real execroot. The contrast to the
+// test above: the -w bit is what selects write-through vs. redirect.
+TEST_F(EnforceTest, OverlayUndeclaredWriteAlongsideDeclaredOutputRedirected) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto out = Join(ws, L"outdir\\out.txt");
+    auto stray = Join(ws, L"stray.txt");  // undeclared
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay", L"-w", out},
+                               {L"write", stray}));
+    EXPECT_FALSE(Exists(stray)) << "undeclared write leaked onto the real execroot";
+}
+
+// A -w DIRECTORY is a cone: files written anywhere under it write through to the
+// real execroot, proving -w supports directories, not just individual files.
+TEST_F(EnforceTest, OverlayDeclaredOutputDirWritesThroughToRealDisk) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto dir = Join(ws, L"odir");
+    ASSERT_TRUE(CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS);
+    auto f = Join(dir, L"f.txt");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay", L"-w", dir},
+                               {L"write", f}));
+    EXPECT_TRUE(Exists(f)) << "write inside a declared -w output directory did not reach the real execroot";
+}
+
 // --- Composite-op redirect (mw-composite-ops) ---------------------------------
 TEST_F(EnforceTest, OverlayHardlink) {
     SetOverlayNames(L"");
