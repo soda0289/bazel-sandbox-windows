@@ -224,7 +224,6 @@ using std::make_unique;
 _locale_t g_invariantLocale;
 
 DWORD g_currentProcessId;
-PCWSTR g_currentProcessCommandLine = nullptr;
 
 FileAccessManifestFlag g_fileAccessManifestFlags;
 
@@ -492,10 +491,9 @@ InternalCreateDetouredProcess(
     DWORD creationFlags = dwCreationFlags;
     unsigned nRetryCount = 0;
 
-    bool disabledDetours = DisableDetours();
-    bool needsInjection = pInjector != nullptr && pInjector->IsValid() && !disabledDetours;
+    bool needsInjection = pInjector != nullptr && pInjector->IsValid();
 
-    if ((needsInjection || hJob != 0) && !disabledDetours)
+    if (needsInjection || hJob != 0)
     {
         creationFlags |= CREATE_SUSPENDED;
     }
@@ -776,7 +774,6 @@ static bool DllProcessAttach()
     }
 
     // Next, attach to (detour) each API function of interest.
-    if (!DisableDetours())
     {
 #pragma warning( push )
 #pragma warning( disable : 5039)
@@ -902,11 +899,8 @@ static bool DllProcessAttach()
 
             ATTACH(CreatePipe);
 
-            if (!IgnoreGetFinalPathNameByHandle())
-            {
-                ATTACH(GetFinalPathNameByHandleW);
-                ATTACH(GetFinalPathNameByHandleA);
-            }
+            ATTACH(GetFinalPathNameByHandleW);
+            ATTACH(GetFinalPathNameByHandleA);
 
             if (!IgnoreDeviceIoControlGetReparsePoint())
             {
@@ -955,7 +949,6 @@ static bool DllProcessAttach()
     // entry point, which it does (all of DllProcessAttach completes first).
     bazelsandbox::InitializeAndAttachNetworkDetours();
 
-    if (!IgnorePreloadedDlls())
     {
         HMODULE hMods[1024];
         HANDLE hProcess;

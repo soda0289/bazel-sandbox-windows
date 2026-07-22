@@ -33,35 +33,34 @@
     m(None,                               0x0)            \
     m(BreakOnAccessDenied,                0x1)            \
     m(FailUnexpectedFileAccesses,         0x2)            \
-    m(DiagnosticMessagesEnabled,          0x4)            \
+    /* 0x4 (DiagnosticMessagesEnabled) removed: never set.                 */ \
     m(ReportAllFileAccesses,              0x8)            \
     m(ReportAllFileUnexpectedAccesses,    0x10)           \
     m(MonitorNtCreateFile,                0x20)           \
     m(MonitorChildProcesses,              0x40)           \
-    m(IgnoreCodeCoverage,                 0x80)           \
+    /* 0x80 (IgnoreCodeCoverage) removed: never set.                       */ \
     m(ReportProcessArgs,                  0x100)          \
     /* 0x200 (ForceReadOnlyForRequestedReadWrite) removed: never set.      */ \
     m(IgnoreReparsePoints,                0x400)          \
-    m(IgnoreZwRenameFileInformation,      0x1000)         \
-    m(IgnoreSetFileInformationByHandle,   0x2000)         \
+    /* 0x1000 (IgnoreZwRenameFileInformation) and 0x2000                   */ \
+    /* (IgnoreSetFileInformationByHandle) removed: never set.              */ \
     /* 0x4000 (UseLargeNtClosePreallocatedList) and 0x8000                 */ \
     /* (UseExtraThreadToDrainNtClose) removed: this launcher never set     */ \
     /* them, so the deferred-NtClose drain subsystem was dead.             */ \
-    m(DisableDetours,                     0x10000)        \
+    /* 0x10000 (DisableDetours) removed: never set.                        */ \
     /* 0x20000 (LogProcessData) removed: never set; the private-heap       */ \
     /* memory-stats accounting it gated was dead.                          */ \
-    m(IgnoreGetFinalPathNameByHandle,     0x40000)        \
+    /* 0x40000 (IgnoreGetFinalPathNameByHandle) removed: never set.        */ \
     m(LogProcessDetouringStatus,          0x80000)        \
-    m(HardExitOnErrorInDetours,           0x100000)       \
+    /* 0x100000 (HardExitOnErrorInDetours) removed: never set.             */ \
     m(CheckDetoursMessageCount,           0x200000)       \
-    m(IgnoreZwOtherFileInformation,       0x400000)       \
+    /* 0x400000 (IgnoreZwOtherFileInformation) removed: never set.         */ \
     m(MonitorZwCreateOpenQueryFile,       0x800000)       \
-    m(IgnoreNonCreateFileReparsePoints,   0x1000000)      \
-    m(IgnoreCreateProcessReport,          0x2000000)      \
-    m(UseLargeEnumerationBuffer,          0x4000000)      \
-    m(IgnorePreloadedDlls,                0x8000000)      \
-    m(DirectoryCreationAccessEnforcement, 0x10000000)     \
-    m(ProbeDirectorySymlinkAsDirectory,   0x20000000)     \
+    /* 0x1000000 (IgnoreNonCreateFileReparsePoints), 0x2000000             */ \
+    /* (IgnoreCreateProcessReport), 0x4000000 (UseLargeEnumerationBuffer), */ \
+    /* 0x8000000 (IgnorePreloadedDlls), 0x10000000                         */ \
+    /* (DirectoryCreationAccessEnforcement), 0x20000000                    */ \
+    /* (ProbeDirectorySymlinkAsDirectory) removed: never set.              */ \
     m(IgnoreFullReparsePointResolving,    0x40000000)
 
 //

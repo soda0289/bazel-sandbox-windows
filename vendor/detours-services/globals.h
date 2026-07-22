@@ -30,7 +30,6 @@ extern SpecialProcessKind  g_ProcessKind;
 extern HANDLE g_hPrivateHeap;
 
 extern DWORD g_currentProcessId;
-extern PCWSTR g_currentProcessCommandLine;
 
 extern FileAccessManifestFlag g_fileAccessManifestFlags;
 extern FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;

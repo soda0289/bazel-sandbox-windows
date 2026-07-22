@@ -376,18 +376,6 @@ bool GetSpecialCaseRulesForCoverageAndSpecialDevices(
     assert(absolutePath);
     assert(absolutePathLength == wcslen(absolutePath));
 
-    // When running test cases with Code Coverage enabled, some more files are loaded that we should ignore
-    if (IgnoreCodeCoverage()) {
-        if (HasSuffix(absolutePath, absolutePathLength, L".pdb") ||
-            HasSuffix(absolutePath, absolutePathLength, L".nls") ||
-            HasSuffix(absolutePath, absolutePathLength, L".dll"))
-        {
-            int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-            policy = (FileAccessPolicy)intPolicy;
-            return true;
-        }
-    }
-
     if (pathType == PathType::LocalDevice || pathType == PathType::Win32Nt) {
         bool maybeStartsWithDrive = absolutePathLength >= 2 && IsDriveLetter(absolutePath[0]) && absolutePath[1] == L':';
 
@@ -741,8 +729,6 @@ bool ParseFileAccessManifest(
     assert(payloadBytes != nullptr);
 
     g_currentProcessId = GetCurrentProcessId();
-
-    g_currentProcessCommandLine = GetCommandLine();
 
     g_lpDllNameX86 = NULL;
     g_lpDllNameX64 = NULL;

@@ -398,3 +398,30 @@ report-file append) is deliberately **retained**.
   `if (accessCheck.ShouldDenyAccess())`, and removed the no-op
   `desiredAccess = !forceReadOnly... ? desiredAccess : (...)` line. Removed the
   flag from FOR_ALL_FAM_FLAGS. Behavior-preserving. Build + 10/10 tests pass.
+- **Batch of never-set FAM-flag guard collapses + `g_currentProcessCommandLine`
+  removal** — collapsed every remaining branch gated on a FAM flag this launcher
+  never sets, then removed the now-unreferenced flags from `FOR_ALL_FAM_FLAGS`
+  (their generated `Check`/`Should` accessors go with them; reserved-gap comments
+  left). Flags removed (14): `DiagnosticMessagesEnabled` (0x4), `IgnoreCodeCoverage`
+  (0x80), `IgnoreZwRenameFileInformation` (0x1000), `IgnoreSetFileInformationByHandle`
+  (0x2000), `DisableDetours` (0x10000), `IgnoreGetFinalPathNameByHandle` (0x40000),
+  `HardExitOnErrorInDetours` (0x100000), `IgnoreZwOtherFileInformation` (0x400000),
+  `IgnoreNonCreateFileReparsePoints` (0x1000000), `IgnoreCreateProcessReport`
+  (0x2000000), `UseLargeEnumerationBuffer` (0x4000000), `IgnorePreloadedDlls`
+  (0x8000000), `DirectoryCreationAccessEnforcement` (0x10000000),
+  `ProbeDirectorySymlinkAsDirectory` (0x20000000). Site collapses:
+  `if (!DisableDetours())` / `if (!IgnorePreloadedDlls())` ATTACH-table and
+  preloaded-DLL blocks -> bare scopes; `if (!IgnoreGetFinalPathNameByHandle())`
+  ATTACH pair + the two `Detoured_GetFinalPathNameByHandle{A,W}` guards -> unwrapped;
+  the `!IgnoreZwRenameFileInformation()`/`!IgnoreZwOtherFileInformation()` switch
+  cases -> direct `return Handle...`; `!IgnoreNonCreateFileReparsePoints()` folded
+  into the live `!IgnoreReparsePoints()`; `!IgnoreCreateProcessReport()`,
+  `IgnoreSetFileInformationByHandle()`, `ProbeDirectorySymlinkAsDirectory()`,
+  `DirectoryCreationAccessEnforcement()` (ternary -> read-only probe), and the five
+  `ShouldUseLargeEnumerationBuffer()` large-fetch/large-buffer blocks -> removed.
+  Also removed `IgnoreCodeCoverage`, `HardExitOnErrorInDetours`, and
+  `DiagnosticMessagesEnabled` guard blocks in DetoursHelpers/DebuggingHelpers.
+  Finally removed `g_currentProcessCommandLine` (definition + extern + the
+  `GetCommandLine()` assignment + its SendReport buffer-sizing use): the args
+  reporting path that once read it was already gone, so it only over-sized the
+  report buffer and never appeared in output. Build + 10/10 tests pass.

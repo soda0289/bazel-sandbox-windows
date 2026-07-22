@@ -168,3 +168,17 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
 - 2026-07-22: **Phase 2 started (globals audit).** Removed write-only
   `g_FileAccessManifestPipId` and its `ManifestPipId` wire block (builder +
   parser + struct, in lockstep). Build + 10/10.
+- 2026-07-22: also removed write-only `g_manifestSize`. Kept `g_currentProcessId`
+  (live) + `g_BreakOnAccessDenied` (debug aid).
+- 2026-07-22: **Phase 3 (FAM flags).** Removed dead deferred-NtClose overlay-drain
+  subsystem + `LogProcessData` memory-stats (dropped `LogProcessData`,
+  `UseExtraThreadToDrainNtClose`, `UseLargeNtClosePreallocatedList`). Collapsed
+  never-set `ForceReadOnlyForRequestedReadWrite` triple. Then a batch of the
+  remaining never-set guards (`DisableDetours`, `IgnorePreloadedDlls`,
+  `IgnoreGetFinalPathNameByHandle`, `IgnoreZwRename/OtherFileInformation`,
+  `IgnoreNonCreateFileReparsePoints`, `IgnoreCreateProcessReport`,
+  `IgnoreSetFileInformationByHandle`, `ProbeDirectorySymlinkAsDirectory`,
+  `DirectoryCreationAccessEnforcement`, `UseLargeEnumerationBuffer`,
+  `IgnoreCodeCoverage`, `HardExitOnErrorInDetours`, `DiagnosticMessagesEnabled`)
+  removed and dropped from `FOR_ALL_FAM_FLAGS`; also removed vestigial
+  `g_currentProcessCommandLine`. Build + 10/10 after each group.

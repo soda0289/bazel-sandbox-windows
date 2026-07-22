@@ -144,14 +144,9 @@ void ReportFileAccess(
         filterStr = filter;
     }
 
-    if (g_currentProcessCommandLine == nullptr) {
-        g_currentProcessCommandLine = L"";
-    }
-
     size_t filterLength = wcslen(filterStr); // in characters
-    size_t fileProcessCommandLineLength = wcslen(g_currentProcessCommandLine); // in characters
     size_t operationLen = wcslen(fileOperationContext.Operation); // in characters
-    size_t reportBufferSize = fileNameLength + filterLength + fileProcessCommandLineLength + operationLen + 124; // in characters
+    size_t reportBufferSize = fileNameLength + filterLength + operationLen + 124; // in characters
 
     // Adding 124 should be enough for now since the max values for the members of the message are:
     // buildxl::common::ReportType::kFileAccess - 1 char
@@ -171,7 +166,6 @@ void ReportFileAccess(
     // filename separately added
     // filterStr separately added
     // fileOrDirectoryAttribute - 8 chars
-    // g_currentProcessCommandLine - separately added
     // 15 chars for | chars
     // 5 chars for ',', ':', '\r', '\n', '\0' chars
     // Total : 128 characters.
@@ -179,66 +173,27 @@ void ReportFileAccess(
     unique_ptr<wchar_t[]> report(new wchar_t[reportBufferSize]);
     assert(report.get());
 
-    // Only report the process command line args when the C# code has requested it and when the file operation context is "Process"
-    // This way we only transmit the command line arguments once
-    int constructReportResult = -1;
-    if (ReportProcessArgs() && !_wcsicmp(fileOperationContext.Operation, L"Process")) {
-        // The command line arguments may contain the | (pipe) character - the same character that is used here as a field separator.
-        // It is important to keep the command line arguments last in this string because the C# code will 
-        // check how many | chars the string contains and if there are more fields than expected, it will assume that  
-        // everything after the last expected (13th) field is part of the command line arguments.
-        //
-        // The command line can contain newline characters. In the C# code our pipe reader performs read line, and thus it can read part of
-        // the command line. Thus, the command line needs to be sanitized. This is OK because no further consumer should rely on the exact
-        // form of the command line. Here, newline characters are simply replaced with space. Replacing it with space is fine because
-        // it won't change the length of the string, and thus no need to resize the report buffer.
-        std::wstring commandLine(g_currentProcessCommandLine);
-        std::replace(commandLine.begin(), commandLine.end(), L'\r', L' ');
-        std::replace(commandLine.begin(), commandLine.end(), L'\n', L' ');
-
-        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s|%s\r\n",
-            buildxl::common::ReportType::kFileAccess,
-            fileOperationContext.Operation,
-            g_currentProcessId,
-            fileOperationContext.Id,
-            fileOperationContext.CorrelationId,
-            accessCheckResult.Access,
-            status,
-            (int)(accessCheckResult.Level == ReportLevel::ReportExplicit),
-            error,
-            rawError,
-            fileOperationContext.DesiredAccess,
-            fileOperationContext.ShareMode,
-            fileOperationContext.CreationDisposition,
-            fileOperationContext.FlagsAndAttributes,
-            fileOperationContext.OpenedFileOrDirectoryAttributes,
-            policyResult.IsIndeterminate() ? 0 : policyResult.GetPathId(),
-            fileName,
-            filterStr,
-            commandLine.c_str());
-    }
-    else
-    {
-        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s\r\n",
-            buildxl::common::ReportType::kFileAccess,
-            fileOperationContext.Operation,
-            g_currentProcessId,
-            fileOperationContext.Id,
-            fileOperationContext.CorrelationId,
-            accessCheckResult.Access,
-            status,
-            (int)(accessCheckResult.Level == ReportLevel::ReportExplicit),
-            error,
-            rawError,
-            fileOperationContext.DesiredAccess,
-            fileOperationContext.ShareMode,
-            fileOperationContext.CreationDisposition,
-            fileOperationContext.FlagsAndAttributes,
-            fileOperationContext.OpenedFileOrDirectoryAttributes,
-            policyResult.IsIndeterminate() ? 0 : policyResult.GetPathId(),
-            fileName,
-            filterStr);
-    }
+    // The process command-line-args reporting path (ReportProcessArgs) was removed
+    // as dead: this launcher never sets that flag.
+    int constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s\r\n",
+        buildxl::common::ReportType::kFileAccess,
+        fileOperationContext.Operation,
+        g_currentProcessId,
+        fileOperationContext.Id,
+        fileOperationContext.CorrelationId,
+        accessCheckResult.Access,
+        status,
+        (int)(accessCheckResult.Level == ReportLevel::ReportExplicit),
+        error,
+        rawError,
+        fileOperationContext.DesiredAccess,
+        fileOperationContext.ShareMode,
+        fileOperationContext.CreationDisposition,
+        fileOperationContext.FlagsAndAttributes,
+        fileOperationContext.OpenedFileOrDirectoryAttributes,
+        policyResult.IsIndeterminate() ? 0 : policyResult.GetPathId(),
+        fileName,
+        filterStr);
 
     if (constructReportResult <= 0)
     {

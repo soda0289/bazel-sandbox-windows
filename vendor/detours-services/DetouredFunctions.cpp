@@ -989,9 +989,7 @@ static bool ShouldTreatDirectoryReparsePointAsFile(
     return !IgnoreFullReparsePointResolvingForPath(policyResult)            // Full reparse point resolving is enabled,
         && (FlagsAndAttributesContainReparsePointFlag(dwFlagsAndAttributes) // and open attribute contains reparse point flag,
             || WantsWriteAccess(dwDesiredAccess))                           //   or write access is requested,
-        && !policyResult.TreatDirectorySymlinkAsDirectory()                 // and policy does not mandate directory symlink to be treated as directory
-        && (!WantsProbeOnlyAccess(dwDesiredAccess)                          // and either it is not a probe access,
-            || !ProbeDirectorySymlinkAsDirectory());                        //   or it is set globally that directory symlink probe should not be treated as directory.
+        && !policyResult.TreatDirectorySymlinkAsDirectory();               // and policy does not mandate directory symlink to be treated as directory
 }
 
 /// <summary>
@@ -1564,7 +1562,7 @@ static bool EnforceChainOfReparsePointAccessesForNonCreateFile(
     const bool enforceAccess = true,
     const bool isCreateDirectory = false)
 {
-    if (!IgnoreNonCreateFileReparsePoints() && !IgnoreReparsePoints())
+    if (!IgnoreReparsePoints())
     {
         CanonicalizedPath canonicalPath = CanonicalizedPath::Canonicalize(fileOperationContext.NoncanonicalPath);
 
@@ -2741,37 +2739,17 @@ NTSTATUS NTAPI Detoured_ZwSetInformationFile(
     case FILE_INFORMATION_CLASS_EXTRA::FileRenameInformationEx:
     case FILE_INFORMATION_CLASS_EXTRA::FileRenameInformationBypassAccessCheck:
     case FILE_INFORMATION_CLASS_EXTRA::FileRenameInformationExBypassAccessCheck:
-        if (!IgnoreZwRenameFileInformation())
-        {
-            return HandleFileRenameInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
-        }
-        break;
+        return HandleFileRenameInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
     case FILE_INFORMATION_CLASS_EXTRA::FileLinkInformation:
     case FILE_INFORMATION_CLASS_EXTRA::FileLinkInformationEx:
-        if (!IgnoreZwOtherFileInformation())
-        {
-            return HandleFileLinkInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass, fileInformationClassExtra == FILE_INFORMATION_CLASS_EXTRA::FileLinkInformationEx);
-        }
-        break;
+        return HandleFileLinkInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass, fileInformationClassExtra == FILE_INFORMATION_CLASS_EXTRA::FileLinkInformationEx);
     case FILE_INFORMATION_CLASS_EXTRA::FileDispositionInformation:
     case FILE_INFORMATION_CLASS_EXTRA::FileDispositionInformationEx:
-        if (!IgnoreZwOtherFileInformation())
-        {
-            return HandleFileDispositionInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
-        }
-        break;
+        return HandleFileDispositionInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
     case FILE_INFORMATION_CLASS_EXTRA::FileModeInformation:
-        if (!IgnoreZwOtherFileInformation())
-        {
-            return HandleFileModeInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
-        }
-        break;
+        return HandleFileModeInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
     case FILE_INFORMATION_CLASS_EXTRA::FileNameInformation:
-        if (!IgnoreZwOtherFileInformation())
-        {
-            return HandleFileNameInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
-        }
-        break;
+        return HandleFileNameInformation(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
     default:
         break;
         // Without the warning suppression below, some compilation flag can produce a warning because the cases aboe are not
@@ -2926,7 +2904,7 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
     LPCWSTR effectiveApplicationName = lpApplicationName;
     std::wstring overlayImagePath;
 
-    if (!imagePath.IsNull() && !IgnoreCreateProcessReport())
+    if (!imagePath.IsNull())
     {
         if (!policyResult.Initialize(imagePath.GetPathString()))
         {
@@ -5791,11 +5769,6 @@ HANDLE WINAPI Detoured_FindFirstFileExW(
     __reserved LPVOID             lpSearchFilter,
     _In_       DWORD              dwAdditionalFlags)
 {
-    if (ShouldUseLargeEnumerationBuffer())
-    {
-        dwAdditionalFlags |= FIND_FIRST_EX_LARGE_FETCH;
-    }
-
     DetouredScope scope;
     if (scope.Detoured_IsDisabled() ||
         IsNullOrEmptyW(lpFileName) ||
@@ -5827,11 +5800,6 @@ HANDLE WINAPI Detoured_FindFirstFileExA(
 {
     // TODO: Note that we can't simply forward to FindFirstFileW here after a unicode conversion.
     // The output value differs too - WIN32_FIND_DATA{A, W}
-
-    if (ShouldUseLargeEnumerationBuffer())
-    {
-        dwAdditionalFlags |= FIND_FIRST_EX_LARGE_FETCH;
-    }
 
     return Real_FindFirstFileExA(
         lpFileName,
@@ -6350,7 +6318,7 @@ BOOL WINAPI Detoured_SetFileInformationByHandle(
         FileInformationClass == FILE_INFO_BY_HANDLE_CLASS::FileRenameInfo
         || FileInformationClass == FILE_INFO_BY_HANDLE_CLASS::FileRenameInfoEx;
 
-    if ((!isDisposition && !isRename) || IgnoreSetFileInformationByHandle())
+    if (!isDisposition && !isRename)
     {
 
         // We ignore the use of SetFileInformationByHandle when it is not file renaming or file deletion.
@@ -6542,10 +6510,9 @@ static AccessCheckResult CreateDirectoryAsSafeProbe(FileOperationContext& opCont
     // If we are checking all CreateDirectory calls, just reuse the writeAccessCheck we already have.
     // This will result in blocking CreateDirectory (i.e., returning ERROR_ACCESS_DENIED) if a directory already exists
     // and writeAccessCheck.ResultAction == ResultAction::Deny.
-    AccessCheckResult probeAccessCheck = DirectoryCreationAccessEnforcement()
-        ? writeAccessCheck
-        // otherwise, create a read-only probe
-        : policyResult.CheckReadAccess(RequestedReadAccess::Probe, probeContext);
+    AccessCheckResult probeAccessCheck =
+        // read-only probe
+        policyResult.CheckReadAccess(RequestedReadAccess::Probe, probeContext);
 
     if (probeContext.Existence != FileExistence::Existent && probeError == ERROR_FILE_NOT_FOUND)
     {
@@ -6948,7 +6915,7 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleA(
     {
         DetouredScope scope;
 
-        if (scope.Detoured_IsDisabled() || IgnoreGetFinalPathNameByHandle())
+        if (scope.Detoured_IsDisabled())
         {
             return Real_GetFinalPathNameByHandleA(hFile, lpszFilePath, cchFilePath, dwFlags);
         }
@@ -7012,7 +6979,7 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
 {
     DetouredScope scope;
 
-    if (scope.Detoured_IsDisabled() || IgnoreGetFinalPathNameByHandle())
+    if (scope.Detoured_IsDisabled())
     {
         return Real_GetFinalPathNameByHandleW(hFile, lpszFilePath, cchFilePath, dwFlags);
     }
@@ -7163,15 +7130,6 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
 
     PVOID buffer = FileInformation;
     ULONG bufferSize = Length;
-    std::unique_ptr<char[]> largerBuffer;
-
-    if (ShouldUseLargeEnumerationBuffer() && Length < NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE)
-    {
-        largerBuffer = std::make_unique<char[]>(NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE);
-        buffer = largerBuffer.get();
-        bufferSize = NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE;
-    }
-
     NTSTATUS result = Real_NtQueryDirectoryFile(
         FileHandle,
         Event,
@@ -7339,15 +7297,6 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
 
     PVOID buffer = FileInformation;
     ULONG bufferSize = Length;
-    std::unique_ptr<char[]> largerBuffer;
-
-    if (ShouldUseLargeEnumerationBuffer() && Length < NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE)
-    {
-        largerBuffer = std::make_unique<char[]>(NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE);
-        buffer = largerBuffer.get();
-        bufferSize = NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE;
-    }
-
     NTSTATUS result = Real_ZwQueryDirectoryFile(
         FileHandle,
         Event,
@@ -7517,15 +7466,6 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFileEx(
 
     PVOID buffer = FileInformation;
     ULONG bufferSize = Length;
-    std::unique_ptr<char[]> largerBuffer;
-
-    if (ShouldUseLargeEnumerationBuffer() && Length < NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE)
-    {
-        largerBuffer = std::make_unique<char[]>(NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE);
-        buffer = largerBuffer.get();
-        bufferSize = NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE;
-    }
-
     NTSTATUS result = Real_NtQueryDirectoryFileEx(
         FileHandle,
         Event,

@@ -75,30 +75,6 @@ void DebuggerOutputDebugString(PCWSTR text, bool shouldBreak)
 static void WriteMessage(PCWSTR text)
 {
     DebuggerOutputDebugString(text, false);
-
-    // We are going to write to STD_ERROR_HANDLE here, so we have to ensure that what we are going to write is not WCHAR.
-    // Technically it isn't ANSI here, we should use the current console code page as the encoding (which can be done via CP_ACP), however, 
-    // previously it looks like we assume the console is UTF8 encoding (which it probably is not - normal windows installs use 437 by default), 
-    // it just so happens that most characters are the same between those two encodings which probably makes things work
-    std::string ansiBuffer;
-    DWORD ansiLength = (DWORD) WideCharToMultiByte(CP_ACP, 0, text, -1, NULL, 0, NULL, NULL);
-    ansiBuffer.resize(ansiLength);
-    DWORD ansiLength2 = (DWORD) WideCharToMultiByte(CP_ACP, 0, text, -1, const_cast<char*>(ansiBuffer.c_str()), (int) ansiLength, NULL, NULL);
-    assert(ansiLength == ansiLength2);
-
-
-    if ((g_fileAccessManifestFlags & FileAccessManifestFlag::DiagnosticMessagesEnabled) != FileAccessManifestFlag::None) {
-        HANDLE stderrHandle = GetStdHandle(STD_ERROR_HANDLE);
-        DWORD bytesTransferred;
-        DWORD lastError = GetLastError();
-        if (!WriteFile(stderrHandle, ansiBuffer.c_str(), (DWORD) ansiBuffer.length(), &bytesTransferred, NULL)) {
-            DWORD error = GetLastError();
-            std::wstring errorMsg = DebugStringFormat(L"WriteMessage: Failed to write to stderr (error code: 0x%08X)", (int)error);
-            HandleDetoursInjectionAndCommunicationErrors(DETOURS_PIPE_WRITE_ERROR_1, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_1);
-        }
-
-        SetLastError(lastError);
-    }
 }
 
 // ----------------------------------------------------------------------------
@@ -118,10 +94,7 @@ void HandleDetoursInjectionAndCommunicationErrors(int errorCode, LPCWSTR eventLo
     WriteToInternalErrorsFile(L"%s\r\n", messageWithExitCode.c_str());
     LogEventLogMessage(messageWithExitCode, EVENTLOG_ERROR_TYPE, EVENTLOG_ERROR_TYPE_ID, eventLogMsgId);
 
-    if (hardExitOnErrorIfEnabled && HardExitOnErrorInDetours())
-    {
-        exit(errorCode);
-    }
+    UNREFERENCED_PARAMETER(hardExitOnErrorIfEnabled);
 }
 
 void Dbg(PCWSTR format, ...)
