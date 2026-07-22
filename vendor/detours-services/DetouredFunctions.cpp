@@ -397,9 +397,6 @@ static bool TryGetReparsePointTarget(_In_ const wstring& path, _In_ HANDLE hInpu
     if (io_result.Found)
     {
 
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-        InterlockedIncrement(&g_reparsePointTargetCacheHitCount);
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT
 
         target = io_result.Value.first;
         reparsePointType = io_result.Value.second;
@@ -522,9 +519,6 @@ static bool ShouldResolveReparsePointsInPath(
     auto result = PathCache_GetResolvingCheckResult(path.GetPathStringWithoutTypePrefix(), policyResult);
     if (result.Found)
     {
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-        InterlockedIncrement(&g_shouldResolveReparsePointCacheHitCount);
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT
         return result.Value;
     }
 
@@ -1519,9 +1513,6 @@ static bool EnforceChainOfReparsePointAccesses(
         resolvedLookUpTable = cachedEntries.Value.second;
     }
 
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-    InterlockedIncrement(&g_resolvedPathsCacheHitCout);
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT
 
     bool success = true;
     auto contextOperationName = cached ? L"ReparsePointTargetCached" : L"ReparsePointTarget";
@@ -8967,9 +8958,6 @@ BOOL WINAPI Detoured_GetFileInformationByName(
 IMPLEMENTED(Detoured_NtClose)
 NTSTATUS NTAPI Detoured_NtClose(_In_ HANDLE handle)
 {
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    InterlockedIncrement(&g_ntCloseHandeCount);
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
 
     // NtClose can be called in some surprising circumstances.
     // One that has arisen is in some particular exception handling stacks,

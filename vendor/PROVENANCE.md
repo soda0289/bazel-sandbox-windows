@@ -274,6 +274,25 @@ Removals made after the baseline tag (each verified with a full build +
   reserved gap). No wire-format size change. Sandboxed children now observe
   files' real timestamps. Build + 10/10 tests pass.
 
+- **Compiled-out preprocessor branches (`DetoursServices.cpp` + companions)** —
+  our build defines only `DETOURS_SERVICES_NATIVES_LIBRARY` (see
+  `vendor/BUILD.bazel`), never `BUILDXL_NATIVES_LIBRARY` and never the
+  perf-instrumentation switches `MEASURE_DETOURED_NT_CLOSE_IMPACT` /
+  `MEASURE_REPARSEPOINT_RESOLVING_IMPACT` (both `#define`d to `0`). Those
+  branches were therefore dead. In `DetoursServices.cpp`: unwrapped the
+  always-true `#ifdef DETOURS_SERVICES_NATIVES_LIBRARY` guards around
+  `DllProcessAttach`/`DllProcessDetach`/`DllMain`, deleted the `#elif
+  defined(BUILDXL_NATIVES_LIBRARY)` alternative bodies + the `#else #error`, the
+  `MEASURE_*` global-counter definitions and their update/print blocks, and the
+  standalone `#ifdef BUILDXL_NATIVES_LIBRARY` block (`IsDetoursDebug` +
+  `CreateDetachedProcess`, ~85 lines). Stripped the matching `MEASURE_*` blocks
+  in `HandleOverlay.cpp`, `DetouredFunctions.cpp`, and the `extern` decls +
+  `#define ... 0` switches in `globals.h`; removed the now-defunct
+  `IsDetoursDebug` decl from `DetoursServices.h`. Pure compiled-out removal — no
+  behavior change; build + 10/10 tests pass. (One `#ifdef
+  BUILDXL_NATIVES_LIBRARY` block remains in `DebuggingHelpers.cpp`, handled
+  separately.)
+
 The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 `LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert
 definitions so the manifest flag layout is unchanged. The `--trace`

@@ -33,7 +33,14 @@ The vendored sources can compile into two different DLLs, selected by a macro
   objects, path-translation tables, private heap). **We never define this**, so
   every `#ifdef BUILDXL_NATIVES_LIBRARY` block is dead code for us. (This is why
   the now-removed `DeviceMap.cpp` was only ever no-op stubs here — its real body
-  lived in the `BUILDXL_NATIVES`-only branch.)
+  lived in the `BUILDXL_NATIVES`-only branch.) Most of these dead branches — and
+  the always-true `DETOURS_SERVICES_NATIVES_LIBRARY` guards around them in
+  `DetoursServices.cpp` — have since been **removed post-fork** (the guards
+  unwrapped, the `#elif BUILDXL_NATIVES_LIBRARY` / `#else #error` bodies
+  deleted); a couple of `#ifdef BUILDXL_NATIVES_LIBRARY` blocks may still remain
+  in smaller helpers. Likewise the perf-instrumentation switches
+  `MEASURE_DETOURED_NT_CLOSE_IMPACT` / `MEASURE_REPARSEPOINT_RESOLVING_IMPACT`
+  (both `#define`d to `0`) and their `#if MEASURE_*` counter blocks were removed.
 
 ## 3. Translation units by role
 
@@ -47,7 +54,7 @@ The vendored sources can compile into two different DLLs, selected by a macro
 | **Reporting** (inert for us, see §5) | `SendReport.cpp`, `DebuggingHelpers.cpp` |
 | **Support** | `DetouredScope.cpp`, `HandleOverlay.cpp`, `MetadataOverrides.cpp`, `FilesCheckedForAccess.cpp`, header-only `ResolvedPathCache.h`, `UnicodeConverter.h`, `UniqueHandle.h`, `UtilityHelpers.h`, `buildXL_mem.h`, `Assertions.cpp` |
 | **Child process handling** | `DetouredProcessInjector.cpp` |
-| **Inert in our build** | all `BUILDXL_NATIVES_LIBRARY` blocks |
+| **Inert in our build** | remaining `BUILDXL_NATIVES_LIBRARY` blocks (mostly removed post-fork) |
 
 ## 4. The `DetoursServices` ↔ `DetouredFunctions` contract
 

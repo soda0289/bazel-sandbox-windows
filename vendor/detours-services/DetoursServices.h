@@ -84,10 +84,6 @@ CreateDetouredProcess(
     HANDLE* phProcess, HANDLE* phThread, DWORD* pdwProcessId
 );
 
-bool
-WINAPI
-IsDetoursDebug();
-
 void LogEventLogMessage(const std::wstring& a_msg,
     const WORD a_type,
     const WORD eventId,

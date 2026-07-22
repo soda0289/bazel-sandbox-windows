@@ -105,9 +105,6 @@ struct HandleOverlayLockGuard {
 
 static void PopulateNtCloseListPool()
 {
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-   ULONGLONG startTime = GetTickCount64();
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
     unsigned allocationSize = CLOSED_HANDLES_POOL_ENTRIES;
     if (UseLargeNtClosePreallocatedList())
     {
@@ -131,10 +128,6 @@ static void PopulateNtCloseListPool()
             InterlockedIncrement(&g_detoursAllocatedNoLockConcurentPoolEntries);
         }
     }
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    ULONGLONG endTime = GetTickCount64();
-    InterlockedExchangeAdd(&g_msTimeToPopulatePoolList, (LONG)(endTime - startTime));
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
 
 }
 
@@ -282,9 +275,6 @@ void CloseHandleOverlay(HANDLE handle, bool inRecursion) {
 void AddClosedHandle(HANDLE handle) {
     // Be safe and check all the list pointers as well since a NtClose (where this method is called from)
     // can come very early in the execution of a process.
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    ULONGLONG startAdd = GetTickCount64();
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
     // Cleaup any pending NtClose handles, if the remaining unused are less than NT_CLOSE_CLEANUP_THRESHOLD
     if ((g_detoursAllocatedNoLockConcurentPoolEntries - g_usedPoolEntries) < NT_CLOSE_CLEANUP_THRESHOLD)
     {
@@ -308,19 +298,11 @@ void AddClosedHandle(HANDLE handle) {
             InterlockedIncrement(&g_usedPoolEntries);
         }
     }
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    InterlockedIncrement(&g_maxClosedListCount);
-    ULONGLONG endAdd = GetTickCount64();
-    InterlockedExchangeAdd(&g_msTimeInAddClosedList, (LONG)(endAdd - startAdd));
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
 }
 
 // Note: It is potentially possible to call these method while an entry is added to the non-locking list.
 // In such case the entry will be removed from the overlay map on the next iteration.
 void RemoveClosedHandles() {
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    ULONGLONG startAdd = GetTickCount64();
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
     if (g_initialized && g_pClosedHandles != nullptr && g_pClosedHandlesPool != nullptr) {
         PSLIST_ENTRY pEntry = InterlockedPopEntrySList(g_pClosedHandles);
         while (pEntry != NULL)
@@ -330,9 +312,6 @@ void RemoveClosedHandles() {
             InterlockedPushEntrySList(g_pClosedHandlesPool, &(((PHANDLE_TO_CLOSE)pEntry)->ItemEntry));
             pEntry = InterlockedPopEntrySList(g_pClosedHandles);
             InterlockedDecrement(&g_usedPoolEntries);
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-            InterlockedDecrement(&g_maxClosedListCount);
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT        
         }
 
         // Grow the list if needed.
@@ -341,8 +320,4 @@ void RemoveClosedHandles() {
             PopulateNtCloseListPool();
         }
     }
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    ULONGLONG endAdd = GetTickCount64();
-    InterlockedExchangeAdd(&g_msTimeInRemoveClosedList, (LONG)(endAdd - startAdd));
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
 }

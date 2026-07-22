@@ -17,8 +17,6 @@ using std::vector;
 // ----------------------------------------------------------------------------
 
 #define SUPER_VERBOSE 0
-#define MEASURE_DETOURED_NT_CLOSE_IMPACT 0
-#define MEASURE_REPARSEPOINT_RESOLVING_IMPACT 0
 #define ENABLE_TRACE_LOGGING 0
 
 // ----------------------------------------------------------------------------
@@ -181,17 +179,4 @@ extern ZwSetInformationFile_t Real_ZwSetInformationFile;
 extern CreatePipe_t Real_CreatePipe;
 extern DeviceIoControl_t Real_DeviceIoControl;
 
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-extern volatile LONG g_msTimeToPopulatePoolList;
-extern volatile ULONGLONG g_pipExecutionStart;
-extern volatile LONG g_ntCloseHandeCount;
-extern volatile LONG g_maxClosedListCount;
-extern volatile LONG g_msTimeInAddClosedList;
-extern volatile LONG g_msTimeInRemoveClosedList;
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
 
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-extern volatile ULONGLONG g_shouldResolveReparsePointCacheHitCount;
-extern volatile ULONGLONG g_reparsePointTargetCacheHitCount;
-extern volatile ULONGLONG g_resolvedPathsCacheHitCout;
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT

@@ -72,21 +72,6 @@ extern "C" {
         _In_  ULONG              OpenOptions);
 }
 
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-volatile LONG g_msTimeToPopulatePoolList = 0;
-volatile ULONGLONG g_pipExecutionStart = 0;
-volatile LONG g_ntCloseHandeCount = 0;
-volatile LONG g_maxClosedListCount = 0;
-volatile LONG g_msTimeInAddClosedList = 0;
-volatile LONG g_msTimeInRemoveClosedList = 0;
-#endif // #if MEASURE_DETOURED_NT_CLOSE_IMPACT
-
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-volatile ULONGLONG g_shouldResolveReparsePointCacheHitCount;
-volatile ULONGLONG g_reparsePointTargetCacheHitCount;
-volatile ULONGLONG g_resolvedPathsCacheHitCout;
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-
 
 extern "C" {
     NTSTATUS NTAPI NtQueryDirectoryFile(
@@ -940,72 +925,11 @@ static int __cdecl CrtDebugHook(int nReportType, wchar_t* szMsg, int* pnRet) {
 }
 #pragma warning( pop )
 
-#ifdef DETOURS_SERVICES_NATIVES_LIBRARY
-
 static bool DllProcessDetach()
 {
     TraceLoggingUnregister(g_detoursServicesTraceProvider);
-
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    // Do some statistical information logging for different measurements
-    Dbg(L"Populate NtClose pool list entries time: %d ms.", g_msTimeToPopulatePoolList);
-    Dbg(L"Pip execution time: %d ms.", (LONG)(GetTickCount64() - g_pipExecutionStart));
-    Dbg(L"NtCloseHandle call times: %d", g_ntCloseHandeCount);
-    Dbg(L"Maxinum closed list count: %d", g_maxClosedListCount);
-    Dbg(L"Time adding to closed list: %d ms.", g_msTimeInAddClosedList);
-    Dbg(L"Time removing from closed list: %d ms.", g_msTimeInRemoveClosedList);
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
-
-#if MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-    if (!IgnoreFullReparsePointResolving())
-    {
-        Dbg(L"Intial resolver result cache hit count for PID(%d) and PPID(%d): %ld", g_shouldResolveReparsePointCacheHitCount, g_currentProcessId, g_parentProcessId);
-    }
-    Dbg(L"ReparsePoint target resolver cache hit count for PID(%d) and PPID(%d): %ld", g_reparsePointTargetCacheHitCount, g_currentProcessId, g_parentProcessId);
-    Dbg(L"Resolved paths cache hit count for PID(%d) and PPID(%d): %ld", g_resolvedPathsCacheHitCout, g_currentProcessId, g_parentProcessId);
-#endif // MEASURE_REPARSEPOINT_RESOLVING_IMPACT
-
     return TRUE;
 }
-
-#elif defined(BUILDXL_NATIVES_LIBRARY) 
-static bool DllProcessDetach()
-{
-    if (g_manifestChildProcessesToBreakAwayFromJob != nullptr)
-    {
-        delete g_manifestChildProcessesToBreakAwayFromJob;
-    }
-
-    if (g_breakawayChildProcesses != nullptr)
-    {
-        delete g_breakawayChildProcesses;
-    }
-
-    if (g_pManifestTranslatePathTuples != nullptr)
-    {
-        delete g_pManifestTranslatePathTuples;
-    }
-
-    if (g_pManifestTranslatePathLookupTable != nullptr)
-    {
-        delete g_pManifestTranslatePathLookupTable;
-    }
-
-    if (g_pDetouredProcessInjector != nullptr)
-    {
-        delete g_pDetouredProcessInjector;
-    }
-
-    if (g_hPrivateHeap != nullptr)
-    {
-        HeapDestroy(g_hPrivateHeap);
-    }
-
-    return true;
-}
-#else
-#error BUILDXL_NATIVES_LIBRARY or DETOURS_SERVICES_NATIVES_LIBRARY must be defined.
-#endif // DETOURS_SERVICES_NATIVES_LIBRARY
 
 /*
 
@@ -1037,17 +961,12 @@ to fail to load. This is the desired behavior. If the file access APIs cannot be
 then the process cannot execute with the desired behavior (of enforcing file access).
 
 */
-#ifdef DETOURS_SERVICES_NATIVES_LIBRARY
 
 // Flipped to true when DllProcessAttach has completed for the Detouring case.
 bool g_isAttached = false;
 
 static bool DllProcessAttach()
 {
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-    g_pipExecutionStart = GetTickCount64();
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
-
     // One-time init for the Detours library.
     DetourInit();
 
@@ -1349,26 +1268,6 @@ static bool DllProcessAttach()
 
     return true;
 }
-#elif defined(BUILDXL_NATIVES_LIBRARY) 
-static bool DllProcessAttach()
-{
-    g_hPrivateHeap = HeapCreate(0, 40960, 0); // Commit initially 40k of memory for the private heap.
-    if (g_hPrivateHeap == nullptr)
-    {
-        Dbg(L"Failure creating private heap. Last Error: %d", (int)GetLastError());
-        return false;
-    }
-
-    g_breakawayChildProcesses = new vector<BreakawayChildProcess>();
-    g_pManifestTranslatePathTuples = new vector<TranslatePathTuple*>();
-    g_pManifestTranslatePathLookupTable = new unordered_set<std::wstring>();
-    g_pDetouredProcessInjector = new DetouredProcessInjector(g_manifestGuid);
-
-    return true;
-}
-#else
-#error BUILDXL_NATIVES_LIBRARY or DETOURS_SERVICES_NATIVES_LIBRARY must be defined.
-#endif // DETOURS_SERVICES_NATIVES_LIBRARY
 
 
 #pragma warning( disable : 4100)
@@ -1385,109 +1284,16 @@ DllMain(
         if (DllProcessAttach()) {
             return TRUE;
         }
-#ifdef DETOURS_SERVICES_NATIVES_LIBRARY
         DebuggerOutputDebugString(L"DllProcessAttach() failed.\r\n", true);
-#endif // DETOURS_SERVICES_NATIVES_LIBRARY
         return FALSE;
 
     case DLL_PROCESS_DETACH:
         if (DllProcessDetach()) {
             return TRUE;
         }
-#ifdef DETOURS_SERVICES_NATIVES_LIBRARY
-#if MEASURE_DETOURED_NT_CLOSE_IMPACT
-        DebuggerOutputDebugString(L"DllProcessAttach() failed.\r\n", true);
-#endif // MEASURE_DETOURED_NT_CLOSE_IMPACT
-#endif // DETOURS_SERVICES_NATIVES_LIBRARY
         return FALSE;
 
     default:
         return TRUE;
     }
 }
-
-#ifdef BUILDXL_NATIVES_LIBRARY
-bool
-WINAPI
-IsDetoursDebug()
-{
-#ifdef _DEBUG
-    return true;
-#else // !_DEBUG
-    return false;
-#endif // _DEBUG
-}
-
-enum class CreateDetachedProcessStatus : int {
-    Succeeded = 0,
-    ProcessCreationFailed = 1,
-    JobBreakawayFailed = 2
-};
-
-// This is a CreateProcess wrapper suitable for spawning off long-lived server processes.
-// In particular:
-// - The new process does not inherit any handles (TODO: If needed, one could allow explicit handle inheritance here).
-// - The new process is detached from the current job, if any (CREATE_BREAKAWAY_FROM_JOB)
-//   (note that process creation fails if breakwaway is not allowed).
-// - The new process gets a new (invisible) console (CREATE_NO_WINDOW).
-// Note that lpEnvironment is assumed to be a unicode environment block.
-CreateDetachedProcessStatus
-WINAPI
-CreateDetachedProcess(
-    LPCWSTR lpcwCommandLine,
-    LPVOID lpEnvironment,
-    LPCWSTR lpcwWorkingDirectory,
-    DWORD* pdwProcessId)
-{
-    // No detours should be called recursively from here.
-    DetouredScope scope;
-
-    size_t nBuffer = wcslen(lpcwCommandLine) + 1;
-    unique_ptr<wchar_t[]> buffer(new wchar_t[nBuffer]);
-    assert(buffer.get());
-    wcscpy_s(buffer.get(), nBuffer, lpcwCommandLine); // CreateProcess wants a mutable string
-
-    STARTUPINFOW si;
-    ZeroMemory(&si, sizeof(si));
-
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&pi, sizeof(pi));
-
-    BOOL created = CreateProcessW(
-        /* lpApplicationName */ NULL,
-        /* lpCommandLine */ buffer.get(),
-        /* lpProcessAttributes */ NULL,
-        /* lpThreadAttributes */ NULL,
-        /* bInheritHandles */ FALSE, // This is important to prevent accidentally grabbing e.g. pipe handles from the parent.
-        CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-        lpEnvironment,
-        lpcwWorkingDirectory,
-        /* lpStartupInfo */ &si,
-        &pi);
-
-    if (created)
-    {
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-        *pdwProcessId = pi.dwProcessId;
-
-        return CreateDetachedProcessStatus::Succeeded;
-    }
-    else
-    {
-        *pdwProcessId = 0;
-
-        DWORD error = GetLastError();
-        if (error == ERROR_ACCESS_DENIED)
-        {
-            // Unfortunately, failure to breakaway looks like ERROR_ACCESS_DENIED (though that is kind of ambiguous.)
-            return CreateDetachedProcessStatus::JobBreakawayFailed;
-        }
-        else
-        {
-            return CreateDetachedProcessStatus::ProcessCreationFailed;
-        }
-    }
-}
-
-#endif // BUILDXL_NATIVES_LIBRARY
