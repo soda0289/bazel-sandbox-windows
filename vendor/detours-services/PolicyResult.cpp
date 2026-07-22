@@ -4,7 +4,6 @@
 #include "PolicyResult.h"
 #include "DetoursHelpers.h"
 #include "SendReport.h"
-#include "FilesCheckedForAccess.h"
 
 #include "UtilityHelpers.h"
 #include <cstdint>

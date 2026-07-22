@@ -142,8 +142,9 @@ Idea (per user): our CLI maps a handful of options onto BuildXL's rich
 Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
 - [ ] `MetadataOverrides.{cpp,h}` (7 lines each; only `ScrubShortFileName`) →
   fold into DetouredFunctions or StringOperations.
-- [ ] `DetouredScope.{cpp,h}`, `Assertions.{cpp,h}`, `FilesCheckedForAccess.*`,
+- [ ] `DetouredScope.{cpp,h}`, `Assertions.{cpp,h}`,
   `PolicyResult_common.cpp` (fold into PolicyResult.cpp?).
+- [x] `FilesCheckedForAccess.{cpp,h}` — **deleted** (entirely dead class).
 - [ ] `SendReport.{cpp,h}` — trim to the single retained report-line path.
 - [ ] `DebuggingHelpers.{cpp,h}` — trim to the live error/event-log path.
 - [ ] `DetouredProcessInjector.{cpp,h}` — already gutted; see if the residual can
@@ -199,3 +200,8 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   (simplified `IndicateUntracked`, `explicitReport`, `CreateAccessCheckResult`).
   Remaining bits are all builder-set: AllowRead/Write/ReadIfNonExistent/
   CreateDirectory/SymlinkCreation, OverrideAllowWriteForExistingFiles, DeclaredInput.
+- 2026-07-22: **Phase 5 (dc-fold-small-tus) started.** Deleted the entirely-dead
+  `FilesCheckedForAccess.{cpp,h}` class (no callers of TryRegisterPath/IsRegistered/
+  GetInstance); dropped its 3 includes and the BUILD src entry. The duplicate
+  `CanonicalizedPathType` typedef already lives in `PolicyResult.h`, so no
+  relocation needed. Build + 10/10.

@@ -22,7 +22,6 @@ _DETOURS_SERVICES_SRCS = [
     "detours-services/HandleOverlay.cpp",
     "detours-services/PolicySearch.cpp",
     "detours-services/DetouredProcessInjector.cpp",
-    "detours-services/FilesCheckedForAccess.cpp",
     "detours-services/PathTree.cpp",
     "detours-services/TreeNode.cpp",
 ]

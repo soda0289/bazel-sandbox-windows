@@ -30,7 +30,6 @@
 #include "DetouredProcessInjector.h"
 #include "SendReport.h"
 #include <Psapi.h>
-#include "FilesCheckedForAccess.h"
 #include "locale.h"
 
 // BazelSandbox network sandboxing (-N / -n). Winsock-free interface; the actual

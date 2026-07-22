@@ -5,8 +5,6 @@
 
 #include "FileAccessHelpers.h"
 
-#include "FilesCheckedForAccess.h"
-
 #include "CanonicalizedPath.h"
 typedef CanonicalizedPath CanonicalizedPathType;
 

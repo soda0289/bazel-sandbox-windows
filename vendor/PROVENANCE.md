@@ -486,3 +486,15 @@ report-file append) is deliberately **retained**.
   `(m_policy & AllowAll) == AllowAll` (the second clause was always true). Removed
   all three enum entries (reserved-gap comments left). `ReportLevel::ReportExplicit`
   is untouched (still used by the enumeration/report paths). Build + 10/10 tests pass.
+
+- **Entirely-dead `FilesCheckedForAccess` class (Phase 5)** — BuildXL used this
+  case-insensitive path set to dedupe repeated access reports; this launcher has
+  no consumer (`TryRegisterPath` / `IsRegistered` / `GetInstance` are called
+  nowhere in `vendor/` or `src/`). Deleted `FilesCheckedForAccess.{cpp,h}`,
+  dropped the three `#include "FilesCheckedForAccess.h"` lines (`PolicyResult.h`,
+  `PolicyResult.cpp`, `DetoursServices.cpp`), and removed the `.cpp` from
+  `vendor/BUILD.bazel` srcs. The header also carried a duplicate
+  `typedef CanonicalizedPath CanonicalizedPathType;`; the identical typedef
+  already lives in `PolicyResult.h` (the header every `CanonicalizedPathType`
+  user includes), so nothing else needed relocation. Pure dead-code removal; build
+  + 10/10 tests pass.
