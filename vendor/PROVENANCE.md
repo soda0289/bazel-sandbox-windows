@@ -541,3 +541,27 @@ report-file append) is deliberately **retained**.
   breakaway `count 0` word (`manifest_builder.cpp`); parser + producer changed in
   lockstep (`TestHeaderLayout` now reads the translate-paths count at offset 4).
   Build + 10/10 tests pass.
+- **Path-translation feature (manifest wire-format change, Phase 6)** — BuildXL let
+  a manifest carry a table of from→to path-translation tuples (used to remap
+  substituted-drive / directory-junction roots back to canonical paths before
+  policy lookup and when reporting reparse targets). This launcher never emits any
+  tuples: the builder always wrote the translate-paths block as `count 0`, so
+  `g_pManifestTranslatePathTuples` / `g_pManifestTranslatePathLookupTable` were
+  always empty, `TranslateFilePath` was a pure copy, and
+  `PathContainedInPathTranslations` always returned false. Removed the whole
+  feature. From `DetoursHelpers.cpp`: the translate-paths parse block and the
+  `TranslateFilePath` function (call site replaced with a plain string copy). From
+  `DetouredFunctions.cpp`: the orphan `PathContainedInPathTranslations` and the
+  now-dead `SetTargetNameFromReparseData` (its only caller was the translation
+  branch of `Detoured_DeviceIoControl`); reduced `Detoured_DeviceIoControl` and
+  `Detoured_GetFinalPathNameByHandleA` to pure passthroughs and simplified the
+  always-empty guards in `Detoured_GetFinalPathNameByHandleW` and the two reparse
+  resolution sites (`isFilteredPath` was always false). From `DetoursServices.cpp`:
+  the three globals + their `new vector`/`new unordered_set` allocations. From
+  `globals.h`: the three externs + `class TranslatePathTuple;` forward decl. From
+  `DataTypes.h`: the `ManifestTranslatePathsStrings_t` struct + typedef. From
+  `DetoursServices.h`: the `TranslatePathTuple` class. From `DetoursHelpers.h`: the
+  `TranslateFilePath` decl. **Wire-format change:** the builder no longer emits the
+  translate-paths `count 0` word (`manifest_builder.cpp`); producer + parser changed
+  in lockstep (`TestHeaderLayout` now reads the error-dump location length at
+  offset 4). Build + 10/10 tests pass.

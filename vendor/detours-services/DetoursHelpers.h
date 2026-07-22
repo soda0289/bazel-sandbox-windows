@@ -110,8 +110,6 @@ void WriteToInternalErrorsFile(PCWSTR format, ...);
 
 void InitProcessKind();
 
-void TranslateFilePath(_In_ const std::wstring& inFileName, _Out_ std::wstring& outFileName);
-
 DWORD GetReportedError(BOOL result, DWORD error);
 
 void ReportIfNeeded(

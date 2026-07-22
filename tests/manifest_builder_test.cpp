@@ -64,9 +64,9 @@ void TestHashGoldens() {
           testing::HashFragment(L"USERS", n2));
 }
 
-// The blob starts with the DebugOff flag, then the translate-paths count, and
-// later the two flag words. These are the fields ParseFileAccessManifest reads
-// first.
+// The blob starts with the DebugOff flag, then the error-dump location string
+// length, and later the two flag words. These are the fields
+// ParseFileAccessManifest reads first.
 void TestHeaderLayout() {
     ManifestBuilder mb = MakeBuilder(Flag_FailUnexpectedFileAccesses);
     mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
@@ -74,7 +74,7 @@ void TestHeaderLayout() {
 
     CHECK(blob.size() > 16);
     CHECK(ReadU32LE(blob, 0) == 0xDB600000u);  // DebugFlag = DebugOff
-    CHECK(ReadU32LE(blob, 4) == 0u);           // translate-paths count = 0
+    CHECK(ReadU32LE(blob, 4) == 0u);           // error-dump location length = 0
 }
 
 // Building twice with identical inputs must be byte-for-byte deterministic.

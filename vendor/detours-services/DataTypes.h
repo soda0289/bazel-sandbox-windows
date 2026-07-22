@@ -314,24 +314,6 @@ typedef struct ManifestDebugFlag_t
 typedef const ManifestDebugFlag * PCManifestDebugFlag;
 
 // ==========================================================================
-// == ManifestTranslatePathsStrings
-// ==========================================================================
-typedef struct ManifestTranslatePathsStrings_t
-{
-    GENERATE_TAG("ManifestTranslatePathsStrings", 0xABCDEF02)
-
-    typedef uint32_t    CountType;
-    CountType           Count;
-
-    /// There are no variable-length members, so the length of this struct can be determined using sizeof.
-    inline size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestTranslatePathsStrings_t);
-    }
-} ManifestTranslatePathsStrings_t;
-typedef const ManifestTranslatePathsStrings_t * PManifestTranslatePathsStrings;
-
-// ==========================================================================
 // == ManifestInternalDetoursErrorNotificationFileString
 // ==========================================================================
 typedef struct ManifestInternalDetoursErrorNotificationFileString_t

@@ -75,39 +75,3 @@ void LogEventLogMessage(const std::wstring& a_msg,
     const WORD a_type,
     const WORD eventId,
     const std::wstring& a_name);
-
-class TranslatePathTuple
-{
-private:
-    std::wstring fromPath;
-    std::wstring toPath;
-
-public:
-    TranslatePathTuple()
-    {
-        fromPath.assign(L"");
-        toPath.assign(L"");
-    }
-
-    TranslatePathTuple(TranslatePathTuple& other)
-    {
-        fromPath.assign(other.fromPath);
-        toPath.assign(other.toPath);
-    }
-
-    TranslatePathTuple(std::wstring& from, std::wstring& to)
-    {
-        fromPath.assign(from);
-        toPath.assign(to);
-    }
-
-    std::wstring& GetToPath()
-    {
-        return toPath;
-    }
-
-    std::wstring& GetFromPath()
-    {
-        return fromPath;
-    }
-};

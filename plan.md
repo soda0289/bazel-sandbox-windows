@@ -156,6 +156,10 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   accurate binary-manifest description — commit 667a395).
 - [x] Remove the always-empty job-object breakaway-child feature (wire-format
   change; dead `ShouldBreakawayFromJob` + globals + parse + struct).
+- [x] Remove the always-empty path-translation feature (wire-format change; dead
+  `TranslateFilePath` / `PathContainedInPathTranslations` / `SetTargetNameFromReparseData`
+  + globals + tables + struct + `TranslatePathTuple` class; DeviceIoControl and
+  GetFinalPathNameByHandleA/W reduced to passthroughs).
 - [ ] Regenerate the `ATTACH()` table from the live hook set only. (All current
   ATTACH entries map to live `Detoured_` hooks — no dead entries found.)
 - [ ] Reassess a hand-rewrite once Phases 1–5 shrink the coupling. (Higher risk:
@@ -224,3 +228,14 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   BreakawayChildProcess struct, and the ManifestChildProcessesToBreakAwayFromJob
   struct. Build + 10/10 (manifest_unit + launcher e2e). The ATTACH table was
   reviewed: every entry maps to a live Detoured_ hook, so no dead entries.
+- 2026-07-22: **Phase 6 — removed the always-empty path-translation feature**
+  (wire-format change, be47dfe follow-up). Builder no longer emits the
+  translate-paths count word; deleted the parse block + `TranslateFilePath`
+  (DetoursHelpers), the orphan `PathContainedInPathTranslations` + now-dead
+  `SetTargetNameFromReparseData` (DetouredFunctions), the three globals + table
+  allocations (DetoursServices.cpp), the externs + `TranslatePathTuple` forward
+  decl (globals.h), the `ManifestTranslatePathsStrings_t` struct (DataTypes.h),
+  and the `TranslatePathTuple` class (DetoursServices.h). DeviceIoControl and
+  GetFinalPathNameByHandleA reduced to pure passthroughs; GetFinalPathNameByHandleW
+  and the two reparse-resolution sites simplified (guards were always empty/false).
+  Build + 10/10 tests pass.

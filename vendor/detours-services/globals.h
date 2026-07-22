@@ -18,7 +18,6 @@ using std::vector;
 // ----------------------------------------------------------------------------
 // FORWARD DECLARATIONS
 // ----------------------------------------------------------------------------
-class TranslatePathTuple;
 
 // ----------------------------------------------------------------------------
 // GLOBALS
@@ -34,10 +33,6 @@ extern FileAccessManifestFlag g_fileAccessManifestFlags;
 extern FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
 
 extern PCManifestRecord g_manifestTreeRoot;
-
-extern PManifestTranslatePathsStrings g_manifestTranslatePathsStrings;
-extern vector<TranslatePathTuple*>* g_pManifestTranslatePathTuples;
-extern std::unordered_set<std::wstring>* g_pManifestTranslatePathLookupTable;
 
 extern PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
 extern LPCTSTR g_internalDetoursErrorNotificationFile;

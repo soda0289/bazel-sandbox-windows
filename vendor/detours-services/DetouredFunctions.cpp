@@ -297,52 +297,6 @@ static void GetTargetNameFromReparseData(_In_ PREPARSE_DATA_BUFFER pReparseDataB
 }
 
 /// <summary>
-/// Sets target name on <code>REPARSE_DATA_BUFFER</code> for both print and substitute names. 
-/// See https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_reparse_data_buffer for details.
-/// Assumes the provided buffer is large enough to hold the target name.
-/// Sets both the print name and the substitute name (depending on the consumer, one or both may be used).
-/// </summary>
-static void SetTargetNameFromReparseData(_In_ PREPARSE_DATA_BUFFER pReparseDataBuffer, _In_ DWORD reparsePointType, _In_ wstring& target)
-{
-    USHORT targetLengthInBytes = (USHORT)(target.length() * sizeof(WCHAR));
-
-    // In both cases we put the print name at the beginning of the buffer, followed by the substitute name.
-    // The order of these is up to the implementation.
-    if (reparsePointType == IO_REPARSE_TAG_SYMLINK)
-    {
-        memcpy(
-            pReparseDataBuffer->SymbolicLinkReparseBuffer.PathBuffer,
-            target.c_str(),
-            targetLengthInBytes);
-        pReparseDataBuffer->SymbolicLinkReparseBuffer.PrintNameLength = targetLengthInBytes;
-        pReparseDataBuffer->SymbolicLinkReparseBuffer.PrintNameOffset = 0;
-
-        memcpy(
-            pReparseDataBuffer->SymbolicLinkReparseBuffer.PathBuffer + targetLengthInBytes / sizeof(WCHAR),
-            target.c_str(),
-            targetLengthInBytes);
-        pReparseDataBuffer->SymbolicLinkReparseBuffer.SubstituteNameLength = targetLengthInBytes;
-        pReparseDataBuffer->SymbolicLinkReparseBuffer.SubstituteNameOffset = targetLengthInBytes;
-    }
-    else if (reparsePointType == IO_REPARSE_TAG_MOUNT_POINT)
-    {
-        memcpy(
-            pReparseDataBuffer->MountPointReparseBuffer.PathBuffer,
-            target.c_str(),
-            targetLengthInBytes);
-        pReparseDataBuffer->MountPointReparseBuffer.PrintNameLength = targetLengthInBytes;
-        pReparseDataBuffer->MountPointReparseBuffer.PrintNameOffset = 0;
-
-        memcpy(
-            pReparseDataBuffer->MountPointReparseBuffer.PathBuffer + targetLengthInBytes / sizeof(WCHAR),
-            target.c_str(),
-            targetLengthInBytes);
-        pReparseDataBuffer->MountPointReparseBuffer.SubstituteNameLength = targetLengthInBytes;
-        pReparseDataBuffer->MountPointReparseBuffer.SubstituteNameOffset = targetLengthInBytes;
-    }
-}
-
-/// <summary>
 /// Get the reparse point target via DeviceIoControl
 /// </summary>
 static bool TryGetReparsePointTarget(_In_ const wstring& path, _In_ HANDLE hInput, _Inout_ wstring& target, const PolicyResult& policyResult)
@@ -1163,29 +1117,6 @@ static bool EnforceReparsePointAccess(
     return ret;
 }
 
-static inline bool PathContainedInPathTranslations(wstring path, bool canonicalize = false)
-{
-    if (path.empty())
-    {
-        return false;
-    }
-
-    if (canonicalize)
-    {
-        CanonicalizedPath normalized = CanonicalizedPath::Canonicalize(path.c_str());
-        path = std::wstring(normalized.GetPathStringWithoutTypePrefix());
-    }
-
-    if (path.back() == L'\\')
-    {
-        path.pop_back();
-    }
-
-    std::transform(path.begin(), path.end(), path.begin(), std::towupper);
-
-    return g_pManifestTranslatePathLookupTable->find(path) != g_pManifestTranslatePathLookupTable->end();
-}
-
 /// <summary>
 /// Resolves all reparse points potentially contained in a path and enforces allowed accesses for all found matches and optionally the final resolved path.
 /// </summary>
@@ -1258,8 +1189,7 @@ static bool ResolveAllReparsePointsAndEnforceAccess(
             if ((!first || level >= levelToEnforceReparsePointParsingFrom) && !foundReparsePoint)
             {
                 bool result = TryGetReparsePointTarget(resolved, INVALID_HANDLE_VALUE, target, policyResult);
-                bool isFilteredPath = PathContainedInPathTranslations(resolved) || PathContainedInPathTranslations(target, true);
-                if (result && !isFilteredPath)
+                if (result)
                 {
                     order->push_back(resolved);
                     resolvedPaths->emplace(resolved, ResolvedPathType::Intermediate);
@@ -1323,8 +1253,7 @@ static bool ResolveAllReparsePointsAndEnforceAccess(
         // The path leading to the last path particle has been resolved, now lets take care of the last part - if 'preserveLastReparsePointInPath' is true,
         // we don't resolve the last part of the path because we don't want the potential target value.
         bool result = !preserveLastReparsePointInPath && TryGetReparsePointTarget(resolved, INVALID_HANDLE_VALUE, target, policyResult);
-        bool isFilteredPath = !preserveLastReparsePointInPath && (PathContainedInPathTranslations(resolved) || PathContainedInPathTranslations(target, true));
-        if (result && !isFilteredPath)
+        if (result)
         {
             // The last part is a reparse point, resolve it and repeat the resolving, re-running the outer while loop
             // is ok as each resolving step is cached from previous resolution steps
@@ -6802,53 +6731,9 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleA(
         }
     }
 
-    if (g_pManifestTranslatePathTuples->empty())
-    {
-        // No translation tuples, no need to do anything.
-        return Real_GetFinalPathNameByHandleA(hFile, lpszFilePath, cchFilePath, dwFlags);
-    }
-
-    unique_ptr<wchar_t[]> wideFilePathBuffer(new wchar_t[cchFilePath]);
-    DWORD length = Detoured_GetFinalPathNameByHandleW(hFile, wideFilePathBuffer.get(), cchFilePath, dwFlags);
-
-    if (length == 0 || length > cchFilePath)
-    {
-        return length;
-    }
-
-    int numCharsRequiredIncTerminatingNull = WideCharToMultiByte(
-        CP_ACP,
-        0,
-        wideFilePathBuffer.get(),
-        // Processes the entire input string, including the terminating null character.
-        // The resulting character string has a terminating null character, and the length returned by the function includes this character.
-        -1,
-        // Only check for required buffer size.
-        NULL,
-        0,
-        NULL,
-        NULL);
-
-    if ((unsigned)numCharsRequiredIncTerminatingNull <= cchFilePath)
-    {
-        int numCharsWritten = WideCharToMultiByte(
-            CP_ACP,
-            0,
-            wideFilePathBuffer.get(),
-            -1,
-            lpszFilePath,
-            (int)cchFilePath,
-            NULL,
-            NULL);
-
-        if (numCharsWritten == 0)
-        {
-            return (DWORD)numCharsWritten;
-        }
-    }
-
-    // Substract -1 since the \0 char is included.
-    return (DWORD)(numCharsRequiredIncTerminatingNull - 1);
+    // Path translation was the only reason to detour the ANSI variant; with it gone
+    // this hook simply forwards to the real API.
+    return Real_GetFinalPathNameByHandleA(hFile, lpszFilePath, cchFilePath, dwFlags);
 }
 
 IMPLEMENTED(Detoured_GetFinalPathNameByHandleW)
@@ -6906,15 +6791,14 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleW(
     {
         nonNormalizedPath.swap(overlayVirtual);
     }
-    else if (g_pManifestTranslatePathTuples->empty() && length < cchFilePath)
+    else if (length < cchFilePath)
     {
-        // No overlay rewrite and no translation tuples: the caller's buffer already
-        // holds the correct result, so return it unchanged (shipped fast path).
+        // No overlay rewrite: the caller's buffer already holds the correct result,
+        // so return it unchanged (shipped fast path).
         return length;
     }
 
-    wstring normalizedPath;
-    TranslateFilePath(nonNormalizedPath, normalizedPath);
+    wstring normalizedPath(nonNormalizedPath);
 
     DWORD copyPathLength = (DWORD)normalizedPath.length() + 1; // wcscpy_s expects the destination buffer to account for the null terminator
     if (copyPathLength <= cchFilePath)
@@ -8727,9 +8611,11 @@ BOOL WINAPI Detoured_DeviceIoControl(
     _Out_               LPOVERLAPPED lpOverlapped
 )
 {
+    // FSCTL_GET_REPARSE_POINT was only detoured to apply path translation to the
+    // returned reparse target; with path translation removed this hook has nothing
+    // to do but forward to the real API.
     DetouredScope scope;
-
-    BOOL result = Real_DeviceIoControl(
+    return Real_DeviceIoControl(
         hDevice,
         dwIoControlCode,
         lpInBuffer,
@@ -8738,57 +8624,6 @@ BOOL WINAPI Detoured_DeviceIoControl(
         nOutBufferSize,
         lpBytesReturned,
         lpOverlapped);
-
-    if (scope.Detoured_IsDisabled()
-        // We are only interested in the FSCTL_GET_REPARSE_POINT control code.
-        || dwIoControlCode != FSCTL_GET_REPARSE_POINT
-        // If the call fails, no need to translate anything
-        || !result)
-    {
-        return result;
-    }
-
-    PREPARSE_DATA_BUFFER pReparseDataBuffer = (PREPARSE_DATA_BUFFER)lpOutBuffer;
-    DWORD reparsePointType = pReparseDataBuffer->ReparseTag;
-
-    // Only interested in symlinks/mountpoints reparse point types
-    if (!IsActionableReparsePointType(reparsePointType))
-    {
-        return result;
-    }
-
-    DWORD lastError = GetLastError();
-
-    // Retrieve the target name from the reparse data buffer and translate it
-    std::wstring target;
-    GetTargetNameFromReparseData(pReparseDataBuffer, reparsePointType, target);
-
-    std::wstring translation;
-    TranslateFilePath(target, translation);
-
-    // If the translation returned back the same path, nothing to do.
-    if (target == translation)
-    {
-        SetLastError(lastError);
-        return result;
-    }
-
-    // Check that the translation will fit in the provided buffer.
-    // The translation will be used for both print and substitute name, so we need a buffer that can hold both
-    // The paths are stored without the null terminating char, so no need to account for it
-    if (translation.length() * 2 * sizeof(WCHAR) > nOutBufferSize)
-    {
-        SetLastError(ERROR_INSUFFICIENT_BUFFER);
-        *lpBytesReturned = 0;
-        return 0;
-    }
-
-    // Update the returned structure with the translated path
-    SetTargetNameFromReparseData(pReparseDataBuffer, reparsePointType, translation);
-    *lpBytesReturned = (USHORT)translation.length() * 2 * sizeof(WCHAR);
-
-    SetLastError(lastError);
-    return result;
 }
 
 #undef IMPLEMENTED

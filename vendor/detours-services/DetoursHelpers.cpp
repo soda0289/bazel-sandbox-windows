@@ -29,131 +29,6 @@ using std::wstring;
 // FUNCTION DEFINITIONS
 // ----------------------------------------------------------------------------
 
-/// <summary>
-/// Gets the normalized (or subst'ed) path from a full path.
-/// </summary>
-void TranslateFilePath(_In_ const std::wstring& inFileName, _Out_ std::wstring& outFileName)
-{
-    outFileName.assign(inFileName);
-
-    if (g_pManifestTranslatePathTuples->empty())
-    {
-        // Nothing to translate.
-        return;
-    }
-
-    // If the string coming in is null or empty, just return. No need to do anything.
-    if (inFileName.empty() || inFileName.c_str() == nullptr)
-    {
-        return;
-    }
-
-    CanonicalizedPath canonicalizedPath = CanonicalizedPath::Canonicalize(inFileName.c_str());
-    std::wstring tempStr(canonicalizedPath.GetPathString());
-
-    // If the canonicalized string is null or empty, just return. No need to do anything.
-    if (tempStr.empty() || tempStr.c_str() == nullptr)
-    {
-        return;
-    }
-
-    const std::wstring prefix(NT_PATH_PREFIX);
-    bool hasPrefix = !tempStr.compare(0, prefix.size(), prefix);
-
-    const std::wstring prefixNt(NT_LONG_PATH_PREFIX);
-    bool hasPrefixNt = !tempStr.compare(0, prefixNt.size(), prefixNt);
-
-    tempStr.assign(canonicalizedPath.GetPathStringWithoutTypePrefix());
-
-    bool translated = false;
-    bool needsTranslation = true;
-
-    std::list<TranslatePathTuple*> manifestTranslatePathTuples(g_pManifestTranslatePathTuples->begin(), g_pManifestTranslatePathTuples->end());
-
-    while (needsTranslation)
-    {
-        needsTranslation = false;
-        size_t longestPath = 0;
-        std::list<TranslatePathTuple*>::iterator replacementIt;
-
-        std::wstring lowCaseFinalPath(tempStr);
-        for (basic_string<wchar_t>::iterator p = lowCaseFinalPath.begin();
-            p != lowCaseFinalPath.end(); ++p) {
-            *p = towlower(*p);
-        }
-
-        // Find the longest path that can be used for translation from the g_pManifestTranslatePathTuples list.
-        // Note: The g_pManifestTranslatePathTuples always comes canonicalized from the managed code.
-        for (std::list<TranslatePathTuple*>::iterator it = manifestTranslatePathTuples.begin(); it != manifestTranslatePathTuples.end(); ++it)
-        {
-            TranslatePathTuple* tpTuple = *it;
-            const std::wstring& lowCaseTargetPath = tpTuple->GetFromPath();
-            size_t targetLen = lowCaseTargetPath.length();
-            bool mayBeDirectoryPath = false;
-
-            int comp = lowCaseFinalPath.compare(0, targetLen, lowCaseTargetPath);
-
-            if (comp != 0)
-            {
-                // The path to be translated can be a directory path that does not have trailing '\\'.
-
-                if (!IsDirectorySeparator(lowCaseFinalPath.back() )
-                    && IsDirectorySeparator(lowCaseTargetPath.back())
-                    && lowCaseFinalPath.length() == (targetLen - 1))
-                {
-                    std::wstring lowCaseFinalPathWithBs = lowCaseFinalPath + NT_DIRECTORY_SEPARATOR;
-                    comp = lowCaseFinalPathWithBs.compare(0, targetLen, lowCaseTargetPath);
-                    mayBeDirectoryPath = true;
-                }
-            }
-
-            if (comp == 0)
-            {
-                if (longestPath < targetLen)
-                {
-                    replacementIt = it;
-                    longestPath = !mayBeDirectoryPath ? targetLen : targetLen - 1;
-                    translated = true;
-                    needsTranslation = true;
-                }
-            }
-        }
-
-        // Translate using the longest translation path.
-        if (needsTranslation)
-        {
-            TranslatePathTuple* replacementTuple = *replacementIt;
-
-            std::wstring t(replacementTuple->GetToPath());
-            t.append(tempStr, longestPath);
-
-            tempStr.assign(t);
-            manifestTranslatePathTuples.erase(replacementIt);
-        }
-    }
-
-    if (translated)
-    {
-        if (hasPrefix)
-        {
-            outFileName.assign(prefix);
-        }
-        else
-        {
-            if (hasPrefixNt)
-            {
-                outFileName.assign(prefixNt);
-            }
-            else
-            {
-                outFileName.assign(L"");
-            }
-        }
-
-        outFileName.append(tempStr);
-    }
-}
-
 bool GetSpecialCaseRulesForWindows(
     __in  PCWSTR absolutePath,
     __in  size_t absolutePathLength,
@@ -639,49 +514,6 @@ bool ParseFileAccessManifest(
 
     offset += debugFlag->GetSize();
 
-    g_manifestTranslatePathsStrings = reinterpret_cast<const PManifestTranslatePathsStrings>(&payloadBytes[offset]);
-    g_manifestTranslatePathsStrings->AssertValid();
-    offset += g_manifestTranslatePathsStrings->GetSize();
-
-    for (uint32_t i = 0; i < g_manifestTranslatePathsStrings->Count; i++)
-    {
-        std::wstring translateFrom(L"");
-        AppendStringFromWriteChars(payloadBytes, offset, translateFrom);
-
-        if (!translateFrom.empty())
-        {
-            for (basic_string<wchar_t>::iterator p = translateFrom.begin(); p != translateFrom.end(); ++p)
-            {
-                *p = towlower(*p);
-            }
-        }
-
-        std::wstring translateTo(L"");
-        AppendStringFromWriteChars(payloadBytes, offset, translateTo);
-
-        if (!translateFrom.empty() && !translateTo.empty())
-        {
-            g_pManifestTranslatePathTuples->push_back(new TranslatePathTuple(translateFrom, translateTo));
-
-            if (translateFrom.back() == L'\\')
-            {
-                translateFrom.pop_back();
-            }
-
-            std::transform(translateFrom.begin(), translateFrom.end(), translateFrom.begin(), std::towupper);
-
-            if (translateTo.back() == L'\\')
-            {
-                translateTo.pop_back();
-            }
-
-            std::transform(translateTo.begin(), translateTo.end(), translateTo.begin(), std::towupper);
-
-            g_pManifestTranslatePathLookupTable->insert(translateFrom);
-            g_pManifestTranslatePathLookupTable->insert(translateTo);
-        }
-    }
-
     g_manifestInternalDetoursErrorNotificationFileString = reinterpret_cast<const PManifestInternalDetoursErrorNotificationFileString>(&payloadBytes[offset]);
     g_manifestInternalDetoursErrorNotificationFileString->AssertValid();
 #ifdef _DEBUG
@@ -838,8 +670,7 @@ bool ParseFileAccessManifest(
             return false;
         }
 
-        std::wstring translatedName;
-        TranslateFilePath(fullyResolvedPath, translatedName);
+        std::wstring translatedName(fullyResolvedPath);
 
         std::wstring canonicalizedPathNoPrefix = std::wstring(CanonicalizedPath::Canonicalize(translatedName.c_str()).GetPathStringWithoutTypePrefix());
         std::wstring canonicalizedPath = std::wstring(CanonicalizedPath::Canonicalize(translatedName.c_str()).GetPathString());

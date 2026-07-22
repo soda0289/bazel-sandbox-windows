@@ -165,10 +165,6 @@ FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
 
 PCManifestRecord g_manifestTreeRoot;
 
-PManifestTranslatePathsStrings g_manifestTranslatePathsStrings;
-vector<TranslatePathTuple*>* g_pManifestTranslatePathTuples = nullptr;
-unordered_set<std::wstring>* g_pManifestTranslatePathLookupTable = nullptr;
-
 PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
 LPCTSTR g_internalDetoursErrorNotificationFile = nullptr;
 
@@ -648,8 +644,6 @@ static bool DllProcessAttach()
         return false;
     }
 
-    g_pManifestTranslatePathTuples = new vector<TranslatePathTuple*>();
-    g_pManifestTranslatePathLookupTable = new unordered_set<std::wstring>();
     g_pDetouredProcessInjector = new DetouredProcessInjector(g_manifestGuid);
 
     int error;

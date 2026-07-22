@@ -290,15 +290,13 @@ std::vector<uint8_t> ManifestBuilder::Build() {
 
     // 1. DebugFlag: 0xDB600000 (DebugOff)
     PutU32(out, 0xDB600000u);
-    // 2. Translation paths: count 0
-    PutU32(out, 0);
-    // 3. Error dump location: WriteChars(null)
+    // 2. Error dump location: WriteChars(null)
     PutChars(out, nullptr);
-    // 4. Flags
+    // 3. Flags
     PutU32(out, flags_);
-    // 5. Extra flags
+    // 4. Extra flags
     PutU32(out, extraFlags_);
-    // 6. Report block. Empty path => size 0 (no report block, pure enforcement).
+    // 5. Report block. Empty path => size 0 (no report block, pure enforcement).
     // Otherwise a report *path* block: Size = byte length of the field holding a
     // NUL-terminated WCHAR path, padded up to a 4-byte multiple. Padding matters:
     // every following block (and the whole manifest tree) must stay 4-aligned, or
@@ -317,7 +315,7 @@ std::vector<uint8_t> ManifestBuilder::Build() {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 7. Dll block
+    // 6. Dll block
     {
         uint32_t l0 = PaddedAnsiLength(dllX86_);
         uint32_t l1 = PaddedAnsiLength(dllX64_);
