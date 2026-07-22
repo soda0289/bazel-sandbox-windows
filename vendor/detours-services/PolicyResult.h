@@ -187,7 +187,6 @@ public:
     bool HasOverlayBackingShadow() const;
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
-    bool AllowRealInputTimestamps() const { return (m_policy & FileAccessPolicy_AllowRealInputTimestamps) != 0; }
     bool OverrideAllowWriteForExistingFiles() const { return (m_policy & FileAccessPolicy_OverrideAllowWriteForExistingFiles) != 0; }
     bool ReportDirectoryEnumeration() const { return (m_policy & FileAccessPolicy_ReportDirectoryEnumerationAccess) != 0; }
     bool IndicateUntracked() const { return ((m_policy & FileAccessPolicy_AllowAll) == FileAccessPolicy_AllowAll) && ((m_policy & FileAccessPolicy_ReportAccess) == 0); }
@@ -268,11 +267,6 @@ public:
         // checking for read sharing is happening frequently enough so this makes a difference. Let's stay conservative here and only check for allow write based on policies.
         // The result is that we may decide to not force read sharing for a given access that otherwise we would have forced, but that's in the end how tools decided to originally open the handle.
         return !AllowWrite(true) && accessCheck.Result == ResultAction::Allow;
-    }
-
-    // Indicates if the timestamps of this file should be virtualized to a known value.
-    bool ShouldOverrideTimestamps(AccessCheckResult const& accessCheck) const {
-        return (accessCheck.Result == ResultAction::Allow || accessCheck.Result == ResultAction::Warn) && !AllowRealInputTimestamps();
     }
 
 private:

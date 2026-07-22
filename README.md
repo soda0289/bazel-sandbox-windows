@@ -87,12 +87,14 @@ Two binaries are produced:
   `--trace`](#debugging--d-and---trace)); we use the DLL's report-*path* mode
   (the DLL opens the file itself) rather than BuildXL's report *pipe*, so there
   is still no report pipe, injector pipe, or device map.
-* **Timestamp faking** — BuildXL's engine can normalize input-file timestamps to
-  a well-known value (`NormalizeReadTimestamps`, exercised by its `Timestamps`
-  DetoursTest) so build outputs are deterministic. The launcher does **not** set
-  that flag (see `src/main.cpp`), so sandboxed children observe files' **real**
-  timestamps. It is a build-determinism feature, not a sandboxing one, and is not
-  needed for Bazel (which does its own input hashing).
+* **Timestamp faking (removed)** — BuildXL's engine could normalize input-file
+  timestamps to a well-known value (`NormalizeReadTimestamps`, exercised by its
+  `Timestamps` DetoursTest) so build outputs are deterministic. This is a
+  build-determinism feature, not a sandboxing one, and is not needed for Bazel
+  (which does its own input hashing), so it was **removed post-fork**
+  (`OverrideTimestampsForInputFile` + the `AllowRealInputTimestamps` /
+  `NormalizeReadTimestamps` flags). Sandboxed children observe files' **real**
+  timestamps.
 * **utf8proc** — a macOS-only dependency of the engine, never used on Windows.
   On Windows the engine's paths are UTF-16 (`wchar_t`) end to end and case
   folding uses `_towupper_l` with the invariant locale, exactly as in BuildXL;

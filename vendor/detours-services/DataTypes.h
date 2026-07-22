@@ -46,7 +46,6 @@
     m(ReportProcessArgs,                  0x100)          \
     m(ForceReadOnlyForRequestedReadWrite, 0x200)          \
     m(IgnoreReparsePoints,                0x400)          \
-    m(NormalizeReadTimestamps,            0x800)          \
     m(IgnoreZwRenameFileInformation,      0x1000)         \
     m(IgnoreSetFileInformationByHandle,   0x2000)         \
     m(UseLargeNtClosePreallocatedList,    0x4000)         \
@@ -170,9 +169,7 @@ enum FileAccessPolicy
     // Allows a symlink creation to succeed.
     FileAccessPolicy_AllowSymlinkCreation = 0x100,
 
-    // Allows the real timestamps for input files to be read under this scope. BuildXL always exposes the same consistent timestamp for input files to consuming pips unless
-    // this flag is specified
-    FileAccessPolicy_AllowRealInputTimestamps = 0x200,
+    // 0x200 reserved (was FileAccessPolicy_AllowRealInputTimestamps; timestamp virtualization removed post-fork).
 
     // Override writes allowed by policy based on file existence checks. 
     // Used mainly in the context of shared opaques, where the whole cone under the opaque root is write-allowed by policy (except known inputs).

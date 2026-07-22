@@ -3908,14 +3908,6 @@ BOOL WINAPI Detoured_GetFileAttributesExW(
         querySucceeded = FALSE;
     }
 
-    if (querySucceeded && policyResult.ShouldOverrideTimestamps(accessCheck) && fileStandardInfo != nullptr)
-    {
-#if SUPER_VERBOSE
-        Dbg(L"GetFileAttributesExW: Overriding timestamps for %s", policyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
-        OverrideTimestampsForInputFile(fileStandardInfo);
-    }
-
     ReportIfNeeded(accessCheck, fileOperationContext, policyResult, reportedError, error);
 
     SetLastError(error);
@@ -5804,14 +5796,6 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
             }
         }
 
-        if (success && filePolicyResult.ShouldOverrideTimestamps(fileAccessCheck))
-        {
-#if SUPER_VERBOSE
-            Dbg(L"FindFirstFileExW: Overriding timestamps for %s", filePolicyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
-            OverrideTimestampsForInputFile(findFileDataAtLevel);
-        }
-
         // FindFirstFile is the most common way to determine short-names for files and directories (observed to be called by even GetShortPathName).
         // We want to hide short file names, since they are not deterministic, not always present, and we don't canonicalize them for enforcement.
         if (success)
@@ -5985,14 +5969,6 @@ BOOL WINAPI Detoured_FindNextFileW(
         AccessCheckResult accessCheck = filePolicyResult.CheckReadAccess(RequestedReadAccess::EnumerationProbe, readContext);
         ReportIfNeeded(accessCheck, fileOperationContext, filePolicyResult, GetReportedError(result, error), error);
 
-        if (filePolicyResult.ShouldOverrideTimestamps(accessCheck))
-        {
-#if SUPER_VERBOSE
-            Dbg(L"FindNextFile: Overriding timestamps for %s", filePolicyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
-            OverrideTimestampsForInputFile(lpFindFileData);
-        }
-
         // See usage in FindFirstFileExW
         ScrubShortFileName(lpFindFileData);
 
@@ -6122,32 +6098,6 @@ BOOL WINAPI Detoured_GetFileInformationByHandleEx(
         }
     }
 
-    if (fileInformationClass != FileBasicInfo || lpFileInformation == nullptr)
-    {
-        return result;
-    }
-
-    assert(fileInformationClass == FileBasicInfo);
-    FILE_BASIC_INFO* fileBasicInfo = (FILE_BASIC_INFO*)lpFileInformation;
-
-    HandleOverlayRef overlay = TryLookupHandleOverlay(hFile);
-    if (overlay != nullptr)
-    {
-        if (overlay->Policy.ShouldOverrideTimestamps(overlay->AccessCheck))
-        {
-#if SUPER_VERBOSE
-            Dbg(L"GetFileInformationByHandleEx: Overriding timestamps for %s", overlay->Policy.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
-            OverrideTimestampsForInputFile(fileBasicInfo);
-        }
-    }
-    else
-    {
-#if SUPER_VERBOSE
-        Dbg(L"GetFileInformationByHandleEx: Failed to find a handle overlay for policy information; conservatively not overriding timestamps");
-#endif // SUPER_VERBOSE
-    }
-
     SetLastError(error);
     return result;
 }
@@ -6188,24 +6138,6 @@ BOOL WINAPI Detoured_GetFileInformationByHandle(
     if (scope.Detoured_IsDisabled() || IsNullOrInvalidHandle(hFile) || lpFileInformation == nullptr)
     {
         return result;
-    }
-
-    HandleOverlayRef overlay = TryLookupHandleOverlay(hFile);
-    if (overlay != nullptr)
-    {
-        if (overlay->Policy.ShouldOverrideTimestamps(overlay->AccessCheck))
-        {
-#if SUPER_VERBOSE
-            Dbg(L"GetFileInformationByHandle: Overriding timestamps for %s", overlay->Policy.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
-            OverrideTimestampsForInputFile(lpFileInformation);
-        }
-    }
-    else
-    {
-#if SUPER_VERBOSE
-        Dbg(L"GetFileInformationByHandle: Failed to find a handle overlay for policy information; conservatively not overriding timestamps");
-#endif // SUPER_VERBOSE
     }
 
     SetLastError(error);

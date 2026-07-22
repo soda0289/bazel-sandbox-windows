@@ -251,6 +251,29 @@ Removals made after the baseline tag (each verified with a full build +
   self-consistent; `manifest_unit` + the exact-file enforce tests pass. The
   `FileAccessPolicy` bit `0x20` (`ReportUsnAfterOpen`) is left as a reserved gap.
 
+- **Input-file timestamp virtualization** — removed BuildXL's optional
+  normalization of input (read-only) file timestamps to a fixed "well-known"
+  value (a build-determinism feature; Bazel does its own input hashing, so it
+  has no consumer here). The launcher never set `NormalizeReadTimestamps`, but
+  the override still *ran*: the manifest never set the per-scope
+  `FileAccessPolicy_AllowRealInputTimestamps` (0x200) bit, so
+  `PolicyResult::ShouldOverrideTimestamps` returned true on allowed reads and
+  `OverrideTimestampsForInputFile` executed its `else` branch, silently bumping
+  any timestamp earlier than Feb-2002 up to that constant — a latent behavior
+  quirk on genuinely old files. Deleted: `OverrideTimestampsForInputFile` (the
+  template + `FILE_BASIC_INFO` overload), `NewInputTimestamp`, and
+  `GetNewInputTimestampAsLargeInteger` (`MetadataOverrides.{h,cpp}`, keeping the
+  still-live `ScrubShortFileName`); the 5 `ShouldOverrideTimestamps` /
+  `OverrideTimestampsForInputFile` call blocks in `DetouredFunctions.cpp`
+  (`GetFileAttributesExW`, `FindFirstFileExW`, `FindNextFile`,
+  `GetFileInformationByHandleEx`, `GetFileInformationByHandle`);
+  `PolicyResult::{ShouldOverrideTimestamps,AllowRealInputTimestamps}`; and from
+  `DataTypes.h` the `FileAccessManifestFlag::NormalizeReadTimestamps` (0x800)
+  flag (its auto-generated accessors had no remaining consumer) plus the
+  `FileAccessPolicy_AllowRealInputTimestamps` (0x200) policy bit (left as a
+  reserved gap). No wire-format size change. Sandboxed children now observe
+  files' real timestamps. Build + 10/10 tests pass.
+
 The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 `LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert
 definitions so the manifest flag layout is unchanged. The `--trace`

@@ -128,10 +128,11 @@ Upstream defines **~30** flags. `src/main.cpp` sets exactly **6**:
 **Extra flags (`FileAccessManifestExtraFlag`): we set 0 of 11.**
 
 Everything else is unused, e.g. `ReportAllFileAccesses`,
-`ReportAllFileUnexpectedAccesses`, `NormalizeReadTimestamps`, `LogProcessData`,
+`ReportAllFileUnexpectedAccesses`, `LogProcessData`,
 `ReportProcessArgs`, `CheckDetoursMessageCount`, `ForceReadOnlyForRequestedReadWrite`,
-`DirectoryCreationAccessEnforcement`, the USN/code-coverage/preloaded-DLL flags,
-and all the Linux `EnableLinux*` extras.
+`DirectoryCreationAccessEnforcement`, the code-coverage/preloaded-DLL flags,
+and all the Linux `EnableLinux*` extras. (`NormalizeReadTimestamps` and the
+USN flags were **removed** post-fork.)
 
 ### Reparse points: what they are and why we ignore resolution
 A **reparse point** is NTFS metadata attached to a file or directory that
@@ -186,10 +187,11 @@ All scopes use mask `MaskAll` (`0x0`), i.e. absolute (non-inherited) policy:
 
 Policy bits we **never** use: `ReportAccessIfExistent`,
 `ReportAccessIfNonExistent`, `ReportDirectoryEnumerationAccess`,
-`AllowRealInputTimestamps`, `OverrideAllowWriteForExistingFiles`,
+`OverrideAllowWriteForExistingFiles`,
 `TreatDirectorySymlinkAsDirectory`, `EnableFullReparsePointParsing`.
-(`ReportUsnAfterOpen` / `0x20` was **removed** — see below — and is now a
-reserved gap in the `FileAccessPolicy` enum.)
+(`ReportUsnAfterOpen` / `0x20` and `AllowRealInputTimestamps` / `0x200` were
+**removed** — see below — and are now reserved gaps in the `FileAccessPolicy`
+enum.)
 
 ### Reporting channel: off by default, opt-in via `--trace`
 By default both report flags are **off** and the manifest emits a **size-0
@@ -229,8 +231,10 @@ README → *Debugging: `-D` and `--trace`*.
 Because those flags/policies are off, large parts of the engine are compiled but
 never meaningfully executed in our configuration:
 
-- Timestamp normalization + short-name scrubbing (`MetadataOverrides`) —
-  gated on `NormalizeReadTimestamps` / short-name flags we don't set.
+- Short-name scrubbing (`MetadataOverrides::ScrubShortFileName`) — **live**,
+  called unconditionally on enumeration results to hide non-deterministic 8.3
+  short names. (Input-file timestamp virtualization, formerly the other half of
+  `MetadataOverrides`, was **removed outright** post-fork.)
 - Full reparse-point resolution + `ResolvedPathCache` — gated behind
   `IgnoreFullReparsePointResolving` (which we set), so the resolver is bypassed.
 - Directory-enumeration reporting, process-arg reporting. (USN
