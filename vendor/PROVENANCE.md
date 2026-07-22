@@ -132,10 +132,12 @@ To keep the tree to what this Windows-only project actually compiles, some
 upstream files are intentionally absent:
 
 - **Non-Windows platform headers** — `stdafx-mac-interop.h`, `stdafx-mac-kext.h`,
-  `stdafx-unix-common.h`. These are only `#include`d from `stdafx.h` inside the
-  `#if __linux__` / `#elif __APPLE__` branches, which are never taken here
-  (`stdafx.h` forces both macros to `0`). (`stdafx-linux.h` was never vendored
-  for the same reason.)
+  `stdafx-unix-common.h`. These were only ever `#include`d from `stdafx.h` inside
+  its non-Windows platform branches, which were never taken here. As of the
+  Windows-only preprocessor unwrap `stdafx.h` includes `stdafx-win.h`
+  unconditionally and those branches (and their MAC_OS/__linux__/__APPLE__
+  macros) no longer exist. (`stdafx-linux.h` was never vendored for the same
+  reason.)
 - **`ManifestIterator.{cpp,h}`** — not in the build's source list and only
   self-referenced; dead on this build.
 - **`Common/FileAccessManifest.cpp`** — replaced by `src/manifest_builder.cpp`.
@@ -289,9 +291,31 @@ Removals made after the baseline tag (each verified with a full build +
   in `HandleOverlay.cpp`, `DetouredFunctions.cpp`, and the `extern` decls +
   `#define ... 0` switches in `globals.h`; removed the now-defunct
   `IsDetoursDebug` decl from `DetoursServices.h`. Pure compiled-out removal — no
-  behavior change; build + 10/10 tests pass. (One `#ifdef
-  BUILDXL_NATIVES_LIBRARY` block remains in `DebuggingHelpers.cpp`, handled
-  separately.)
+  behavior change; build + 10/10 tests pass. (The remaining `#ifdef
+  BUILDXL_NATIVES_LIBRARY` stub block in `DebuggingHelpers.cpp` was removed in a
+  follow-up.)
+
+- **Dead BUILDXL stubs in `DebuggingHelpers.cpp`** — removed the
+  `#ifdef BUILDXL_NATIVES_LIBRARY` alternative `Dbg` /
+  `HandleDetoursInjectionAndCommunicationErrors` stub bodies (never defined in
+  this build). Pure compiled-out removal; build + 10/10 tests pass.
+
+- **Cross-platform preprocessor guards (Windows-only unwrap)** — this project is
+  Windows-only, so every non-Windows conditional was dead. Removed all
+  `MAC_OS_LIBRARY` / `MAC_OS_SANDBOX` / `__linux__` / `__APPLE__` handling and
+  unwrapped the always-true `#if _WIN32` guards (keeping the Windows body,
+  dropping the `#else` / `#elif` branches) across `stdafx.h` (now just
+  `#include "stdafx-win.h"`; the `MAC_OS_* 0` and `__linux__/__APPLE__ 0` defines
+  and the platform-select `#if __linux__ / #elif __APPLE__ / #else` are gone),
+  `targetver.h`, `DebuggingHelpers.h`, `PolicySearch.h`, `DataTypes.h`,
+  `FilesCheckedForAccess.{h,cpp}`, `StringOperations.{h,cpp}` (incl. the
+  `utf8proc` include and the non-Windows `NormalizePathChar` branches),
+  `FileAccessHelpers.h`, `PolicyResult.h` (dropped the non-Windows
+  `PolicyResult` member set / accessors and the `bxl_observer.hpp` include), and
+  `PolicyResult_common.cpp` (dropped the non-Windows `AllowWrite` definitions).
+  Pure compiled-out removal — the Windows code path is unchanged; build + 10/10
+  tests pass. The never-vendored non-Windows platform headers remain absent (see
+  removed-files list).
 
 The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 `LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert

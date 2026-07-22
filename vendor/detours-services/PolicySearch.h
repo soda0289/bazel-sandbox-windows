@@ -15,13 +15,8 @@
 // already-found policy - i.e., Find(<root cursor>, "C:\foo") -> Cursor ; Find(Cursor, "bar") is
 // equivalent to Find("C:\foo\bar"); but repeated work is saved and the original path is not needed.
 struct PolicySearchCursor {
-#if _WIN32
     typedef std::shared_ptr<PolicySearchCursor> PPolicySearchCursor;
 #define MakePPolicySearchCursor(cursor) std::make_shared<PolicySearchCursor>(cursor)
-#else
-    typedef PolicySearchCursor* PPolicySearchCursor;
-#define MakePPolicySearchCursor(cursor) nullptr
-#endif
 
     PolicySearchCursor()
         : Record(nullptr), Level(0), Parent(nullptr), SearchWasTruncated(true)

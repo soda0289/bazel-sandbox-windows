@@ -12,14 +12,7 @@
 #include "StringOperations.h"
 #include <cwctype>
 
-#if MAC_OS_LIBRARY
-#include <wchar.h>
-#include <string.h>
-#endif
-
-#if _WIN32
 #include <pathcch.h>
-#endif
 
 #define _MAX_EXTENDED_DIR_LENGTH (_MAX_EXTENDED_PATH_LENGTH - _MAX_DRIVE - _MAX_FNAME - _MAX_EXT - 4)
 #define _MAX_EXTENDED_PATH_LENGTH 32768 // see https://docs.microsoft.com/en-us/cpp/c-runtime-library/path-field-limits?view=vs-2019
@@ -457,11 +450,7 @@ std::basic_string<PathChar> GetCommandLineFromArgv(const PathChar * const * argv
 
     while(argv[arg_counter] != nullptr) {
         if (arg_counter > 0) {
-#if _WIN32
             cmd_line.append(L" ");
-#else
-            cmd_line.append(" ");
-#endif
         }
 
         cmd_line.append(argv[arg_counter]);
@@ -470,8 +459,6 @@ std::basic_string<PathChar> GetCommandLineFromArgv(const PathChar * const * argv
 
     return cmd_line;
 }
-
-#if _WIN32
 
 size_t GetRootLength(PCPathChar path) noexcept
 {
@@ -654,4 +641,3 @@ std::wstring PathCombine(const std::wstring& fragment1, const std::wstring& frag
         ? fragment1 + NT_DIRECTORY_SEPARATOR + fragment2
         : fragment1 + fragment2;
 }
-#endif // _WIN32

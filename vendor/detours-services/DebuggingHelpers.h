@@ -12,11 +12,6 @@
 std::wstring DebugStringFormatArgs(PCWSTR formattedString, va_list args);
 std::wstring DebugStringFormat(PCWSTR formattedString, ...);
 
-#if MAC_OS_LIBRARY || MAC_OS_SANDBOX
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-declarations"
-#endif
-
 void DebuggerOutputDebugString(PCWSTR text, bool shouldBreak);
 void Dbg(PCWSTR format, ...);
 
@@ -43,7 +38,3 @@ mangling it, so UTF-8 is a good "pass-through" encoding.
 void WriteWarningOrErrorF(PCWSTR format, ...);
 
 void MaybeBreakOnAccessDenied();
-
-#if MAC_OS_LIBRARY || MAC_OS_SANDBOX
-#pragma clang diagnostic pop
-#endif

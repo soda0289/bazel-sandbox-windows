@@ -30,17 +30,28 @@ The vendored sources can compile into two different DLLs, selected by a macro
 - **`DETOURS_SERVICES_NATIVES_LIBRARY`** — the injected sandbox DLL. **This is
   what we define** (`vendor/BUILD.bazel` `local_defines`).
 - **`BUILDXL_NATIVES_LIBRARY`** — BuildXL's separate `BuildXLNatives.dll` (job
-  objects, path-translation tables, private heap). **We never define this**, so
-  every `#ifdef BUILDXL_NATIVES_LIBRARY` block is dead code for us. (This is why
+  objects, path-translation tables, private heap). **We never defined this**, so
+  every `#ifdef BUILDXL_NATIVES_LIBRARY` block was dead code for us. (This is why
   the now-removed `DeviceMap.cpp` was only ever no-op stubs here — its real body
-  lived in the `BUILDXL_NATIVES`-only branch.) Most of these dead branches — and
-  the always-true `DETOURS_SERVICES_NATIVES_LIBRARY` guards around them in
-  `DetoursServices.cpp` — have since been **removed post-fork** (the guards
-  unwrapped, the `#elif BUILDXL_NATIVES_LIBRARY` / `#else #error` bodies
-  deleted); a couple of `#ifdef BUILDXL_NATIVES_LIBRARY` blocks may still remain
-  in smaller helpers. Likewise the perf-instrumentation switches
-  `MEASURE_DETOURED_NT_CLOSE_IMPACT` / `MEASURE_REPARSEPOINT_RESOLVING_IMPACT`
-  (both `#define`d to `0`) and their `#if MEASURE_*` counter blocks were removed.
+  lived in the `BUILDXL_NATIVES`-only branch.) These dead branches — and the
+  always-true `DETOURS_SERVICES_NATIVES_LIBRARY` guards around them — have been
+  **removed post-fork** (the guards unwrapped, the `#elif BUILDXL_NATIVES_LIBRARY`
+  / `#else #error` bodies and the `DebuggingHelpers.cpp` stubs deleted). Likewise
+  the perf-instrumentation switches `MEASURE_DETOURED_NT_CLOSE_IMPACT` /
+  `MEASURE_REPARSEPOINT_RESOLVING_IMPACT` (both `#define`d to `0`) and their
+  `#if MEASURE_*` counter blocks were removed.
+
+### Cross-platform macros (removed post-fork)
+
+Upstream BuildXL's DetouredServices also compiled on macOS/Linux, gated on
+`MAC_OS_LIBRARY` / `MAC_OS_SANDBOX` / `__linux__` / `__APPLE__`. This project is
+**Windows-only**, so all of those branches were dead. They have been **removed**:
+`stdafx.h` now includes `stdafx-win.h` unconditionally (the platform-select block
+and the `MAC_OS_* 0` defines are gone), and every `#if _WIN32` guard was
+unwrapped in favor of its Windows body across the policy/path/manifest headers and
+their `.cpp`s (`utf8proc` and the non-Windows `PolicyResult`/`AllowWrite`/
+`NormalizePathChar` variants deleted). The never-vendored non-Windows platform
+headers remain absent.
 
 ## 3. Translation units by role
 
@@ -54,7 +65,6 @@ The vendored sources can compile into two different DLLs, selected by a macro
 | **Reporting** (inert for us, see §5) | `SendReport.cpp`, `DebuggingHelpers.cpp` |
 | **Support** | `DetouredScope.cpp`, `HandleOverlay.cpp`, `MetadataOverrides.cpp`, `FilesCheckedForAccess.cpp`, header-only `ResolvedPathCache.h`, `UnicodeConverter.h`, `UniqueHandle.h`, `UtilityHelpers.h`, `buildXL_mem.h`, `Assertions.cpp` |
 | **Child process handling** | `DetouredProcessInjector.cpp` |
-| **Inert in our build** | remaining `BUILDXL_NATIVES_LIBRARY` blocks (mostly removed post-fork) |
 
 ## 4. The `DetoursServices` ↔ `DetouredFunctions` contract
 

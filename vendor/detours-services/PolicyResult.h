@@ -5,20 +5,10 @@
 
 #include "FileAccessHelpers.h"
 
-#if !(MAC_OS_SANDBOX) && !(MAC_OS_LIBRARY)
 #include "FilesCheckedForAccess.h"
-#endif
 
-#if _WIN32
-    #include "CanonicalizedPath.h"
-    typedef CanonicalizedPath CanonicalizedPathType;
-#else // _WIN32
-    typedef std::string CanonicalizedPathType;
-#endif // _WIN32
-
-#if !(_WIN32) && !(MAC_OS_SANDBOX) && !(MAC_OS_LIBRARY)
-    #include "bxl_observer.hpp"
-#endif
+#include "CanonicalizedPath.h"
+typedef CanonicalizedPath CanonicalizedPathType;
 
 // Result of determining an access policy for a path. This involves canonicalizing the desired path and performing a policy lookup.
 class PolicyResult
@@ -49,15 +39,8 @@ public:
     PolicyResult(const PolicyResult& other) = default;
     PolicyResult& operator=(const PolicyResult&) = default;
 
-#if _WIN32
     CanonicalizedPathType Path() const        { return m_canonicalizedPath; }
     size_t PathLength() const                 { return m_canonicalizedPath.Length(); }
-#else
-    PCPathChar Path() const                   { return m_canonicalizedPath.c_str(); }
-    size_t PathLength() const                 { return m_canonicalizedPath.length(); }
-#endif // _WIN32
-
-#if _WIN32
 
 private:
     // Result of path translation.
@@ -121,32 +104,6 @@ public:
                 return nullptr;
         }
     }
-#else // _WIN32
-
-private:
-    FileAccessManifestFlag m_famFlag;
-    FileAccessManifestExtraFlag m_famExtraFlag;
-
-public:
-    PolicyResult(FileAccessManifestFlag famFlag, FileAccessManifestExtraFlag famExtraFlag)
-        : m_famFlag(famFlag), m_isIndeterminate(true), m_famExtraFlag(famExtraFlag)
-    {
-    }
-
-    PolicyResult(FileAccessManifestFlag famFlag, FileAccessManifestExtraFlag famExtraFlag, CanonicalizedPathType path, PolicySearchCursor cursor)
-        : PolicyResult(famFlag, famExtraFlag)
-    {
-        Initialize(path, cursor);
-    }
-
-    #define GEN_CHECK_FAM_FLAG_FUNC(flag_name, flag_value) inline bool flag_name() const { return Check##flag_name(m_famFlag); }
-    FOR_ALL_FAM_FLAGS(GEN_CHECK_FAM_FLAG_FUNC)
-    inline bool ReportAnyAccess(bool accessDenied) const { return CheckReportAnyAccess(m_famFlag, accessDenied); }
-
-    #define GEN_CHECK_FAM_EXTRA_FLAG_FUNC(flag_name, flag_value) inline bool flag_name() const { return Check##flag_name(m_famExtraFlag); }
-    FOR_ALL_FAM_EXTRA_FLAGS(GEN_CHECK_FAM_EXTRA_FLAG_FUNC)
-
-#endif // _WIN32
 
     // Performs an access check for a read-access, based on dynamically-observed read context (existence, etc.)
     // May only be called when !IsIndeterminate().
@@ -275,7 +232,6 @@ private:
     AccessCheckResult CreateAccessCheckResult(bool isAllowed) const;
 };
 
-#if _WIN32
 // Model W "backing store is the source of truth" (design doc §6.3). True if the
 // virtual path `virtualPathNoPrefix` (plain "X:\..." form, no type prefix) has a
 // shadow in THIS action's write-overlay backing store. Defined in
@@ -284,4 +240,3 @@ private:
 // read/enumeration-visibility decisions are answered from the (cross-process)
 // backing store. Returns false when the overlay is inactive.
 bool OverlayBackingExists(const std::wstring& virtualPathNoPrefix);
-#endif // _WIN32

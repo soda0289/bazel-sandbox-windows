@@ -8,38 +8,5 @@
 
 #pragma once
 
-#if !defined(MAC_OS_LIBRARY)
-#define MAC_OS_LIBRARY 0
-#endif // !defined(MAC_OS_LIBRARY)
-
-#if !defined(MAC_OS_SANDBOX)
-#define MAC_OS_SANDBOX 0
-#endif // !defined(MAC_OS_SANDBOX)
-
-#if _WIN32
-#define __linux__ 0
-#define __APPLE__ 0
-#endif
-
-#if __linux__
-
-// Linux stuff
-#include "stdafx-linux.h" // must include linux before unix-common
-#include "stdafx-unix-common.h"
-
-#elif __APPLE__
-
-// OSX stuff
-#if MAC_OS_SANDBOX
-#include "stdafx-mac-kext.h"
-#else
-#include "stdafx-mac-interop.h"
-#endif
-#include "stdafx-unix-common.h"
-
-#else
-
-// Windows stuff
+// Windows-only sandbox.
 #include "stdafx-win.h"
-
-#endif

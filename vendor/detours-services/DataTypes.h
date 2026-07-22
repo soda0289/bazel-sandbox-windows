@@ -6,12 +6,9 @@
 #include "stdafx.h"
 #include "StringOperations.h"
 
-#if _WIN32 || MAC_OS_LIBRARY
 #include <string>
 #include "DebuggingHelpers.h"
-#endif // _WIN32 || MAC_OS_LIBRARY
 
-#if _WIN32
 // warning C26446: Prefer to use gsl::at() instead of unchecked subscript operator (bounds.4).
 // warning C26485: Expression '...': No array to pointer decay (bounds.3).
 // warning C26482: Only index into arrays using constant expressions (bounds.2).
@@ -19,7 +16,6 @@
 // warning C26497: You can attempt to make 'Check<FAM_FLAG>' constexpr unless it contains any undefined behavior (f.4).
 // warning C26812: The enum type 'FileAccessPolicy' is unscoped. Prefer 'enum class' over 'enum' (Enum.3).
 #pragma warning( disable : 26446 26485 26482 26490 26497 26812 )
-#endif
 
 // ----------------------------------------------------------------------------
 // ENUMS
@@ -422,11 +418,7 @@ typedef struct ManifestInternalDetoursErrorNotificationFileString_t
 
     inline size_t GetSize() const noexcept
     {
-#if !_WIN32 && !_DEBUG
-        return 0;
-#else
         return sizeof(ManifestInternalDetoursErrorNotificationFileString_t);
-#endif
     }
 } ManifestInternalDetoursErrorNotificationFileString_t;
 typedef const ManifestInternalDetoursErrorNotificationFileString_t * PManifestInternalDetoursErrorNotificationFileString;

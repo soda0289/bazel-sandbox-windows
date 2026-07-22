@@ -16,23 +16,9 @@
 // TYPE DEFINITIONS
 // ----------------------------------------------------------------------------
 
-#if _WIN32
-
 typedef WCHAR PathChar;
 #define pathlen wcslen
 #define BUILD_EXE_TRACE_FILE L"_buildc_dep_out.pass"
-
-#else
-
-typedef char PathChar;
-#define pathlen strlen
-#define BUILD_EXE_TRACE_FILE "_buildc_dep_out.pass"
-
-#endif
-
-#if MAC_OS_LIBRARY || MAC_OS_SANDBOX
-#include "utf8proc.h"
-#endif // MAC_OS_LIBRARY || MAC_OS_SANDBOX
 
 typedef PathChar* PPathChar;
 typedef const PathChar* PCPathChar;
@@ -41,13 +27,7 @@ typedef const PathChar* PCPathChar;
 // INLINE FUNCTION DEFINITIONS
 // ----------------------------------------------------------------------------
 
-#if _WIN32
 extern _locale_t g_invariantLocale;
-#elif MAC_OS_LIBRARY
-#include <ctype.h>
-#include <assert.h>
-#include <wctype.h>
-#endif // !MAC_OS_LIBRARY
 
 // warning C26481: Don't use pointer arithmetic. Use span instead (bounds.1).
 // warning C6011: Dereferencing NULL pointer 'path'.
@@ -75,20 +55,8 @@ extern _locale_t g_invariantLocale;
 
 inline PathChar NormalizePathChar(PathChar c) noexcept
 {
-#if _WIN32
     const PathChar pc{ towupper(c) };
     return pc;
-#elif __linux__
-    return c;
-#elif __APPLE__
-
-#if !defined(MAC_OS_LIBRARY)
-    return (PathChar)_towupper_l(c, g_invariantLocale);
-#elif  MAC_OS_LIBRARY || MAC_OS_SANDBOX
-    return utf8proc_toupper(c);
-#endif
-    
-#endif
 }
 
 /// IsPathCharEqual
@@ -269,7 +237,6 @@ std::basic_string<PathChar>::const_iterator FindCaseInsensitively(const std::bas
 // Converts an argument vector containing the command line into a single string.
 std::basic_string<PathChar> GetCommandLineFromArgv(const PathChar * const * argv);
 
-#if _WIN32
 // Returns a collection of all path atoms of the given path
 int TryDecomposePath(const std::wstring& path, std::vector<std::wstring>& elements);
 
@@ -286,4 +253,3 @@ std::wstring NormalizePath(const std::wstring& path);
 // Removes NT or local device prefix from path.
 __declspec(dllexport)
 PCPathChar GetPathWithoutPrefix(PCPathChar path) noexcept;
-#endif

@@ -5,22 +5,16 @@
 
 #include "FileAccessHelpers.h"
 
-#if _WIN32
-    #include "CanonicalizedPath.h"
-    typedef CanonicalizedPath CanonicalizedPathType;
-#else // _WIN32
-    typedef std::string CanonicalizedPathType;
-#endif // _WIN32
+#include "CanonicalizedPath.h"
+typedef CanonicalizedPath CanonicalizedPathType;
 
 #include <unordered_set>
 #include <cwctype>
 #include <mutex>
 #include <shared_mutex>
 #include <cassert>
-#if _WIN32
-    #include "UtilityHelpers.h"
-    #include <algorithm>
-#endif
+#include "UtilityHelpers.h"
+#include <algorithm>
 
 // Keeps a set of case-insensitive paths that were checked for access 
 // All operations are thread-safe
@@ -40,11 +34,7 @@ private:
     FilesCheckedForAccess(const FilesCheckedForAccess&) = delete;
     FilesCheckedForAccess& operator = (const FilesCheckedForAccess&) = delete;
 
-// We only want case insensitive comparisons on Windows
-#if _WIN32
+    // Case-insensitive comparisons on Windows
     std::unordered_set<std::wstring, CaseInsensitiveStringHasher, CaseInsensitiveStringComparer> m_pathSet;
-#else
-    std::unordered_set<std::string> m_pathSet;
-#endif
     std::shared_mutex m_lock;
 };

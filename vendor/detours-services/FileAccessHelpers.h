@@ -5,23 +5,15 @@
 
 #include "stdafx.h"
 
-#if _WIN32
 #include "globals.h"
 #include <string>
-#endif // _WIN32
 
 #include "DataTypes.h"
 #include "PolicySearch.h"
 
-#if _WIN32
 typedef wchar_t const* StrType;
-#else 
-typedef char const* StrType;
-#endif
 
-#if _WIN32
 typedef std::wstring StrBufferType;
-#endif
 
 // Represents the (semi-)static context of a detoured call's eventual access to a file. This context includes that information
 // obtained directly from the calling process and the nature of the call in question (operation name, open mode, raw path, etc.)
@@ -53,11 +45,7 @@ public:
         ShareMode(dwShareMode),
         CreationDisposition(dwCreationDisposition),
         FlagsAndAttributes(dwFlagsAndAttributes),
-#if _WIN32
         OpenedFileOrDirectoryAttributes(INVALID_FILE_ATTRIBUTES),
-#else
-        OpenedFileOrDirectoryAttributes(-1),
-#endif
         Id(GetNextId()),
         CorrelationId(NoId)
     {}
@@ -107,13 +95,11 @@ public:
         CorrelationId = other.Id;
     }
 
-#if _WIN32
     void AdjustPath(StrType newPath)
     {
         _nonCanonicalPathBuffer.assign(newPath);
         NoncanonicalPath = _nonCanonicalPathBuffer.c_str();
     }
-#endif
 
     FileOperationContext(const FileOperationContext& other) = default;
     FileOperationContext& operator=(const FileOperationContext&) = default;
@@ -123,9 +109,7 @@ private:
     static const unsigned long NoId = 0UL;
     static unsigned long GetNextId();
 
-#if _WIN32
     StrBufferType _nonCanonicalPathBuffer;
-#endif
 };
 
 enum class FileExistence {
@@ -352,7 +336,6 @@ public:
     AccessCheckResult(const AccessCheckResult& other) = default;
     AccessCheckResult& operator=(const AccessCheckResult&) = default;
 
-#if _WIN32
     // Calls SetLastError with DenialError.
     // It is an error to call this method when ResultAction is not ResultAction::Deny.
     void SetLastErrorToDenialError() const {
@@ -363,7 +346,6 @@ public:
     void SetLastErrorToDenialError(bool maskReadsAsNotFound) const {
         SetLastError(DenialError(maskReadsAsNotFound));
     }
-#endif
 };
 
 enum PathType {
@@ -380,8 +362,6 @@ enum PathType {
 // ----------------------------------------------------------------------------
 // INLINE FUNCTION DEFINITIONS
 // ----------------------------------------------------------------------------
-
-#if _WIN32
 
 #define GEN_CHECK_GLOBAL_FAM_FLAG(flag_name, flag_value) \
 inline bool flag_name()         { return Check##flag_name(g_fileAccessManifestFlags); } \
@@ -416,4 +396,3 @@ inline bool IsNullOrInvalidHandle(HANDLE h)
     return (h == NULL || h == INVALID_HANDLE_VALUE);
 }
 
-#endif // _WIN32
