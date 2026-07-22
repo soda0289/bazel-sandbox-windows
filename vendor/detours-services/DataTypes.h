@@ -40,7 +40,7 @@
     m(MonitorChildProcesses,              0x40)           \
     m(IgnoreCodeCoverage,                 0x80)           \
     m(ReportProcessArgs,                  0x100)          \
-    m(ForceReadOnlyForRequestedReadWrite, 0x200)          \
+    /* 0x200 (ForceReadOnlyForRequestedReadWrite) removed: never set.      */ \
     m(IgnoreReparsePoints,                0x400)          \
     m(IgnoreZwRenameFileInformation,      0x1000)         \
     m(IgnoreSetFileInformationByHandle,   0x2000)         \

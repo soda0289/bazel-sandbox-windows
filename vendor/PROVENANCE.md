@@ -388,3 +388,13 @@ report-file append) is deliberately **retained**.
   (0x8000), and `UseLargeNtClosePreallocatedList` (0x4000) from
   `FOR_ALL_FAM_FLAGS` (removing their generated Check/`Should` accessors), leaving
   reserved-gap comments. Build + 10/10 tests pass.
+- **Never-set `ForceReadOnlyForRequestedReadWrite` (0x200) + its 3 branches** —
+  BuildXL used this to downgrade a denied read-write open to read-only; this
+  launcher never sets it. Collapsed the three identical guard blocks (in
+  Detoured_CreateFileW and the two Nt/ZwCreateFile paths): removed each
+  `if (ForceReadOnlyForRequestedReadWrite() ...) { ... }`, dropped the now-constant
+  `forceReadOnlyForRequestedRWAccess` local, simplified the following
+  `if (!forceReadOnly... && accessCheck.ShouldDenyAccess())` to
+  `if (accessCheck.ShouldDenyAccess())`, and removed the no-op
+  `desiredAccess = !forceReadOnly... ? desiredAccess : (...)` line. Removed the
+  flag from FOR_ALL_FAM_FLAGS. Behavior-preserving. Build + 10/10 tests pass.

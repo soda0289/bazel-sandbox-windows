@@ -3346,40 +3346,12 @@ HANDLE WINAPI Detoured_CreateFileW(
 
     // We start with allow / ignore (no access requested) and then restrict based on read / write (maybe both, maybe neither!)
     AccessCheckResult accessCheck(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
-    bool forceReadOnlyForRequestedRWAccess = false;
     if (WantsWriteAccess(dwDesiredAccess))
     {
         error = GetLastError();
         accessCheck = policyResult.CheckWriteAccess();
 
-        if (ForceReadOnlyForRequestedReadWrite() && accessCheck.Result != ResultAction::Allow)
-        {
-            // If ForceReadOnlyForRequestedReadWrite() is true, then we allow read for requested read-write access so long as the tool is allowed to read.
-            // In such a case, we change the desired access to read only (see the call to Real_CreateFileW below).
-            // As a consequence, the tool can fail if it indeed wants to write to the file.
-            if (WantsReadAccess(dwDesiredAccess) && policyResult.AllowRead())
-            {
-                accessCheck = AccessCheckResult(RequestedAccess::Read, ResultAction::Allow, ReportLevel::Ignore);
-                FileOperationContext operationContext(
-                    L"ChangedReadWriteToReadAccess",
-                    dwDesiredAccess,
-                    dwShareMode,
-                    dwCreationDisposition,
-                    dwFlagsAndAttributes,
-                    policyResult.GetCanonicalizedPath().GetPathString());
-
-                ReportFileAccess(
-                    operationContext,
-                    FileAccessStatus::FileAccessStatus_Allowed,
-                    policyResult,
-                    AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0);
-
-                forceReadOnlyForRequestedRWAccess = true;
-            }
-        }
-
-        if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
+        if (accessCheck.ShouldDenyAccess())
         {
             const bool maskRead = ShouldDeniedReadsAsNotFound();
             DWORD denyError = accessCheck.DenialError(maskRead);
@@ -3409,7 +3381,6 @@ HANDLE WINAPI Detoured_CreateFileW(
     if (!policyResult.IndicateUntracked())
     {
         DWORD readSharingIfNeeded = policyResult.ShouldForceReadSharing(accessCheck) ? FILE_SHARE_READ : 0UL;
-        desiredAccess = !forceReadOnlyForRequestedRWAccess ? desiredAccess : (desiredAccess & FILE_GENERIC_READ);
         sharedAccess = sharedAccess | readSharingIfNeeded;
 
         if (!PreserveFileSharingBehaviour())
@@ -7894,7 +7865,6 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
 
     // We start with allow / ignore (no access requested) and then restrict based on read / write (maybe both, maybe neither!)
     AccessCheckResult accessCheck(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
-    bool forceReadOnlyForRequestedRWAccess = false;
     DWORD error = ERROR_SUCCESS;
 
     // Note that write operations are quite sneaky, and can perhaps be implied by any of options, dispositions, or desired access.
@@ -7924,34 +7894,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
             }
         }
 
-        if (ForceReadOnlyForRequestedReadWrite() && accessCheck.Result != ResultAction::Allow)
-        {
-            // If ForceReadOnlyForRequestedReadWrite() is true, then we allow read for requested read-write access so long as the tool is allowed to read.
-            // In such a case, we change the desired access to read only (see the call to Real_CreateFileW below).
-            // As a consequence, the tool can fail if it indeed wants to write to the file.
-            if (WantsReadAccess(DesiredAccess) && policyResult.AllowRead())
-            {
-                accessCheck = AccessCheckResult(RequestedAccess::Read, ResultAction::Allow, ReportLevel::Ignore);
-                FileOperationContext operationContext(
-                    L"ChangedReadWriteToReadAccess",
-                    DesiredAccess,
-                    ShareAccess,
-                    win32Disposition,
-                    win32Options,
-                    policyResult.GetCanonicalizedPath().GetPathString());
-
-                ReportFileAccess(
-                    operationContext,
-                    FileAccessStatus::FileAccessStatus_Allowed,
-                    policyResult,
-                    AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0);
-
-                forceReadOnlyForRequestedRWAccess = true;
-            }
-        }
-
-        if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
+        if (accessCheck.ShouldDenyAccess())
         {
             const bool maskRead = ShouldDeniedReadsAsNotFound();
             ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError(maskRead));
@@ -7980,7 +7923,6 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
     if (!policyResult.IndicateUntracked())
     {
         DWORD readSharingIfNeeded = policyResult.ShouldForceReadSharing(accessCheck) ? FILE_SHARE_READ : 0UL;
-        desiredAccess = !forceReadOnlyForRequestedRWAccess ? desiredAccess : (desiredAccess & FILE_GENERIC_READ);
         sharedAccess = sharedAccess | readSharingIfNeeded | FILE_SHARE_DELETE;
     }
 
@@ -8421,7 +8363,6 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
 
     // We start with allow / ignore (no access requested) and then restrict based on read / write (maybe both, maybe neither!)
     AccessCheckResult accessCheck(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
-    bool forceReadOnlyForRequestedRWAccess = false;
 
     // Note that write operations are quite sneaky, and can perhaps be implied by any of options, dispositions, or desired access.
     // (consider FILE_DELETE_ON_CLOSE and FILE_OVERWRITE).
@@ -8454,34 +8395,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
             }
         }
 
-        if (ForceReadOnlyForRequestedReadWrite() && accessCheck.Result != ResultAction::Allow)
-        {
-            // If ForceReadOnlyForRequestedReadWrite() is true, then we allow read for requested read-write access so long as the tool is allowed to read.
-            // In such a case, we change the desired access to read only (see the call to Real_CreateFileW below).
-            // As a consequence, the tool can fail if it indeed wants to write to the file.
-            if (WantsReadAccess(DesiredAccess) && policyResult.AllowRead())
-            {
-                accessCheck = AccessCheckResult(RequestedAccess::Read, ResultAction::Allow, ReportLevel::Ignore);
-                FileOperationContext operationContext(
-                    L"ChangedReadWriteToReadAccess",
-                    DesiredAccess,
-                    ShareAccess,
-                    win32Disposition,
-                    win32Options,
-                    path.GetPathString());
-
-                ReportFileAccess(
-                    operationContext,
-                    FileAccessStatus::FileAccessStatus_Allowed,
-                    policyResult,
-                    AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0);
-
-                forceReadOnlyForRequestedRWAccess = true;
-            }
-        }
-
-        if (!forceReadOnlyForRequestedRWAccess && accessCheck.ShouldDenyAccess())
+        if (accessCheck.ShouldDenyAccess())
         {
             const bool maskRead = ShouldDeniedReadsAsNotFound();
             ReportIfNeeded(accessCheck, opContext, policyResult, accessCheck.DenialError(maskRead));
@@ -8510,7 +8424,6 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
     if (!policyResult.IndicateUntracked())
     {
         DWORD readSharingIfNeeded = policyResult.ShouldForceReadSharing(accessCheck) ? FILE_SHARE_READ : 0UL;
-        desiredAccess = !forceReadOnlyForRequestedRWAccess ? desiredAccess : (desiredAccess & FILE_GENERIC_READ);
         sharedAccess = sharedAccess | readSharingIfNeeded;
 
         if (!PreserveFileSharingBehaviour())
