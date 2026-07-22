@@ -475,3 +475,14 @@ report-file append) is deliberately **retained**.
   `GetLevelToEnableFullReparsePointParsing` and the now-unused
   `FindLowestConsecutiveLevelThatStillHasProperty`. Removed the accessor and the
   enum bit (reserved-gap comment left). Build + 10/10 tests (incl. reparse) pass.
+- **Never-set policy bits `FileAccessPolicy_ReportAccessIfExistent` (0x10),
+  `ReportAccessIfNonExistent` (0x40), and the `ReportAccess` combo** — the builder
+  never sets per-scope explicit reporting on any scope, so all three read sites
+  simplified, behavior-preserving: (1) the `explicitReport` computation in
+  `CheckReadAccess` (both bit-tests always 0) -> `reportLevel` reduces to
+  `ReportAnyAccess(...) ? Report : Ignore`; (2) `CreateAccessCheckResult(bool)`'s
+  `(m_policy & ReportAccess) != 0` test (always false) -> same reduction; (3)
+  `IndicateUntracked()` = `(AllowAll) && ((m_policy & ReportAccess) == 0)` -> just
+  `(m_policy & AllowAll) == AllowAll` (the second clause was always true). Removed
+  all three enum entries (reserved-gap comments left). `ReportLevel::ReportExplicit`
+  is untouched (still used by the enumeration/report paths). Build + 10/10 tests pass.

@@ -145,7 +145,7 @@ public:
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool OverrideAllowWriteForExistingFiles() const { return (m_policy & FileAccessPolicy_OverrideAllowWriteForExistingFiles) != 0; }
-    bool IndicateUntracked() const { return ((m_policy & FileAccessPolicy_AllowAll) == FileAccessPolicy_AllowAll) && ((m_policy & FileAccessPolicy_ReportAccess) == 0); }
+    bool IndicateUntracked() const { return (m_policy & FileAccessPolicy_AllowAll) == FileAccessPolicy_AllowAll; }
     DWORD GetPathId() const { return m_policySearchCursor.IsValid() ? m_policySearchCursor.Record->GetPathId() : 0; }
     FileAccessPolicy GetPolicy() const { return m_policy; }
     // Indicates if this policy is invalid (iff Initialize did not complete successfully or has not been called).

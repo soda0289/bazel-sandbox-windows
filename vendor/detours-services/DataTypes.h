@@ -148,16 +148,14 @@ enum FileAccessPolicy
     // Allows a directory to be created.
     FileAccessPolicy_AllowCreateDirectory = 8,
 
-    // If set, then we will report attempts to access files under this scope that succeed (i.e., path and file present).
-    // BuildXL uses this information to discover dynamic dependencies, such as #include-ed files.
-    FileAccessPolicy_ReportAccessIfExistent = 0x10,
+    // 0x10 (was FileAccessPolicy_ReportAccessIfExistent) removed: per-scope explicit
+    // read reporting is never set by this launcher. Reserved gap for layout stability.
 
     // 0x20 was FileAccessPolicy_ReportUsnAfterOpen (USN reporting/verification,
     // removed in this hard fork). Left as a reserved gap for layout stability.
 
-    // If set, then we will report attempts to access files under this scope that fail due to the path or file being absent.
-    // BuildXL uses this information to discover dynamic anti-dependencies, such as those on an #include search path, sneaky loader search paths, etc.
-    FileAccessPolicy_ReportAccessIfNonExistent = 0x40,
+    // 0x40 (was FileAccessPolicy_ReportAccessIfNonExistent) removed: per-scope explicit
+    // read reporting is never set by this launcher. Reserved gap for layout stability.
 
     // 0x80 (was FileAccessPolicy_ReportDirectoryEnumerationAccess) removed:
     // never set by this launcher. Left as a reserved gap for layout stability.
@@ -194,9 +192,8 @@ enum FileAccessPolicy
     // etc.) never inspect this bit, so it is inert for access decisions.
     FileAccessPolicy_DeclaredInput = 0x2000,
 
-    // If set, then we will report all attempts to access files under this scope (whether existent or not).
-    // BuildXL uses this information to discover dynamic dependencies, such as #include-ed files.
-    FileAccessPolicy_ReportAccess = FileAccessPolicy_ReportAccessIfNonExistent | FileAccessPolicy_ReportAccessIfExistent,
+    // FileAccessPolicy_ReportAccess (the ReportAccessIfExistent|ReportAccessIfNonExistent
+    // combo) removed with those bits: per-scope explicit reporting is never set here.
 
     FileAccessPolicy_AllowAll = FileAccessPolicy_AllowRead | FileAccessPolicy_AllowReadIfNonExistent | FileAccessPolicy_AllowWrite | FileAccessPolicy_AllowCreateDirectory,
 };

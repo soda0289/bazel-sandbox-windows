@@ -103,14 +103,10 @@ AccessCheckResult PolicyResult::CheckReadAccess(RequestedReadAccess readAccessRe
         ? ResultAction::Allow 
         : (FailUnexpectedFileAccesses() ? ResultAction::Deny : ResultAction::Warn);
 
-    // Do not explicitly report any operations on directories (context.OpenedDirectory)
-    bool explicitReport = !context.OpenedDirectory &&
-        ((exists && ((m_policy & FileAccessPolicy::FileAccessPolicy_ReportAccessIfExistent) != 0)) ||
-         (!exists && ((m_policy & FileAccessPolicy::FileAccessPolicy_ReportAccessIfNonExistent) != 0)));
-
-    ReportLevel reportLevel = explicitReport 
-        ? ReportLevel::ReportExplicit 
-        : (ReportAnyAccess(result != ResultAction::Allow) ? ReportLevel::Report : ReportLevel::Ignore);
+    // Per-scope explicit read reporting (ReportAccessIfExistent / ReportAccessIfNonExistent)
+    // is never enabled by this launcher, so reads are reported only when the FAM
+    // ReportAllFileAccesses flags request it (ReportAnyAccess).
+    ReportLevel reportLevel = ReportAnyAccess(result != ResultAction::Allow) ? ReportLevel::Report : ReportLevel::Ignore;
 
     if (result != ResultAction::Allow) {
         WriteWarningOrErrorF(L"Read access to file path '%s' is denied. Policy allows: 0x%08x.", GetCanonicalizedPath().GetPathString(), GetPolicy());
@@ -157,9 +153,8 @@ AccessCheckResult PolicyResult::CreateAccessCheckResult(bool isAllowed) const
         ? ResultAction::Allow
         : (FailUnexpectedFileAccesses() ? ResultAction::Deny : ResultAction::Warn);
 
-    ReportLevel reportLevel = ((m_policy & FileAccessPolicy::FileAccessPolicy_ReportAccess) != 0)
-        ? ReportLevel::ReportExplicit
-        : (ReportAnyAccess(result != ResultAction::Allow) ? ReportLevel::Report : ReportLevel::Ignore);
+    // ReportAccess (per-scope explicit reporting) is never set by this launcher.
+    ReportLevel reportLevel = ReportAnyAccess(result != ResultAction::Allow) ? ReportLevel::Report : ReportLevel::Ignore;
 
     return CreateAccessCheckResult(result, reportLevel);
 }
