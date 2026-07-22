@@ -39,7 +39,7 @@
     m(MonitorNtCreateFile,                0x20)           \
     m(MonitorChildProcesses,              0x40)           \
     /* 0x80 (IgnoreCodeCoverage) removed: never set.                       */ \
-    m(ReportProcessArgs,                  0x100)          \
+    /* 0x100 (ReportProcessArgs) removed: never set.                       */ \
     /* 0x200 (ForceReadOnlyForRequestedReadWrite) removed: never set.      */ \
     m(IgnoreReparsePoints,                0x400)          \
     /* 0x1000 (IgnoreZwRenameFileInformation) and 0x2000                   */ \
@@ -51,9 +51,9 @@
     /* 0x20000 (LogProcessData) removed: never set; the private-heap       */ \
     /* memory-stats accounting it gated was dead.                          */ \
     /* 0x40000 (IgnoreGetFinalPathNameByHandle) removed: never set.        */ \
-    m(LogProcessDetouringStatus,          0x80000)        \
+    /* 0x80000 (LogProcessDetouringStatus) removed: never set.             */ \
     /* 0x100000 (HardExitOnErrorInDetours) removed: never set.             */ \
-    m(CheckDetoursMessageCount,           0x200000)       \
+    /* 0x200000 (CheckDetoursMessageCount) removed: never set.             */ \
     /* 0x400000 (IgnoreZwOtherFileInformation) removed: never set.         */ \
     m(MonitorZwCreateOpenQueryFile,       0x800000)       \
     /* 0x1000000 (IgnoreNonCreateFileReparsePoints), 0x2000000             */ \
@@ -96,16 +96,16 @@ inline bool CheckReportAnyAccess(FileAccessManifestFlag flags, bool accessDenied
 //
 #define FOR_ALL_FAM_EXTRA_FLAGS(m) \
     m(NoneExtra,                                         0x0) \
-    m(ExplicitlyReportDirectoryProbes,                   0x1) \
-    m(PreserveFileSharingBehaviour,                      0x2) \
-    m(EnableLinuxPTraceSandbox,                          0x4) \
-    m(EnableLinuxSandboxLogging,                         0x8) \
-    m(AlwaysRemoteInjectDetoursFrom32BitProcess,        0x10) \
-    m(UnconditionallyEnableLinuxPTraceSandbox,          0x20) \
-    m(IgnoreDeviceIoControlGetReparsePoint,             0x40) \
-    m(IgnoreUntrackedPathsInFullReparsePointResolving,  0x80) \
-    m(MonitorCreateProcessAsUser,                       0x100) \
-    m(SecurityInodeGetattrIsProbe,                      0x200) \
+    /* 0x1 (ExplicitlyReportDirectoryProbes), 0x2                          */ \
+    /* (PreserveFileSharingBehaviour) removed: never set.                  */ \
+    /* 0x4 (EnableLinuxPTraceSandbox), 0x8 (EnableLinuxSandboxLogging),    */ \
+    /* 0x10 (AlwaysRemoteInjectDetoursFrom32BitProcess), 0x20              */ \
+    /* (UnconditionallyEnableLinuxPTraceSandbox) removed: Linux-only,      */ \
+    /* never set by this Windows launcher.                                 */ \
+    /* 0x40 (IgnoreDeviceIoControlGetReparsePoint), 0x80                   */ \
+    /* (IgnoreUntrackedPathsInFullReparsePointResolving), 0x100            */ \
+    /* (MonitorCreateProcessAsUser), 0x200 (SecurityInodeGetattrIsProbe)   */ \
+    /* removed: never set.                                                 */ \
     /* Bazel-sandbox fork extensions (not present in BuildXL C#). CODESYNC: */ \
     /* src/manifest_builder.h ExtraFlag_*. */ \
     /* Report a denied READ of an existing-but-undeclared path as NOT_FOUND */ \

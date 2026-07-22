@@ -425,3 +425,23 @@ report-file append) is deliberately **retained**.
   `GetCommandLine()` assignment + its SendReport buffer-sizing use): the args
   reporting path that once read it was already gone, so it only over-sized the
   report buffer and never appeared in output. Build + 10/10 tests pass.
+- **3 more never-set FAM flags + 10 never-set FAM ExtraFlags** — after the guard
+  collapses above, `ReportProcessArgs` (0x100), `LogProcessDetouringStatus`
+  (0x80000), and `CheckDetoursMessageCount` (0x200000) had zero remaining
+  references and were dropped from `FOR_ALL_FAM_FLAGS`. Then audited the extra-flag
+  vocabulary against the builder (which only ever sets `DeniedReadsAsNotFound`,
+  `FilterDirectoryEnumeration`, `WriteOverlay`): collapsed the last never-set
+  extra-flag guards and removed the flags from `FOR_ALL_FAM_EXTRA_FLAGS` (10):
+  `ExplicitlyReportDirectoryProbes` (0x1, ternary -> `!OpenedDirectory`),
+  `PreserveFileSharingBehaviour` (0x2, two `if (!...) sharedAccess |= FILE_SHARE_DELETE`
+  guards -> unconditional), `IgnoreDeviceIoControlGetReparsePoint` (0x40, dropped the
+  `|| ...()` early-out term + unwrapped the DeviceIoControl ATTACH),
+  `IgnoreUntrackedPathsInFullReparsePointResolving` (0x80, dead `if (Untracked && ...)`
+  block removed), `MonitorCreateProcessAsUser` (0x100, `Detoured_CreateProcessAsUserW`
+  never monitored -> collapsed to the `Real_` passthrough, dropping the dead
+  `Detoured_CreateProcessCommonW` call which CreateProcessW still uses), and the five
+  Linux-only extras never set on Windows: `EnableLinuxPTraceSandbox` (0x4),
+  `EnableLinuxSandboxLogging` (0x8), `AlwaysRemoteInjectDetoursFrom32BitProcess`
+  (0x10), `UnconditionallyEnableLinuxPTraceSandbox` (0x20),
+  `SecurityInodeGetattrIsProbe` (0x200). Reserved-gap comments left in both macros.
+  Behavior-preserving. Build + 10/10 tests pass.

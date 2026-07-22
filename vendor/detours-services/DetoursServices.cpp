@@ -902,10 +902,7 @@ static bool DllProcessAttach()
             ATTACH(GetFinalPathNameByHandleW);
             ATTACH(GetFinalPathNameByHandleA);
 
-            if (!IgnoreDeviceIoControlGetReparsePoint())
-            {
-                ATTACH(DeviceIoControl);
-            }
+            ATTACH(DeviceIoControl);
 #pragma warning( pop )
         }
         else {

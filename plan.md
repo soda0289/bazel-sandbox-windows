@@ -182,3 +182,10 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   `IgnoreCodeCoverage`, `HardExitOnErrorInDetours`, `DiagnosticMessagesEnabled`)
   removed and dropped from `FOR_ALL_FAM_FLAGS`; also removed vestigial
   `g_currentProcessCommandLine`. Build + 10/10 after each group.
+- 2026-07-22: **Phase 3 continued.** Dropped 3 more now-unreferenced FAM flags
+  (`ReportProcessArgs`, `LogProcessDetouringStatus`, `CheckDetoursMessageCount`)
+  and collapsed the last never-set FAM ExtraFlags, removing 10 from
+  `FOR_ALL_FAM_EXTRA_FLAGS` (incl. the 5 Linux-only extras + `MonitorCreateProcessAsUser`
+  -> `CreateProcessAsUserW` passthrough). Builder now sets only 3 extra flags
+  (`DeniedReadsAsNotFound`, `FilterDirectoryEnumeration`, `WriteOverlay`).
+  Build + 10/10.

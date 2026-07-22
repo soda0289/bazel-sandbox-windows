@@ -510,12 +510,6 @@ static bool ShouldResolveReparsePointsInPath(
         return AccessReparsePointTarget(path.GetPathString(), dwFlagsAndAttributes, INVALID_HANDLE_VALUE);
     }
 
-    // Untracked scopes never need full reparse point resolution
-    if (policyResult.IndicateUntracked() && IgnoreUntrackedPathsInFullReparsePointResolving())
-    {
-        return false;
-    }
-
     auto result = PathCache_GetResolvingCheckResult(path.GetPathStringWithoutTypePrefix(), policyResult);
     if (result.Found)
     {
@@ -3170,24 +3164,7 @@ BOOL WINAPI Detoured_CreateProcessAsUserW(
     _Out_       LPPROCESS_INFORMATION lpProcessInformation)
 {
     Dbg(L"Detoured_CreateProcessAsUserW called");
-    // TODO: Remove this flag once testing is complete.
-    if (!MonitorCreateProcessAsUser())
-    {
-        return Real_CreateProcessAsUserW(
-            hToken,
-            lpApplicationName,
-            lpCommandLine,
-            lpProcessAttributes,
-            lpThreadAttributes,
-            bInheritHandles,
-            dwCreationFlags,
-            lpEnvironment,
-            lpCurrentDirectory,
-            lpStartupInfo,
-            lpProcessInformation);
-    }
-
-    return Detoured_CreateProcessCommonW(
+    return Real_CreateProcessAsUserW(
         hToken,
         lpApplicationName,
         lpCommandLine,
@@ -3361,10 +3338,7 @@ HANDLE WINAPI Detoured_CreateFileW(
         DWORD readSharingIfNeeded = policyResult.ShouldForceReadSharing(accessCheck) ? FILE_SHARE_READ : 0UL;
         sharedAccess = sharedAccess | readSharingIfNeeded;
 
-        if (!PreserveFileSharingBehaviour())
-        {
-            sharedAccess |= FILE_SHARE_DELETE;
-        }
+        sharedAccess |= FILE_SHARE_DELETE;
     }
 
     // Model W write-overlay: redirect the actual open to the process-private
@@ -8366,10 +8340,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
         DWORD readSharingIfNeeded = policyResult.ShouldForceReadSharing(accessCheck) ? FILE_SHARE_READ : 0UL;
         sharedAccess = sharedAccess | readSharingIfNeeded;
 
-        if (!PreserveFileSharingBehaviour())
-        {
-            sharedAccess |= FILE_SHARE_DELETE;
-        }
+        sharedAccess |= FILE_SHARE_DELETE;
     }
 
     // Model W (write-overlay): redirect the open to the process-private backing store
@@ -8862,7 +8833,6 @@ BOOL WINAPI Detoured_DeviceIoControl(
         lpOverlapped);
 
     if (scope.Detoured_IsDisabled()
-        || IgnoreDeviceIoControlGetReparsePoint()
         // We are only interested in the FSCTL_GET_REPARSE_POINT control code.
         || dwIoControlCode != FSCTL_GET_REPARSE_POINT
         // If the call fails, no need to translate anything
