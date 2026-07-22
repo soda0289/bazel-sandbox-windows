@@ -332,24 +332,6 @@ typedef struct ManifestTranslatePathsStrings_t
 typedef const ManifestTranslatePathsStrings_t * PManifestTranslatePathsStrings;
 
 // ==========================================================================
-// == ManifestChildProcessesToBreakAwayFromJob
-// ==========================================================================
-typedef struct ManifestChildProcessesToBreakAwayFromJob_t
-{
-    GENERATE_TAG("ChildProcessesToBreakAwayFromJob", 0xABCDEF05)
-
-    typedef uint32_t    CountType;
-    CountType           Count;
-
-    /// There are no variable-length members, so the length of this struct can be determined using sizeof.
-    size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestChildProcessesToBreakAwayFromJob_t);
-    }
-} ManifestChildProcessesToBreakAwayFromJob_t;
-typedef const ManifestChildProcessesToBreakAwayFromJob_t* PManifestChildProcessesToBreakAwayFromJob;
-
-// ==========================================================================
 // == ManifestInternalDetoursErrorNotificationFileString
 // ==========================================================================
 typedef struct ManifestInternalDetoursErrorNotificationFileString_t

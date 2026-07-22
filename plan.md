@@ -152,8 +152,12 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
 
 ## Phase 6 — bootstrap (`DetoursServices.cpp`) cleanup / possible rewrite
 
-- [ ] Delete the stale multi-hundred-line BuildXL doc comment.
-- [ ] Regenerate the `ATTACH()` table from the live hook set only.
+- [x] Delete the stale multi-hundred-line BuildXL doc comment (replaced with an
+  accurate binary-manifest description — commit 667a395).
+- [x] Remove the always-empty job-object breakaway-child feature (wire-format
+  change; dead `ShouldBreakawayFromJob` + globals + parse + struct).
+- [ ] Regenerate the `ATTACH()` table from the live hook set only. (All current
+  ATTACH entries map to live `Detoured_` hooks — no dead entries found.)
 - [ ] Reassess a hand-rewrite once Phases 1–5 shrink the coupling. (Higher risk:
   it shares ~40 globals + an exact hook table with DetouredFunctions.cpp — see
   `docs/vendor-architecture.md §4`.)
@@ -211,3 +215,12 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   manifest word was parsed+clamped but never read. Builder `Build()` lost its
   timeout parameter; parser, struct, global, and test call sites updated in
   lockstep. Build + 10/10.
+- 2026-07-22: **Phase 6 started (bootstrap cleanup).** Replaced the ~90-line stale
+  BuildXL text-manifest doc comment with an accurate binary-format description
+  (667a395). Then removed the always-empty job-object breakaway-child feature
+  (wire-format change): builder no longer emits the breakaway count word; deleted
+  ShouldBreakawayFromJob + its CreateProcess block, both globals, the parse block,
+  FindApplicationNameFromCommandLine + trim helpers (now orphaned), the
+  BreakawayChildProcess struct, and the ManifestChildProcessesToBreakAwayFromJob
+  struct. Build + 10/10 (manifest_unit + launcher e2e). The ATTACH table was
+  reviewed: every entry maps to a live Detoured_ hook, so no dead entries.

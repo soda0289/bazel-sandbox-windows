@@ -23,111 +23,6 @@ using std::unique_ptr;
 using std::basic_string;
 using std::wstring;
 
-// Relocated from the removed SubstituteProcessExecution.cpp: general
-// command-line splitting used by the job-object breakaway check.
-static inline void ltrim_inplace(std::wstring& s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](wchar_t ch) {
-        return !std::iswspace(ch);
-        }));
-}
-
-// trim from end (in place)
-// https://stackoverflow.com/questions/216823/whats-the-best-way-to-trim-stdstring
-static inline void rtrim_inplace(std::wstring& s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](wchar_t ch) {
-        return !std::iswspace(ch);
-        }).base(), s.end());
-}
-
-// trim from both ends (in place)
-// https://stackoverflow.com/questions/216823/whats-the-best-way-to-trim-stdstring
-static inline void trim_inplace(std::wstring& s) {
-    ltrim_inplace(s);
-    rtrim_inplace(s);
-}
-
-// Returns in 'command' the command from lpCommandLine without quotes, and in commandArgs the arguments from the remainder of the string.
-void FindApplicationNameFromCommandLine(const wchar_t *lpCommandLine, _Out_ std::wstring &command, _Out_ std::wstring &commandArgs)
-{
-    wstring fullCommandLine(lpCommandLine);
-    if (fullCommandLine.length() == 0)
-    {
-        command = wstring();
-        commandArgs = wstring();
-        return;
-    }
-
-    size_t argStartIndex;
-    const size_t fullCommandLineLength = fullCommandLine.length();
-
-    if (fullCommandLine[0] == L'"')
-    {
-        // Find the close quote. Might not be present which means the command
-        // is the full command line minus the initial quote.
-        size_t closeQuoteIndex = fullCommandLine.find(L'"', 1);
-        if (closeQuoteIndex == wstring::npos)
-        {
-            // No close quote. Take everything through the end of the command line as the command.
-            command = fullCommandLine.substr(1);
-            trim_inplace(command);
-            commandArgs = wstring();
-            argStartIndex = fullCommandLineLength;
-        }
-        else
-        {
-            if (closeQuoteIndex == fullCommandLine.length() - 1)
-            {
-                // Quotes cover entire command line.
-                command = fullCommandLine.substr(1, fullCommandLine.length() - 2);
-                argStartIndex = fullCommandLineLength;
-            }
-            else
-            {
-                wstring noQuoteCommand = fullCommandLine.substr(1, closeQuoteIndex - 1);
-
-                // Find the next delimiting space after the close double-quote.
-                // For example a command like "c:\program files"\foo we need to
-                // keep \foo and cut the quotes to produce c:\program files\foo
-                size_t spaceDelimiterIndex = fullCommandLine.find(L' ', closeQuoteIndex + 1);
-                if (spaceDelimiterIndex == wstring::npos)
-                {
-                    // No space, take everything through the end of the command line.
-                    spaceDelimiterIndex = fullCommandLineLength;
-                }
-
-                command = (noQuoteCommand +
-                    fullCommandLine.substr(closeQuoteIndex + 1, spaceDelimiterIndex - closeQuoteIndex - 1));
-
-                argStartIndex = spaceDelimiterIndex + 1;
-            }
-        }
-    }
-    else
-    {
-        // No open quote, pure space delimiter.
-        size_t spaceDelimiterIndex = fullCommandLine.find(L' ');
-        if (spaceDelimiterIndex == wstring::npos)
-        {
-            // No space, take everything through the end of the command line.
-            spaceDelimiterIndex = fullCommandLineLength;
-        }
-
-        command = fullCommandLine.substr(0, spaceDelimiterIndex);
-        argStartIndex = spaceDelimiterIndex + 1;
-    }
-
-    trim_inplace(command);
-
-    if (argStartIndex < fullCommandLineLength)
-    {
-        commandArgs = fullCommandLine.substr(argStartIndex);
-        trim_inplace(commandArgs);
-    }
-    else
-    {
-        commandArgs = wstring();
-    }
-}
 
 
 // ----------------------------------------------------------------------------
@@ -743,22 +638,6 @@ bool ParseFileAccessManifest(
     }
 
     offset += debugFlag->GetSize();
-
-    g_manifestChildProcessesToBreakAwayFromJob = reinterpret_cast<const PManifestChildProcessesToBreakAwayFromJob>(&payloadBytes[offset]);
-    g_manifestChildProcessesToBreakAwayFromJob->AssertValid();
-    offset += g_manifestChildProcessesToBreakAwayFromJob->GetSize();
-
-    for (uint32_t i = 0; i < g_manifestChildProcessesToBreakAwayFromJob->Count; i++)
-    {
-        std::wstring processName(L"");
-        AppendStringFromWriteChars(payloadBytes, offset, processName);
-        if (!processName.empty())
-        {   
-            std::wstring requiredCommandLineArgsSubstring(L"");
-            AppendStringFromWriteChars(payloadBytes, offset, requiredCommandLineArgsSubstring);
-            g_breakawayChildProcesses->push_back(BreakawayChildProcess(processName, requiredCommandLineArgsSubstring, ParseByte(payloadBytes, offset) == 1U));
-        }
-    }
 
     g_manifestTranslatePathsStrings = reinterpret_cast<const PManifestTranslatePathsStrings>(&payloadBytes[offset]);
     g_manifestTranslatePathsStrings->AssertValid();

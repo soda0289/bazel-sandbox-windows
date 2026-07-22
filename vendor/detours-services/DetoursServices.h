@@ -111,22 +111,3 @@ public:
         return fromPath;
     }
 };
-
-// CODESYNC: FileAccessManifest.cs :: BreakawayChildProcess record
-struct BreakawayChildProcess
-{
-    std::wstring ProcessName;
-    std::wstring RequiredCommandLineArgsSubstring;
-    bool CommandLineArgsSubstringContainmentIgnoreCase;
-
-    BreakawayChildProcess(std::wstring processName, std::wstring requiredCommandLineArgsSubstring, bool commandLineArgsSubstringContainmentIgnoreCase)
-    {
-        ProcessName = processName;
-        RequiredCommandLineArgsSubstring = requiredCommandLineArgsSubstring;
-        CommandLineArgsSubstringContainmentIgnoreCase = commandLineArgsSubstringContainmentIgnoreCase;
-    }
-
-    BreakawayChildProcess(const BreakawayChildProcess &other)
-        : BreakawayChildProcess(other.ProcessName, other.RequiredCommandLineArgsSubstring, other.CommandLineArgsSubstringContainmentIgnoreCase)
-    {}
-};

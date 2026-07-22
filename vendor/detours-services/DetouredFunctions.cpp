@@ -2739,45 +2739,6 @@ NTSTATUS NTAPI Detoured_ZwSetInformationFile(
         FileInformationClass);
 }
 
-static bool ShouldBreakawayFromJob(const CanonicalizedPath& fullApplicationPath, _Inout_opt_ LPWSTR lpCommandLine)
-{
-    if (g_breakawayChildProcesses->empty() || fullApplicationPath.IsNull())
-    {
-        return false;
-    }
-
-    std::wstring imageName(fullApplicationPath.GetLastComponent());
-    for (auto it = g_breakawayChildProcesses->begin(); it != g_breakawayChildProcesses->end(); ++it)
-    {
-        if (AreEqualCaseInsensitively(it->ProcessName, imageName))
-        {
-            if (it->RequiredCommandLineArgsSubstring.empty())
-            {
-                return true;
-            }
-
-            std::wstring command;
-            std::wstring commandArgs;
-            FindApplicationNameFromCommandLine(lpCommandLine, command, commandArgs);
-            if (it->CommandLineArgsSubstringContainmentIgnoreCase)
-            {
-                if (std::search(commandArgs.begin(), commandArgs.end(), it->RequiredCommandLineArgsSubstring.begin(), it->RequiredCommandLineArgsSubstring.end(), [](wchar_t c1, wchar_t c2) {
-                    return std::towlower(c1) == std::towlower(c2);
-                    }) != commandArgs.end())
-                {
-                    return true;
-                }
-            }
-            else if (commandArgs.find(it->RequiredCommandLineArgsSubstring) != std::wstring::npos)
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 BOOL WINAPI Detoured_CreateProcessCommonW(
     _In_opt_      HANDLE                hToken,
     _In_opt_      LPCWSTR               lpApplicationName,
@@ -2822,40 +2783,6 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
     }
 
     CanonicalizedPath imagePath = GetImagePath(lpApplicationName, lpCommandLine);
-
-    if (ShouldBreakawayFromJob(imagePath, lpCommandLine))
-    {
-        // If the process to be created is configured to breakaway from the current
-        // job object, we use the regular process creation, and set the breakaway flag.
-        return hToken == nullptr
-            ? Real_CreateProcessW(
-                lpApplicationName,
-                lpCommandLine,
-                lpProcessAttributes,
-                lpThreadAttributes,
-                // Since this process will be detached from the job, and could survive the parent, we don't
-                // want any handle inheritance to happen
-                /*bInheritHandles*/ FALSE,
-                dwCreationFlags | CREATE_BREAKAWAY_FROM_JOB,
-                lpEnvironment,
-                lpCurrentDirectory,
-                lpStartupInfo,
-                lpProcessInformation)
-            : Real_CreateProcessAsUserW(
-                hToken,
-                lpApplicationName,
-                lpCommandLine,
-                lpProcessAttributes,
-                lpThreadAttributes,
-                // Since this process will be detached from the job, and could survive the parent, we don't
-                // want any handle inheritance to happen
-                /*bInheritHandles*/ FALSE,
-                dwCreationFlags | CREATE_BREAKAWAY_FROM_JOB,
-                lpEnvironment,
-                lpCurrentDirectory,
-                lpStartupInfo,
-                lpProcessInformation);;
-    }
 
     FileOperationContext operationContext = FileOperationContext::CreateForRead(L"CreateProcess", !imagePath.IsNull() ? imagePath.GetPathString() : L"");
     operationContext.OpenedFileOrDirectoryAttributes = FILE_ATTRIBUTE_NORMAL; // Create process image should be a file

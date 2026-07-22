@@ -517,3 +517,27 @@ report-file append) is deliberately **retained**.
   one u32 (the InjectionTimeout word between DebugFlag and the breakaway count);
   producer + parser changed in lockstep. Build + 10/10 tests pass (manifest_unit +
   the grandchild-injection launcher e2e included).
+- **Job-object breakaway-child feature (manifest wire-format change, Phase 6)** —
+  BuildXL let a manifest name specific child images (by process name + optional
+  command-line substring) that should `CREATE_BREAKAWAY_FROM_JOB` out of the
+  sandbox job object (used with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` +
+  `AugmentedManifestReporter`). This launcher never configures breakaway: the
+  builder always emitted the breakaway block as `count 0`, so
+  `g_breakawayChildProcesses` was always empty and `ShouldBreakawayFromJob`
+  always returned false. Removed the whole feature. Deleted from
+  `DetouredFunctions.cpp` the `ShouldBreakawayFromJob` helper and its
+  always-false `if (...) { return Real_CreateProcess...(CREATE_BREAKAWAY_FROM_JOB) }`
+  block in `Detoured_CreateProcessCommonW`; from `DetoursServices.cpp` the two
+  globals (`g_manifestChildProcessesToBreakAwayFromJob`, `g_breakawayChildProcesses`),
+  the `new vector<BreakawayChildProcess>()` alloc, the always-empty
+  `creationFlags &= ~CREATE_BREAKAWAY_FROM_JOB` guard, and the always-empty
+  `BUILDXL_AUGMENTED_MANIFEST_HANDLE` env-var export; from `DetoursHelpers.cpp`
+  the breakaway parse block plus the now-orphan `FindApplicationNameFromCommandLine`
+  (its only caller) and the `ltrim/rtrim/trim_inplace` helpers (only used by it);
+  the `BreakawayChildProcess` struct (`DetoursServices.h`) + forward decl/externs
+  (`globals.h`); the `FindApplicationNameFromCommandLine` decl (`DetoursHelpers.h`);
+  and the `ManifestChildProcessesToBreakAwayFromJob` struct + typedef
+  (`DataTypes.h`). **Wire-format change:** the builder no longer emits the
+  breakaway `count 0` word (`manifest_builder.cpp`); parser + producer changed in
+  lockstep (`TestHeaderLayout` now reads the translate-paths count at offset 4).
+  Build + 10/10 tests pass.

@@ -165,8 +165,6 @@ FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
 
 PCManifestRecord g_manifestTreeRoot;
 
-PManifestChildProcessesToBreakAwayFromJob g_manifestChildProcessesToBreakAwayFromJob;
-vector<BreakawayChildProcess>* g_breakawayChildProcesses = nullptr;
 PManifestTranslatePathsStrings g_manifestTranslatePathsStrings;
 vector<TranslatePathTuple*>* g_pManifestTranslatePathTuples = nullptr;
 unordered_set<std::wstring>* g_pManifestTranslatePathLookupTable = nullptr;
@@ -432,16 +430,6 @@ InternalCreateDetouredProcess(
         creationFlags |= CREATE_SUSPENDED;
     }
 
-    // If there are configured processes that need to break away from
-    // the current job object, that means the job object was configured with
-    // the JOB_OBJECT_LIMIT_BREAKAWAY_OK limit. But if we reached this point
-    // the process being created is not allowed to break away. So make
-    // sure we don't pass CREATE_BREAKAWAY_FROM_JOB
-    if (!g_breakawayChildProcesses->empty())
-    {
-        creationFlags &= ~CREATE_BREAKAWAY_FROM_JOB;
-    }
-
     // It appears the AV might hold exclusive read lock while scaning and this can fail create process.
     // Inject some retries.
     while (true)
@@ -660,7 +648,6 @@ static bool DllProcessAttach()
         return false;
     }
 
-    g_breakawayChildProcesses = new vector<BreakawayChildProcess>();
     g_pManifestTranslatePathTuples = new vector<TranslatePathTuple*>();
     g_pManifestTranslatePathLookupTable = new unordered_set<std::wstring>();
     g_pDetouredProcessInjector = new DetouredProcessInjector(g_manifestGuid);
@@ -676,19 +663,6 @@ static bool DllProcessAttach()
     g_invariantLocale = _wcreate_locale(LC_CTYPE, L"");
     InitProcessKind();
     InitializeHandleOverlay();
-
-    // If there are configured processes that will break away from the sandbox, expose
-    // an environment variable with the handle pointer to the detour manifest.
-    // This is the way the AugmentedManifestReporter (the API to directly talk to detours
-    // internal tools can use) can actually interact with the manifest
-    // Keep in sync with C# side
-    if (!g_breakawayChildProcesses->empty())
-    {
-        // CODESYNC: Keep variable name in sync with the C# side
-        SetEnvironmentVariable(
-            L"BUILDXL_AUGMENTED_MANIFEST_HANDLE",
-            std::to_wstring(DetouredProcessInjector::HandleToUint64(g_reportFileHandle)).c_str());
-    }
 
 #define ATTACH(Name) \
     Real_##Name = ::Name; \
