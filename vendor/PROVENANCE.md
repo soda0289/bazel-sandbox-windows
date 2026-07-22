@@ -445,3 +445,9 @@ report-file append) is deliberately **retained**.
   (0x10), `UnconditionallyEnableLinuxPTraceSandbox` (0x20),
   `SecurityInodeGetattrIsProbe` (0x200). Reserved-gap comments left in both macros.
   Behavior-preserving. Build + 10/10 tests pass.
+- **Never-set policy bit `FileAccessPolicy_TreatDirectorySymlinkAsDirectory`
+  (0x800)** — the builder never sets it, so `PolicyResult::TreatDirectorySymlinkAsDirectory()`
+  always returned false; its single reader (the trailing `&& !...()` term of the
+  probe-only reparse-resolution predicate in `ShouldResolveReparsePointsInPathForDeviceOrDirectorySymlink`)
+  was always true. Dropped the term, the accessor, and the enum bit (reserved-gap
+  comment left). Build + 10/10 tests pass.

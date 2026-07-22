@@ -175,8 +175,8 @@ enum FileAccessPolicy
     // that was not created by the pip (i.e. the file was there before the first write), then it is a write on an undeclared input
     FileAccessPolicy_OverrideAllowWriteForExistingFiles = 0x400,
 
-    // When checking if a handle or path is a directory, treat directory symlink as directory.
-    FileAccessPolicy_TreatDirectorySymlinkAsDirectory = 0x800,
+    // 0x800 (was FileAccessPolicy_TreatDirectorySymlinkAsDirectory) removed:
+    // never set by this launcher. Left as a reserved gap for layout stability.
 
     // If set, full reparse point tracking should be done for this path/file
     FileAccessPolicy_EnableFullReparsePointParsing = 0x1000,

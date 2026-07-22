@@ -982,8 +982,7 @@ static bool ShouldTreatDirectoryReparsePointAsFile(
 
     return !IgnoreFullReparsePointResolvingForPath(policyResult)            // Full reparse point resolving is enabled,
         && (FlagsAndAttributesContainReparsePointFlag(dwFlagsAndAttributes) // and open attribute contains reparse point flag,
-            || WantsWriteAccess(dwDesiredAccess))                           //   or write access is requested,
-        && !policyResult.TreatDirectorySymlinkAsDirectory();               // and policy does not mandate directory symlink to be treated as directory
+            || WantsWriteAccess(dwDesiredAccess));                          //   or write access is requested.
 }
 
 /// <summary>
