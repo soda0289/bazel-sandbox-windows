@@ -219,8 +219,6 @@ enum FileAccessBucketOffsetFlag
 // STRUCTS
 // ----------------------------------------------------------------------------
 
-extern unsigned long g_injectionTimeoutInMinutes;
-
 // Generates a uint32_t tag, along with CheckValid() and AssertValid() methods.
 //
 // In debug builds (when _DEBUG is defined):
@@ -314,55 +312,6 @@ typedef struct ManifestDebugFlag_t
     }
 } ManifestDebugFlag;
 typedef const ManifestDebugFlag * PCManifestDebugFlag;
-
-// ==========================================================================
-// == ManifestInjectionTimeout
-// ==========================================================================
-typedef struct ManifestInjectionTimeout_t
-{
-    typedef uint32_t    FlagType;
-    FlagType            Flags;
-
-    inline const char* CheckValid() const noexcept
-    {
-        if (this->Flags <= 0)
-        {
-            return "The manifest blob timeout value must be greater than 0";
-        }
-
-        return nullptr;
-    }
-
-    inline bool CheckValidityAndHandleInvalid() const
-    {
-        // This should never be 0 or less.
-        if (this->Flags <= 0)
-        {
-#ifdef _DEBUG
-            assert(false); // For easy debugging/attaching.
-#endif // _DEBUG
-            Dbg(L"Error: The manifest blob timeout value (in minutes) is %u. It should be bigger than 0.", this->Flags);
-            wprintf(L"Error: The manifest blob timeout value (in minutes) is %u. It should be bigger than 0.", this->Flags);
-            // If the manifest debug flag doesn't match, just return false, so we continue without detouring processes.
-            // We already logged that there is a mismatch. Also the message is logged to the debug output console.
-            // And just in case it is also printed to the console.
-            // The old crashing code could lead to a undefined behaviour since it is called from the DLL's attach process handler
-            // a crash could lead to many (even infinite) attempts to load the DLL.
-            return false;
-        }
-
-        return true;
-    }
-
-    /// GetSize
-    ///
-    /// There are no variable-length members, so the length of this struct can be determined using sizeof.
-    size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestInjectionTimeout_t);
-    }
-} ManifestInjectionTimeout;
-typedef const ManifestInjectionTimeout * PCManifestInjectionTimeout;
 
 // ==========================================================================
 // == ManifestTranslatePathsStrings

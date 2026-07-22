@@ -205,3 +205,9 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   GetInstance); dropped its 3 includes and the BUILD src entry. The duplicate
   `CanonicalizedPathType` typedef already lives in `PolicyResult.h`, so no
   relocation needed. Build + 10/10.
+- 2026-07-22: **Phase 5 continued.** Removed write-only `g_injectionTimeoutInMinutes`
+  and its `ManifestInjectionTimeout` wire block (manifest header shrank one u32).
+  The real child-termination timeout is `-T`/`o.timeoutSecs` in main.cpp; the
+  manifest word was parsed+clamped but never read. Builder `Build()` lost its
+  timeout parameter; parser, struct, global, and test call sites updated in
+  lockstep. Build + 10/10.

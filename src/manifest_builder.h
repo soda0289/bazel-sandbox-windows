@@ -141,7 +141,7 @@ public:
     bool AddNodeScope(const std::wstring& path, uint32_t mask, uint32_t values);
 
     // Finalizes policies and serializes the whole payload.
-    std::vector<uint8_t> Build(uint32_t injectionTimeoutMins);
+    std::vector<uint8_t> Build();
 
 private:
     struct Node {

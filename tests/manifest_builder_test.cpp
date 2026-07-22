@@ -64,16 +64,17 @@ void TestHashGoldens() {
           testing::HashFragment(L"USERS", n2));
 }
 
-// The blob starts with the DebugOff flag, then injection timeout, and later the
-// two flag words. These are the fields ParseFileAccessManifest reads first.
+// The blob starts with the DebugOff flag, then the breakaway-child count, and
+// later the two flag words. These are the fields ParseFileAccessManifest reads
+// first.
 void TestHeaderLayout() {
     ManifestBuilder mb = MakeBuilder(Flag_FailUnexpectedFileAccesses);
     mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-    std::vector<uint8_t> blob = mb.Build(/*injectionTimeoutMins*/ 7);
+    std::vector<uint8_t> blob = mb.Build();
 
     CHECK(blob.size() > 16);
     CHECK(ReadU32LE(blob, 0) == 0xDB600000u);  // DebugFlag = DebugOff
-    CHECK(ReadU32LE(blob, 4) == 7u);           // injection timeout minutes
+    CHECK(ReadU32LE(blob, 4) == 0u);           // breakaway child count = 0
 }
 
 // Building twice with identical inputs must be byte-for-byte deterministic.
@@ -83,13 +84,13 @@ void TestDeterministic() {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         mb.AddScope(L"C:\\Windows", Policy_MaskAll, Policy_AllowRead);
-        a = mb.Build(10);
+        a = mb.Build();
     }
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         mb.AddScope(L"C:\\Windows", Policy_MaskAll, Policy_AllowRead);
-        b = mb.Build(10);
+        b = mb.Build();
     }
     CHECK(a == b);
 }
@@ -100,14 +101,14 @@ void TestScopeGrowsTree() {
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-        bare = mb.Build(10);
+        bare = mb.Build();
     }
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         CHECK(mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll,
                           Policy_AllowAll));
-        withScope = mb.Build(10);
+        withScope = mb.Build();
     }
     CHECK(withScope.size() > bare.size());
 }
@@ -118,13 +119,13 @@ void TestFlagsAffectBlob() {
     {
         ManifestBuilder mb = MakeBuilder(Flag_FailUnexpectedFileAccesses);
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-        a = mb.Build(10);
+        a = mb.Build();
     }
     {
         ManifestBuilder mb =
             MakeBuilder(Flag_FailUnexpectedFileAccesses | Flag_MonitorChildProcesses);
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
-        b = mb.Build(10);
+        b = mb.Build();
     }
     CHECK(a != b);
 }
@@ -141,7 +142,7 @@ void TestReportPath() {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll);
-        bare = mb.Build(10);
+        bare = mb.Build();
     }
     CHECK(bare.size() % 4 == 0);
 
@@ -153,7 +154,7 @@ void TestReportPath() {
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         CHECK(mb.AddScope(L"C:\\Users\\test\\out", Policy_MaskAll, Policy_AllowAll));
         mb.SetReportPath(path);
-        std::vector<uint8_t> blob = mb.Build(10);
+        std::vector<uint8_t> blob = mb.Build();
         CHECK(blob.size() % 4 == 0);      // alignment preserved for any length
         CHECK(blob.size() > bare.size()); // report path is actually serialized
     }
@@ -171,19 +172,19 @@ void TestNodeScopeDiffersFromConeScope() {
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_Deny);
-        bare = mb.Build(10);
+        bare = mb.Build();
     }
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_Deny);
         CHECK(mb.AddScope(kDir, Policy_MaskAll, grant));
-        cone = mb.Build(10);
+        cone = mb.Build();
     }
     {
         ManifestBuilder mb = MakeBuilder();
         mb.AddRootScope(Policy_MaskAll, Policy_Deny);
         CHECK(mb.AddNodeScope(kDir, Policy_MaskAll, grant));
-        node = mb.Build(10);
+        node = mb.Build();
     }
     // Both grow the tree, but the node-only grant leaves the cone policy Deny
     // while the cone grant sets both -> the two blobs must differ.

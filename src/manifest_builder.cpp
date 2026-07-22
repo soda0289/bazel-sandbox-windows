@@ -283,26 +283,24 @@ void ManifestBuilder::SerializeNode(const Node* node,
     }
 }
 
-std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
+std::vector<uint8_t> ManifestBuilder::Build() {
     Finalize(&root_, Policy_Deny);
 
     std::vector<uint8_t> out;
 
     // 1. DebugFlag: 0xDB600000 (DebugOff)
     PutU32(out, 0xDB600000u);
-    // 2. InjectionTimeout (minutes)
-    PutU32(out, injectionTimeoutMins);
-    // 3. Breakaway child processes: count 0
+    // 2. Breakaway child processes: count 0
     PutU32(out, 0);
-    // 4. Translation paths: count 0
+    // 3. Translation paths: count 0
     PutU32(out, 0);
-    // 5. Error dump location: WriteChars(null)
+    // 4. Error dump location: WriteChars(null)
     PutChars(out, nullptr);
-    // 6. Flags
+    // 5. Flags
     PutU32(out, flags_);
-    // 7. Extra flags
+    // 6. Extra flags
     PutU32(out, extraFlags_);
-    // 8. Report block. Empty path => size 0 (no report block, pure enforcement).
+    // 7. Report block. Empty path => size 0 (no report block, pure enforcement).
     // Otherwise a report *path* block: Size = byte length of the field holding a
     // NUL-terminated WCHAR path, padded up to a 4-byte multiple. Padding matters:
     // every following block (and the whole manifest tree) must stay 4-aligned, or
@@ -321,7 +319,7 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 9. Dll block
+    // 8. Dll block
     {
         uint32_t l0 = PaddedAnsiLength(dllX86_);
         uint32_t l1 = PaddedAnsiLength(dllX64_);

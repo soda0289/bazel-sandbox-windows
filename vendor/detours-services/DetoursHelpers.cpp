@@ -744,23 +744,6 @@ bool ParseFileAccessManifest(
 
     offset += debugFlag->GetSize();
 
-    PCManifestInjectionTimeout injectionTimeoutFlag = reinterpret_cast<PCManifestInjectionTimeout>(&payloadBytes[offset]);
-    if (!injectionTimeoutFlag->CheckValidityAndHandleInvalid())
-    {
-        HandleDetoursInjectionAndCommunicationErrors(DETOURS_PAYLOAD_PARSE_FAILED_16, L"ParseFileAccessManifest: Error invalid injectionTimeoutFlag", DETOURS_WINDOWS_LOG_MESSAGE_16);
-        return false;
-    }
-
-    g_injectionTimeoutInMinutes = static_cast<unsigned long>(injectionTimeoutFlag->Flags);
-
-    // Make sure the injectionTimeout is not less than 10 min.
-    if (g_injectionTimeoutInMinutes < 10)
-    {
-        g_injectionTimeoutInMinutes = 10;
-    }
-
-    offset += injectionTimeoutFlag->GetSize();
-
     g_manifestChildProcessesToBreakAwayFromJob = reinterpret_cast<const PManifestChildProcessesToBreakAwayFromJob>(&payloadBytes[offset]);
     g_manifestChildProcessesToBreakAwayFromJob->AssertValid();
     offset += g_manifestChildProcessesToBreakAwayFromJob->GetSize();

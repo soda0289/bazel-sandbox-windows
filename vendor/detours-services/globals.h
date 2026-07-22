@@ -47,8 +47,6 @@ extern LPCTSTR g_internalDetoursErrorNotificationFile;
 
 extern HANDLE g_reportFileHandle;
 
-extern unsigned long g_injectionTimeoutInMinutes;
-
 extern bool g_BreakOnAccessDenied;
 
 extern LPCSTR g_lpDllNameX86;

@@ -11,8 +11,6 @@ using namespace std;
 // A flag that gets set for 64 bit processes
 bool DetouredProcessInjector::s_is64BitProcess = sizeof(void *) == 8;
 
-unsigned long g_injectionTimeoutInMinutes = 0;
-
 // Address of the function that checks if a process is a Wow64 process. Not all
 // versions of Windows have this function, so this value could be null. Casting
 // from FARPROC causes warning, disable

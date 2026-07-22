@@ -853,7 +853,7 @@ int wmain(int argc, wchar_t** argv) {
         dbg(L"ovsrc", o.workingDir);
     }
 
-    std::vector<uint8_t> manifest = mb.Build(/*injectionTimeoutMins*/ 10);
+    std::vector<uint8_t> manifest = mb.Build();
     dline(L"manifest bytes: " + std::to_wstring(manifest.size()));
 
     // DetoursServices.dll does not read the raw manifest directly. It reads a

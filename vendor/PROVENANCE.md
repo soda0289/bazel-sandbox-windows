@@ -498,3 +498,22 @@ report-file append) is deliberately **retained**.
   already lives in `PolicyResult.h` (the header every `CanonicalizedPathType`
   user includes), so nothing else needed relocation. Pure dead-code removal; build
   + 10/10 tests pass.
+- **Write-only `g_injectionTimeoutInMinutes` + its `ManifestInjectionTimeout`
+  wire block (manifest wire-format change)** — BuildXL parsed a per-manifest
+  "injection timeout (minutes)" word into this global; this launcher's actual
+  child-termination timeout is handled entirely in `src/main.cpp` from the `-T`
+  CLI arg (`o.timeoutSecs` in the process-wait loop), so the manifest global was
+  parsed + clamped-to-10 but never read. Dropped the block from both sides of the
+  (project-owned) wire format in lockstep: the builder no longer emits the
+  `PutU32(injectionTimeoutMins)` word and `ManifestBuilder::Build` lost its
+  `injectionTimeoutMins` parameter (`manifest_builder.{h,cpp}`, `src/main.cpp`
+  call site, `tests/manifest_builder_test.cpp` — incl. `TestHeaderLayout` which
+  now asserts offset 4 is the breakaway-child count 0); the parser dropped the
+  `injectionTimeoutFlag` read/validate/clamp block (`DetoursHelpers.cpp`); and
+  the `g_injectionTimeoutInMinutes` global (`DetouredProcessInjector.cpp`
+  definition + `globals.h` / `DataTypes.h` externs) and the
+  `ManifestInjectionTimeout` struct + `PCManifestInjectionTimeout` typedef
+  (`DataTypes.h`) are gone. **Wire-format change:** the manifest header shrank by
+  one u32 (the InjectionTimeout word between DebugFlag and the breakaway count);
+  producer + parser changed in lockstep. Build + 10/10 tests pass (manifest_unit +
+  the grandchild-injection launcher e2e included).
