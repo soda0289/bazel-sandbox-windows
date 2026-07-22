@@ -376,3 +376,15 @@ report-file append) is deliberately **retained**.
   the now-unused pool/heap-entry stat globals
   (`g_detoursAllocatedNoLockConcurentPoolEntries`, `g_detoursMaxHandleHeapEntries`,
   `g_detoursHandleHeapEntries`) and their externs. Build + 10/10 tests pass.
+- **Dead `LogProcessData` memory-stats accounting + 3 never-set FAM flags** — the
+  private-heap allocator (`buildXL_mem.h` `dd_malloc`/`dd_free`) tracked bytes
+  under `ShouldLogProcessData()`, another flag this launcher never sets, so the
+  accounting (and the `g_detoursMaxAllocatedMemoryInBytes`/
+  `g_detoursHeapAllocatedMemoryInBytes` stats it fed) was dead. Removed those
+  blocks and stat definitions/externs; also removed the now-unused
+  `_dd_aligned_malloc`/`_dd_aligned_free` (their only caller was the deleted
+  NtClose pool) and the `_aligned_malloc`/`_aligned_free` trap stubs. With every
+  use gone, dropped `LogProcessData` (0x20000), `UseExtraThreadToDrainNtClose`
+  (0x8000), and `UseLargeNtClosePreallocatedList` (0x4000) from
+  `FOR_ALL_FAM_FLAGS` (removing their generated Check/`Should` accessors), leaving
+  reserved-gap comments. Build + 10/10 tests pass.

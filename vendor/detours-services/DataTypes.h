@@ -44,10 +44,12 @@
     m(IgnoreReparsePoints,                0x400)          \
     m(IgnoreZwRenameFileInformation,      0x1000)         \
     m(IgnoreSetFileInformationByHandle,   0x2000)         \
-    m(UseLargeNtClosePreallocatedList,    0x4000)         \
-    m(UseExtraThreadToDrainNtClose,       0x8000)         \
+    /* 0x4000 (UseLargeNtClosePreallocatedList) and 0x8000                 */ \
+    /* (UseExtraThreadToDrainNtClose) removed: this launcher never set     */ \
+    /* them, so the deferred-NtClose drain subsystem was dead.             */ \
     m(DisableDetours,                     0x10000)        \
-    m(LogProcessData,                     0x20000)        \
+    /* 0x20000 (LogProcessData) removed: never set; the private-heap       */ \
+    /* memory-stats accounting it gated was dead.                          */ \
     m(IgnoreGetFinalPathNameByHandle,     0x40000)        \
     m(LogProcessDetouringStatus,          0x80000)        \
     m(HardExitOnErrorInDetours,           0x100000)       \

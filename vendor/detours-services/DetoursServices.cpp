@@ -252,11 +252,6 @@ DetouredProcessInjector* g_pDetouredProcessInjector = nullptr;
 
 HANDLE g_hPrivateHeap = nullptr;
 
-// Peak Detours allocated memory. It is allocated in a private heap.
-volatile LONG64 g_detoursMaxAllocatedMemoryInBytes = 0;
-
-// Running allocated memory by Detours in its private heap.
-volatile LONG64 g_detoursHeapAllocatedMemoryInBytes = 0;
 
 // Bazel fork (Model W): overlay backing-store root (see globals.h).
 wchar_t* g_bazelWriteOverlayRoot = nullptr;
