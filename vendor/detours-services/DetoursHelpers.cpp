@@ -698,7 +698,7 @@ static bool ShouldResolveReparsePointsInPath(
 {
     bool ignoreReparsePointForPath =
         IgnoreReparsePoints() ||
-        (IgnoreFullReparsePointResolving() && !policyResult.EnableFullReparsePointParsing()) ||
+        IgnoreFullReparsePointResolving() ||
         policyResult.IndicateUntracked();
     return !ignoreReparsePointForPath;
 }

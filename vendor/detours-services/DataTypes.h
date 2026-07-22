@@ -177,8 +177,8 @@ enum FileAccessPolicy
     // 0x800 (was FileAccessPolicy_TreatDirectorySymlinkAsDirectory) removed:
     // never set by this launcher. Left as a reserved gap for layout stability.
 
-    // If set, full reparse point tracking should be done for this path/file
-    FileAccessPolicy_EnableFullReparsePointParsing = 0x1000,
+    // 0x1000 (was FileAccessPolicy_EnableFullReparsePointParsing) removed:
+    // never set by this launcher. Left as a reserved gap for layout stability.
 
     // bazel-sandbox-windows marker (NOT interpreted by BuildXL enforcement): tags a
     // scope that was EXPLICITLY declared as a bazel input/output grant (-r/-w/-d/tool),

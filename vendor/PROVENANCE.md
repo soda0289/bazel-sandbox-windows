@@ -458,3 +458,20 @@ report-file append) is deliberately **retained**.
   each two-line read with `const bool explicitlyReportDirectoryEnumeration = false;`
   (downstream report-level selection collapses accordingly); removed the accessor
   and the enum bit (reserved-gap comment left). Build + 10/10 tests pass.
+- **Never-set policy bit `FileAccessPolicy_EnableFullReparsePointParsing`
+  (0x1000)** — the builder never sets it on any scope, so
+  `PolicyResult::EnableFullReparsePointParsing()` always returned false. Two
+  consequences, both proven behavior-preserving: (1)
+  `IgnoreFullReparsePointResolvingForPath(pr)` = `IgnoreFullReparsePointResolving()
+  && !EnableFullReparsePointParsing()` reduced to just
+  `IgnoreFullReparsePointResolving()` (no policy dependence) -> inlined all 16 call
+  sites and deleted the wrapper; the `ShouldResolveReparsePointsInPath` term in
+  DetoursHelpers.cpp likewise dropped the `&& !...()`. (2)
+  `GetLevelToEnableFullReparsePointParsing(pr)` called
+  `FindLowestConsecutiveLevelThatStillHasProperty(EnableFullReparsePointParsing)`,
+  whose guard `if ((m_policy & fileAccessPolicy) != 0)` is never true when the bit
+  is unset, so it always returned 0; inlined both call sites to a literal `0` (the
+  `level >= 0` guards stay, runtime-valued) and deleted both
+  `GetLevelToEnableFullReparsePointParsing` and the now-unused
+  `FindLowestConsecutiveLevelThatStillHasProperty`. Removed the accessor and the
+  enum bit (reserved-gap comment left). Build + 10/10 tests (incl. reparse) pass.

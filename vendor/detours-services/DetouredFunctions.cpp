@@ -45,25 +45,6 @@ using std::wstring;
 
 #define NTQUERYDIRECTORYFILE_MIN_BUFFER_SIZE 4096
 
-static bool IgnoreFullReparsePointResolvingForPath(const PolicyResult& policyResult)
-{
-    return IgnoreFullReparsePointResolving() && !policyResult.EnableFullReparsePointParsing();
-}
-
-/// <summary>
-/// Given a policy result, get the level of the file path where the path should start to be checked for reparse points.
-/// d: is level 0, d:\a is level 1, etc...
-/// Every level >= the returned level should be checked for a reparse point.
-/// If a reparse point is found, all levels of the newly resolved path should be checked for reparse points again.
-/// Calls <code>IgnoreFullReparsePointResolving</code> and <code>PolicyResult.GetFirstLevelForFileAccessPolicy</code> to determine the level.
-/// </summary>
-static size_t GetLevelToEnableFullReparsePointParsing(const PolicyResult& policyResult)
-{
-    return IgnoreFullReparsePointResolving()
-        ? policyResult.FindLowestConsecutiveLevelThatStillHasProperty(FileAccessPolicy::FileAccessPolicy_EnableFullReparsePointParsing)
-        : 0;
-}
-
 /// <summary>
 /// Checks if a file is a reparse point by calling <code>GetFileAttributesW</code>.
 /// </summary>
@@ -200,7 +181,7 @@ static DWORD DetourGetFinalPathByHandle(_In_ HANDLE hFile, _Inout_ wstring& full
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 static void PathCache_Invalidate(const std::wstring& path, bool isDirectory, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         return;
     }
@@ -210,7 +191,7 @@ static void PathCache_Invalidate(const std::wstring& path, bool isDirectory, con
 
 static const Possible<std::pair<std::wstring, DWORD>> PathCache_GetResolvedPathAndType(const std::wstring& path, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         Possible<std::pair<std::wstring, DWORD>> p;
         p.Found = false;
@@ -222,7 +203,7 @@ static const Possible<std::pair<std::wstring, DWORD>> PathCache_GetResolvedPathA
 
 static bool PathCache_InsertResolvedPathWithType(const std::wstring& path, std::wstring& resolved, DWORD reparsePointType, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         return true;
     }
@@ -232,7 +213,7 @@ static bool PathCache_InsertResolvedPathWithType(const std::wstring& path, std::
 
 static const Possible<bool> PathCache_GetResolvingCheckResult(const std::wstring& path, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         Possible<bool> p;
         p.Found = false;
@@ -244,7 +225,7 @@ static const Possible<bool> PathCache_GetResolvingCheckResult(const std::wstring
 
 static bool PathCache_InsertResolvingCheckResult(const std::wstring& path, bool result, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         return true;
     }
@@ -258,7 +239,7 @@ static bool PathCache_InsertResolvedPaths(
     std::shared_ptr<std::vector<std::wstring>>& insertionOrder,
     std::shared_ptr<std::map<std::wstring, ResolvedPathType, CaseInsensitiveStringLessThan>>& resolvedPaths, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         return true;
     }
@@ -268,7 +249,7 @@ static bool PathCache_InsertResolvedPaths(
 
 static const Possible<ResolvedPathCacheEntries> PathCache_GetResolvedPaths(const std::wstring& path, bool preserveLastReparsePointInPath, const PolicyResult& policyResult)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         Possible<ResolvedPathCacheEntries> p;
         p.Found = false;
@@ -505,7 +486,7 @@ static bool ShouldResolveReparsePointsInPath(
         return false;
     }
 
-    if (IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreFullReparsePointResolving())
     {
         return AccessReparsePointTarget(path.GetPathString(), dwFlagsAndAttributes, INVALID_HANDLE_VALUE);
     }
@@ -527,7 +508,7 @@ static bool ShouldResolveReparsePointsInPath(
     wstring target;
     wstring resolver;
     size_t level = 0;
-    size_t levelToEnforceReparsePointParsingFrom = GetLevelToEnableFullReparsePointParsing(policyResult);
+    size_t levelToEnforceReparsePointParsingFrom = 0;
     for (auto iter = atoms.begin(); iter != atoms.end(); iter++)
     {
         resolver.append(*iter);
@@ -566,7 +547,7 @@ static void InvalidateReparsePointCacheIfNeeded(
 {
     if (!pathContainsReparsePoints
         && !IgnoreReparsePoints()
-        && !IgnoreFullReparsePointResolvingForPath(policyResult)
+        && !IgnoreFullReparsePointResolving()
         && WantsWriteAccess(desiredAccess)
         && FlagsAndAttributesContainReparsePointFlag(flagsAndAttributes))
     {
@@ -980,7 +961,7 @@ static bool ShouldTreatDirectoryReparsePointAsFile(
     // This access denial can break many tools or cause a lot of disallowed file access violations. Thus, we have a global flag whether to treat probed
     // directory symlinks as a directory or not; for now, the flag is set to true.
 
-    return !IgnoreFullReparsePointResolvingForPath(policyResult)            // Full reparse point resolving is enabled,
+    return !IgnoreFullReparsePointResolving()            // Full reparse point resolving is enabled,
         && (FlagsAndAttributesContainReparsePointFlag(dwFlagsAndAttributes) // and open attribute contains reparse point flag,
             || WantsWriteAccess(dwDesiredAccess));                          //   or write access is requested.
 }
@@ -1242,7 +1223,7 @@ static bool ResolveAllReparsePointsAndEnforceAccess(
     // Once we follow that symlink, the next path has to be checked at each level.
     bool first = true;
     size_t level = 0;
-    size_t levelToEnforceReparsePointParsingFrom = GetLevelToEnableFullReparsePointParsing(policyResult);
+    size_t levelToEnforceReparsePointParsingFrom = 0;
     while (true)
     {
         errno_t err = _wsplitpath_s(
@@ -1473,7 +1454,7 @@ static bool EnforceChainOfReparsePointAccesses(
 
     if (!cachedEntries.Found)
     {
-        if (IgnoreFullReparsePointResolvingForPath(policyResult))
+        if (IgnoreFullReparsePointResolving())
         {
             cachedOrder = std::make_shared<vector<wstring>>();
             resolvedLookUpTable = std::make_shared <map<wstring, ResolvedPathType, CaseInsensitiveStringLessThan>>();
@@ -1515,9 +1496,9 @@ static bool EnforceChainOfReparsePointAccesses(
 
         // When fully resolving paths, it is sometimes necessary to either pass back the fully resolved path to the caller, or not report it to BuildXL
         // at all (see <code>ResolveAllReparsePointsAndEnforceAccess</code>). The 'ResolvedPathType' enum is used to flag the resulting parts of resolving a
-        // path so we can make the distinction when providing cached results. When IgnoreFullReparsePointResolvingForPath(policyResult) is enabled, all files get flagged with
+        // path so we can make the distinction when providing cached results. When IgnoreFullReparsePointResolving() is enabled, all files get flagged with
         // 'ResolvedPathType::Intermediate' in DetourGetFinalPaths when populating the cache, so this check can be skipped too.
-        if (!IgnoreFullReparsePointResolvingForPath(policyResult) && type == ResolvedPathType::FullyResolved)
+        if (!IgnoreFullReparsePointResolving() && type == ResolvedPathType::FullyResolved)
         {
             if (resolvedPath != nullptr)
             {
@@ -1610,7 +1591,7 @@ static bool AdjustOperationContextAndPolicyResultWithFullyResolvedPath(
     const bool preserveLastReparsePoint,
     const bool isCreateDirectory = false)
 {
-    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolvingForPath(policyResult))
+    if (IgnoreReparsePoints() || IgnoreFullReparsePointResolving())
     {
         return true;
     }
@@ -3410,7 +3391,7 @@ HANDLE WINAPI Detoured_CreateFileW(
             return INVALID_HANDLE_VALUE;
         }
 
-        if (!IgnoreFullReparsePointResolvingForPath(policyResult))
+        if (!IgnoreFullReparsePointResolving())
         {
             shouldReportAccessCheck = false;
         }
@@ -7967,7 +7948,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
             return ntStatus;
         }
 
-        if (!IgnoreFullReparsePointResolvingForPath(policyResult))
+        if (!IgnoreFullReparsePointResolving())
         {
             shouldReportAccessCheck = false;
         }
@@ -8474,7 +8455,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
             return ntStatus;
         }
 
-        if (!IgnoreFullReparsePointResolvingForPath(policyResult))
+        if (!IgnoreFullReparsePointResolving())
         {
             shouldReportAccessCheck = false;
         }
