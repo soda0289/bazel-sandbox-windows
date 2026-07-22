@@ -10,7 +10,6 @@
 #include "ResolvedPathCache.h"
 #include "SendReport.h"
 #include "StringOperations.h"
-#include "SubstituteProcessExecution.h"
 #include "UnicodeConverter.h"
 
 // BazelSandbox: -n network hardening at the syscall layer (deny \Device\Afd).
@@ -2858,25 +2857,6 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
     _In_          LPSTARTUPINFOW        lpStartupInfo,
     _Out_         LPPROCESS_INFORMATION lpProcessInformation)
 {
-    bool injectedShim = false;
-    BOOL ret = MaybeInjectSubstituteProcessShim(
-        lpApplicationName,
-        lpCommandLine,
-        lpProcessAttributes,
-        lpThreadAttributes,
-        bInheritHandles,
-        dwCreationFlags,
-        lpEnvironment,
-        lpCurrentDirectory,
-        lpStartupInfo,
-        lpProcessInformation,
-        injectedShim);
-    if (injectedShim)
-    {
-        Dbg(L"Injected shim for lpCommandLine='%s', returning 0x%08X from CreateProcessW", lpCommandLine, ret);
-        return ret;
-    }
-
     DetouredScope scope;
 
     if (!MonitorChildProcesses() || scope.Detoured_IsDisabled())

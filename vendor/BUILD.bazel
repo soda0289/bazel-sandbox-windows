@@ -3,7 +3,7 @@ load("//:defs.bzl", "WIN10_DEFINES")
 
 package(default_visibility = ["//visibility:public"])
 
-# The 22 vendored BuildXL DetoursServices translation units.
+# The 21 vendored BuildXL DetoursServices translation units.
 _DETOURS_SERVICES_SRCS = [
     "detours-services/Assertions.cpp",
     "detours-services/CanonicalizedPath.cpp",
@@ -23,7 +23,6 @@ _DETOURS_SERVICES_SRCS = [
     "detours-services/PolicySearch.cpp",
     "detours-services/DeviceMap.cpp",
     "detours-services/DetouredProcessInjector.cpp",
-    "detours-services/SubstituteProcessExecution.cpp",
     "detours-services/FilesCheckedForAccess.cpp",
     "detours-services/PathTree.cpp",
     "detours-services/TreeNode.cpp",

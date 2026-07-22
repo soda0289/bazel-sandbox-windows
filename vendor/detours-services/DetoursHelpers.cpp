@@ -17,9 +17,119 @@
 #include <string>
 #include <stdio.h>
 #include <stack>
+#include <algorithm>
+#include <cwctype>
 
 using std::unique_ptr;
 using std::basic_string;
+using std::wstring;
+
+// Relocated from the removed SubstituteProcessExecution.cpp: general
+// command-line splitting used by the job-object breakaway check.
+static inline void ltrim_inplace(std::wstring& s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](wchar_t ch) {
+        return !std::iswspace(ch);
+        }));
+}
+
+// trim from end (in place)
+// https://stackoverflow.com/questions/216823/whats-the-best-way-to-trim-stdstring
+static inline void rtrim_inplace(std::wstring& s) {
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](wchar_t ch) {
+        return !std::iswspace(ch);
+        }).base(), s.end());
+}
+
+// trim from both ends (in place)
+// https://stackoverflow.com/questions/216823/whats-the-best-way-to-trim-stdstring
+static inline void trim_inplace(std::wstring& s) {
+    ltrim_inplace(s);
+    rtrim_inplace(s);
+}
+
+// Returns in 'command' the command from lpCommandLine without quotes, and in commandArgs the arguments from the remainder of the string.
+void FindApplicationNameFromCommandLine(const wchar_t *lpCommandLine, _Out_ std::wstring &command, _Out_ std::wstring &commandArgs)
+{
+    wstring fullCommandLine(lpCommandLine);
+    if (fullCommandLine.length() == 0)
+    {
+        command = wstring();
+        commandArgs = wstring();
+        return;
+    }
+
+    size_t argStartIndex;
+    const size_t fullCommandLineLength = fullCommandLine.length();
+
+    if (fullCommandLine[0] == L'"')
+    {
+        // Find the close quote. Might not be present which means the command
+        // is the full command line minus the initial quote.
+        size_t closeQuoteIndex = fullCommandLine.find(L'"', 1);
+        if (closeQuoteIndex == wstring::npos)
+        {
+            // No close quote. Take everything through the end of the command line as the command.
+            command = fullCommandLine.substr(1);
+            trim_inplace(command);
+            commandArgs = wstring();
+            argStartIndex = fullCommandLineLength;
+        }
+        else
+        {
+            if (closeQuoteIndex == fullCommandLine.length() - 1)
+            {
+                // Quotes cover entire command line.
+                command = fullCommandLine.substr(1, fullCommandLine.length() - 2);
+                argStartIndex = fullCommandLineLength;
+            }
+            else
+            {
+                wstring noQuoteCommand = fullCommandLine.substr(1, closeQuoteIndex - 1);
+
+                // Find the next delimiting space after the close double-quote.
+                // For example a command like "c:\program files"\foo we need to
+                // keep \foo and cut the quotes to produce c:\program files\foo
+                size_t spaceDelimiterIndex = fullCommandLine.find(L' ', closeQuoteIndex + 1);
+                if (spaceDelimiterIndex == wstring::npos)
+                {
+                    // No space, take everything through the end of the command line.
+                    spaceDelimiterIndex = fullCommandLineLength;
+                }
+
+                command = (noQuoteCommand +
+                    fullCommandLine.substr(closeQuoteIndex + 1, spaceDelimiterIndex - closeQuoteIndex - 1));
+
+                argStartIndex = spaceDelimiterIndex + 1;
+            }
+        }
+    }
+    else
+    {
+        // No open quote, pure space delimiter.
+        size_t spaceDelimiterIndex = fullCommandLine.find(L' ');
+        if (spaceDelimiterIndex == wstring::npos)
+        {
+            // No space, take everything through the end of the command line.
+            spaceDelimiterIndex = fullCommandLineLength;
+        }
+
+        command = fullCommandLine.substr(0, spaceDelimiterIndex);
+        argStartIndex = spaceDelimiterIndex + 1;
+    }
+
+    trim_inplace(command);
+
+    if (argStartIndex < fullCommandLineLength)
+    {
+        commandArgs = fullCommandLine.substr(argStartIndex);
+        trim_inplace(commandArgs);
+    }
+    else
+    {
+        commandArgs = wstring();
+    }
+}
+
 
 // ----------------------------------------------------------------------------
 // FUNCTION DEFINITIONS
@@ -571,89 +681,6 @@ void AppendStringFromWriteChars(const byte* payloadBytes, size_t& offset, _Out_ 
     offset += sizeof(wchar_t) * len;
 }
 
-static inline void SkipWriteCharsString(const byte* payloadBytes, size_t& offset)
-{
-    uint32_t len = ParseUint32(payloadBytes, offset);
-    offset += sizeof(wchar_t) * len;
-}
-
-static SubstituteProcessExecutionPluginFunc GetSubstituteProcessExecutionPluginFunc()
-{
-    assert(g_SubstituteProcessExecutionPluginDllHandle != nullptr);
-
-    // Different compiler or different compiler settings can result in different function name variants.
-    //
-    // X64 version typically has:
-    //     ordinal hint RVA      name
-    //
-    //     1    0 00011069 CommandMatches = @ILT + 100(CommandMatches)
-    //
-    // X86 version can have:
-    //     ordinal hint RVA      name
-    //
-    //     1    0 00011276 _CommandMatches@24 = @ILT + 625(_CommandMatches@24)
-
-
-    // (1) Check for CommandMatches.
-    std::string winApiProcName("CommandMatches");
-    SubstituteProcessExecutionPluginFunc substituteProcessExecutionPluginFunc = reinterpret_cast<SubstituteProcessExecutionPluginFunc>(
-        reinterpret_cast<void*>(GetProcAddress(g_SubstituteProcessExecutionPluginDllHandle, winApiProcName.c_str())));
-    if (substituteProcessExecutionPluginFunc != nullptr)
-    {
-        return substituteProcessExecutionPluginFunc;
-    }
-
-    // (2) Check for CommandMatches@<param_size> based on platform.
-#if defined(_WIN64)
-    winApiProcName.append("@48"); // 6 64-bit parameters
-#elif defined(_WIN32)
-    winApiProcName.append("@24"); // 6 32-bit parameters
-#endif
-    substituteProcessExecutionPluginFunc = reinterpret_cast<SubstituteProcessExecutionPluginFunc>(
-        reinterpret_cast<void*>(GetProcAddress(g_SubstituteProcessExecutionPluginDllHandle, winApiProcName.c_str())));
-    if (substituteProcessExecutionPluginFunc != nullptr)
-    {
-        return substituteProcessExecutionPluginFunc;
-    }
-
-    // (3) Check for _CommandMatches@<param_size>.
-    winApiProcName.insert(0, 1, '_');
-    substituteProcessExecutionPluginFunc = reinterpret_cast<SubstituteProcessExecutionPluginFunc>(
-        reinterpret_cast<void*>(GetProcAddress(g_SubstituteProcessExecutionPluginDllHandle, winApiProcName.c_str())));
-    if (substituteProcessExecutionPluginFunc != nullptr)
-    {
-        return substituteProcessExecutionPluginFunc;
-    }
-
-    Dbg(L"Unable to find 'CommandMatches', 'CommandMatches@<param_size>', or '_CommandMatches@<param_size>' functions in SubstituteProcessExecutionPluginFunc '%s', lasterr=%d", g_SubstituteProcessExecutionPluginDllPath, GetLastError());
-    return nullptr;
-}
-
-static void LoadSubstituteProcessExecutionPluginDll()
-{
-    assert(g_SubstituteProcessExecutionPluginDllPath != nullptr);
-    // Since we call LoadLibrary with this path, we need to ensure that it is a full path.
-    assert(GetRootLength(g_SubstituteProcessExecutionPluginDllPath) > 0);
-
-    Dbg(L"Loading substitute process plugin DLL at '%s'", g_SubstituteProcessExecutionPluginDllPath);
-
-    g_SubstituteProcessExecutionPluginDllHandle = LoadLibraryW(g_SubstituteProcessExecutionPluginDllPath);
-
-    if (g_SubstituteProcessExecutionPluginDllHandle != nullptr)
-    {
-        g_SubstituteProcessExecutionPluginFunc = GetSubstituteProcessExecutionPluginFunc();
-
-        if (g_SubstituteProcessExecutionPluginFunc == nullptr)
-        {
-            FreeLibrary(g_SubstituteProcessExecutionPluginDllHandle);
-        }
-    }
-    else
-    {
-        Dbg(L"Failed LoadLibrary for LoadSubstituteProcessExecutionPluginDll %s, lasterr=%d", g_SubstituteProcessExecutionPluginDllPath, GetLastError());
-    }
-}
-
 
 /// <summary>
 /// Gets the final full path by handle.
@@ -967,38 +994,6 @@ bool ParseFileAccessManifest(
     // Update the injector with the DLLs
     g_pDetouredProcessInjector->SetDlls(g_lpDllNameX86, g_lpDllNameX64);
     offset += dllBlock->GetSize();
-
-    PCManifestSubstituteProcessExecutionShim pShimInfo = reinterpret_cast<PCManifestSubstituteProcessExecutionShim>(&payloadBytes[offset]);
-    pShimInfo->AssertValid();
-    offset += pShimInfo->GetSize();
-    g_SubstituteProcessExecutionShimPath = CreateStringFromWriteChars(payloadBytes, offset);
-    if (g_SubstituteProcessExecutionShimPath != nullptr)
-    {
-        g_ProcessExecutionShimAllProcesses = pShimInfo->ShimAllProcesses != 0;
-
-        // Both _WIN32 and _WIN64 are defined when targeting 32-bit windows from 64-bit windows.
-        // See: https://docs.microsoft.com/en-us/cpp/preprocessor/predefined-macros?redirectedfrom=MSDN&view=vs-2019
-#if defined(_WIN64) // Defined as 1 when the compilation target is 64-bit ARM or x64. Otherwise, undefined.
-        SkipWriteCharsString(payloadBytes, offset);  // Skip 32-bit path.
-        g_SubstituteProcessExecutionPluginDllPath = CreateStringFromWriteChars(payloadBytes, offset);
-#elif defined(_WIN32) // Defined as 1 when the compilation target is 32-bit ARM, 64-bit ARM, x86, or x64
-        g_SubstituteProcessExecutionPluginDllPath = CreateStringFromWriteChars(payloadBytes, offset);
-        SkipWriteCharsString(payloadBytes, offset);  // Skip 64-bit path.
-#endif
-        uint32_t numProcessMatches = ParseUint32(payloadBytes, offset);
-        g_pShimProcessMatches = new vector<ShimProcessMatch*>();
-        for (uint32_t i = 0; i < numProcessMatches; i++)
-        {
-            wchar_t *processName = CreateStringFromWriteChars(payloadBytes, offset);
-            wchar_t *argumentMatch = CreateStringFromWriteChars(payloadBytes, offset);
-            g_pShimProcessMatches->push_back(new ShimProcessMatch(processName, argumentMatch));
-        }
-    }
-
-    if (g_SubstituteProcessExecutionPluginDllPath != nullptr)
-    {
-        LoadSubstituteProcessExecutionPluginDll();
-    }
 
     // Bazel fork (Model W write-overlay): overlay backing-store root. A padded
     // WCHAR block (same layout as the report block) written by ManifestBuilder

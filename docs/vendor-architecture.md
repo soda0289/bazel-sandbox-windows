@@ -46,8 +46,8 @@ The vendored sources can compile into two different DLLs, selected by a macro
 | **Manifest parse + wire types** | `DetoursHelpers.cpp` (parse), `DataTypes.h`, `DetouredFunctionTypes.h`, `globals.h`, `sandbox-common/FileAccessManifest*` |
 | **Reporting** (inert for us, see §5) | `SendReport.cpp`, `DebuggingHelpers.cpp` |
 | **Support** | `DetouredScope.cpp`, `HandleOverlay.cpp`, `MetadataOverrides.cpp`, `FilesCheckedForAccess.cpp`, header-only `ResolvedPathCache.h`, `UnicodeConverter.h`, `UniqueHandle.h`, `UtilityHelpers.h`, `buildXL_mem.h`, `Assertions.cpp` |
-| **Child process handling** | `DetouredProcessInjector.cpp`, `SubstituteProcessExecution.cpp` (wire-format only, inert) |
-| **Inert in our build** | `DeviceMap.cpp` (stubs), `SubstituteProcessExecution.cpp`, all `BUILDXL_NATIVES_LIBRARY` blocks |
+| **Child process handling** | `DetouredProcessInjector.cpp` |
+| **Inert in our build** | `DeviceMap.cpp` (stubs), all `BUILDXL_NATIVES_LIBRARY` blocks |
 
 ## 4. The `DetoursServices` ↔ `DetouredFunctions` contract
 
@@ -230,7 +230,8 @@ never meaningfully executed in our configuration:
 - USN reporting, directory-enumeration reporting, process-arg reporting.
 - The reporting subsystem (`SendReport`, most of `DebuggingHelpers`) — inert by
   default; `--trace` re-activates the file-access report path (see above).
-- `DeviceMap` (stubs), `SubstituteProcessExecution` (wire-format only).
+- `DeviceMap` (stubs). (`SubstituteProcessExecution` was removed outright — see
+  the hard-fork note in `vendor/PROVENANCE.md`.)
 
 ## 6. Guidance for future shrinking / extraction
 
@@ -253,7 +254,7 @@ Ordered by risk:
      breaks easy re-sync from upstream.
 
 **Do NOT touch** `DataTypes.h`'s wire-format structs (e.g.
-`ManifestSubstituteProcessExecutionShim_t`) without simultaneously updating
+`ManifestDllBlock`, the report block) without simultaneously updating
 `src/manifest_builder.cpp` — they are the byte-for-byte launcher↔DLL contract.
 
 Because we use such a small policy/manifest subset (§5), a *future* clean-room

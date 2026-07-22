@@ -290,20 +290,10 @@ volatile LONG64 g_detoursMaxHandleHeapEntries = 0;
 // Currently allocated entries in the HandleHeapMap hash table. Allocated in private heap.
 volatile LONG64 g_detoursHandleHeapEntries = 0;
 
-//
-// Substitute process execution shim.
-//
-wchar_t* g_SubstituteProcessExecutionShimPath = nullptr;
-bool g_ProcessExecutionShimAllProcesses;
-
 // Bazel fork (Model W): overlay backing-store root (see globals.h).
 wchar_t* g_bazelWriteOverlayRoot = nullptr;
 // Bazel fork (Model W): overlay source root, stripped to map virtual->backing.
 wchar_t* g_bazelOverlaySourceRoot = nullptr;
-wchar_t* g_SubstituteProcessExecutionPluginDllPath = nullptr;
-HMODULE g_SubstituteProcessExecutionPluginDllHandle;
-SubstituteProcessExecutionPluginFunc g_SubstituteProcessExecutionPluginFunc;
-vector<ShimProcessMatch*>* g_pShimProcessMatches = nullptr;
 
 //
 // Real Windows API function pointers

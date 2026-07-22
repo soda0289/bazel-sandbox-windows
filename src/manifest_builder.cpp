@@ -335,10 +335,7 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         PutPaddedAnsi(out, dllX86_);
         PutPaddedAnsi(out, dllX64_);
     }
-    // 11. Substitute process shim: ShimAllProcesses 0, WriteChars(null)
-    PutU32(out, 0);
-    PutChars(out, nullptr);
-    // 11.5 Model W write-overlay backing-store root (Bazel fork). Padded WCHAR
+    // 11. Model W write-overlay backing-store root (Bazel fork). Padded WCHAR
     // block laid out exactly like the report block (block 9): a size word (padded
     // byte count of the NUL-terminated WCHAR path region) followed by the path +
     // padding, so the following manifest tree stays 4-byte aligned. Empty root =>

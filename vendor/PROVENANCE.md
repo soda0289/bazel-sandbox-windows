@@ -24,9 +24,11 @@ removed.)
 
 ## Divergence from upstream
 
-The vendored engine is kept as close to upstream as possible. As of the pinned
-commit, **twelve vendored files diverge from upstream**; every other file is
-byte-identical. The changes are all additive parity work for this project (they
+The vendored engine started as a close-to-upstream copy. At the baseline tag
+(`vendored-buildxl-baseline-13c5c9d`, before the 2026-07-21 hard fork below),
+**twelve vendored files diverge from upstream** and every other file is
+byte-identical; that is the state [`detours-services.patch`](./detours-services.patch)
+records. The changes below are all additive parity work for this project (they
 extend behaviour, they do not rewrite BuildXL's enforcement) and fall into a few
 groups:
 
@@ -111,8 +113,8 @@ call-site grafts that invoke those helpers plus a single `#include`. This keeps 
 makes the project/upstream licensing boundary explicit.
 
 The exact diff is captured in [`detours-services.patch`](./detours-services.patch)
-(unified diff, paths relative to a BuildXL checkout root). It applies cleanly to
-the pinned commit:
+(unified diff, paths relative to a BuildXL checkout root). At the baseline tag it
+applies cleanly to the pinned commit:
 
 ```sh
 # from the root of a BuildXL checkout at commit 13c5c9d
@@ -137,20 +139,44 @@ upstream files are intentionally absent:
 - **`ManifestIterator.{cpp,h}`** — not in the build's source list and only
   self-referenced; dead on this build.
 - **`Common/FileAccessManifest.cpp`** — replaced by `src/manifest_builder.cpp`.
+- **`SubstituteProcessExecution.{cpp,h}`** — removed 2026-07-21 (hard fork). The
+  substitute-process shim let BuildXL swap a child's image for a plugin-selected
+  one; this launcher never enables it (the manifest always carried an empty shim
+  block), so the whole subsystem was dead. The one still-live helper it held,
+  `FindApplicationNameFromCommandLine` (used by the job-object breakaway check),
+  was relocated verbatim into `DetoursHelpers.cpp`. The now-unused shim block was
+  also dropped from the manifest wire format (`ManifestSubstituteProcessExecutionShim_t`
+  in `DataTypes.h` + the producer block in `src/manifest_builder.cpp` + the parse
+  block in `DetoursHelpers.cpp`, removed in lockstep).
 
-Other feature areas we do not use at runtime (reporting, timestamp faking,
-substitute-process shim, full reparse-point resolution, DeviceMap) are left in
-place because their translation units are still compiled and linked; removing
-them would require build and link-time surgery for little benefit. See the
-build's source list in `BUILD.bazel` for the authoritative set of compiled
-translation units, and the repository `README.md` "Intentionally dropped"
-section for the feature-level rationale.
+As of the **2026-07-21 hard fork**, feature areas we do not use at runtime
+(reporting, timestamp faking, substitute-process shim, full reparse-point
+resolution, DeviceMap) are being **removed outright** rather than left compiled —
+this repository no longer tracks upstream, so "keep it close to upstream" no
+longer applies. See the build's source list in `BUILD.bazel` for the current set
+of compiled translation units, and the repository `README.md` "Intentionally
+dropped" section for the feature-level rationale.
 
-## Refreshing the vendored copy
+## Hard fork — no longer tracking upstream (2026-07-21)
 
-1. Check out the desired BuildXL commit.
-2. Copy the files listed above over this directory.
-3. Reapply `detours-services.patch` (or re-add the network-sandbox wiring by hand
-   if upstream has drifted), then regenerate the patch and update the pinned
-   commit above.
-4. Rebuild and run the full test suite (`bazel test //...`).
+As of 2026-07-21 this vendored engine is a **hard fork**: it no longer tracks
+`microsoft/BuildXL`, and dead BuildXL scaffolding is being removed outright.
+
+The pinned commit above, the divergence description, and
+[`detours-services.patch`](./detours-services.patch) describe the **last
+upstream-tracking baseline**, frozen at git tag
+**`vendored-buildxl-baseline-13c5c9d`**. At that tag the patch was verified to
+apply cleanly in both directions (reverse against the vendored tree, forward
+against pristine `13c5c9d`), and its a-side blob hashes match upstream
+byte-for-byte. From the fork point onward the vendored tree diverges further
+(files removed and edited); the patch is retained as a **historical and
+licensing record**, not a live diff, and is **not** regenerated for post-fork
+changes.
+
+To recover pristine upstream or inspect the original divergence, check out the
+baseline tag and reverse-apply the patch there:
+
+```sh
+git checkout vendored-buildxl-baseline-13c5c9d
+git apply --reverse -p6 --directory=vendor/detours-services vendor/detours-services.patch
+```
