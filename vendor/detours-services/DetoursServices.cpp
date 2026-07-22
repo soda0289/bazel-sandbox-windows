@@ -231,7 +231,6 @@ PCWSTR g_currentProcessCommandLine = nullptr;
 FileAccessManifestFlag g_fileAccessManifestFlags;
 
 FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
-uint64_t g_FileAccessManifestPipId;
 
 PCManifestRecord g_manifestTreeRoot;
 

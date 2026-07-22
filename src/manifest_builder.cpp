@@ -302,9 +302,7 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
     PutU32(out, flags_);
     // 7. Extra flags
     PutU32(out, extraFlags_);
-    // 8. PipId (int64)
-    PutU64(out, 0);
-    // 9. Report block. Empty path => size 0 (no report block, pure enforcement).
+    // 8. Report block. Empty path => size 0 (no report block, pure enforcement).
     // Otherwise a report *path* block: Size = byte length of the field holding a
     // NUL-terminated WCHAR path, padded up to a 4-byte multiple. Padding matters:
     // every following block (and the whole manifest tree) must stay 4-aligned, or
@@ -323,7 +321,7 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 10. Dll block
+    // 9. Dll block
     {
         uint32_t l0 = PaddedAnsiLength(dllX86_);
         uint32_t l1 = PaddedAnsiLength(dllX64_);
@@ -334,7 +332,7 @@ std::vector<uint8_t> ManifestBuilder::Build(uint32_t injectionTimeoutMins) {
         PutPaddedAnsi(out, dllX86_);
         PutPaddedAnsi(out, dllX64_);
     }
-    // 11. Model W write-overlay backing-store root (Bazel fork). Padded WCHAR
+    // 10. Model W write-overlay backing-store root (Bazel fork). Padded WCHAR
     // block laid out exactly like the report block (block 9): a size word (padded
     // byte count of the NUL-terminated WCHAR path region) followed by the path +
     // padding, so the following manifest tree stays 4-byte aligned. Empty root =>

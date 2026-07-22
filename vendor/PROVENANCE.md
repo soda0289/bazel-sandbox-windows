@@ -337,9 +337,7 @@ report-file append) is deliberately **retained**.
   `g_parentProcessId` was defined but never read (its last reader,
   `RetrieveParentProcessId`, went with the process-data reporting) — deleted.
   Pure dead-code removal; build + 10/10 tests pass. (`g_FileAccessManifestPipId`
-  is now write-only after the TraceLogging removal; left in place pending the
-  manifest-parse audit since it rides the wire format.)
-
+  was left write-only after this change; it is removed in a later entry.)
 - **Dead `CreateDetouredProcess` public wrapper + its exclusive helpers** — the
   standalone `CreateDetouredProcess` API (BuildXL's managed side used to P/Invoke
   it) is not exported by this DLL (only `BazelSandboxDetoursServicesAnchor` is)
@@ -351,3 +349,12 @@ report-file append) is deliberately **retained**.
   `CreateProcAttributesForExplicitHandleInheritance`, `CreateProcessAttributes`
   (~224 lines in `DetoursServices.cpp`) — plus the header declaration. Pure
   dead-code removal; build + 10/10 tests pass.
+- **Write-only `g_FileAccessManifestPipId` + its `ManifestPipId` wire block** —
+  BuildXL used the PipId to correlate reported accesses back to a pip; this
+  launcher's only reader was the removed ETW `TraceLoggingWrite`, leaving the
+  global write-only and the manifest's PipId always emitted as `0`. Dropped the
+  block from both sides of our (project-owned) wire format in lockstep: the
+  builder no longer emits the `PutU64(out, 0)` PipId word (`manifest_builder.cpp`),
+  the parser no longer reads it (`DetoursHelpers.cpp`), and the `g_...PipId`
+  global, its externs, and the `ManifestPipId` struct (`DataTypes.h`) are gone.
+  Build + 10/10 tests pass.

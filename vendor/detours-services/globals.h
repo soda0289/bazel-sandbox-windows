@@ -36,7 +36,6 @@ extern PCWSTR g_currentProcessCommandLine;
 
 extern FileAccessManifestFlag g_fileAccessManifestFlags;
 extern FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
-extern uint64_t g_FileAccessManifestPipId;
 
 extern PCManifestRecord g_manifestTreeRoot;
 

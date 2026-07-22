@@ -854,11 +854,6 @@ bool ParseFileAccessManifest(
     g_pDetouredProcessInjector->SetPayload(payloadBytes, payloadSize);
     offset += extraFlags->GetSize();
 
-    PCManifestPipId pipId = reinterpret_cast<PCManifestPipId>(&payloadBytes[offset]);
-    pipId->AssertValid();
-    g_FileAccessManifestPipId = static_cast<uint64_t>(pipId->PipId);
-    offset += pipId->GetSize();
-
     PCManifestReport report = reinterpret_cast<PCManifestReport>(&payloadBytes[offset]);
     report->AssertValid();
 

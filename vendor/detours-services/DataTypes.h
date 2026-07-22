@@ -464,30 +464,6 @@ typedef struct ManifestExtraFlags_t
 typedef const ManifestExtraFlags * PCManifestExtraFlags;
 
 // ==========================================================================
-// == ManifestPipId
-// ==========================================================================
-typedef struct ManifestPipId_t
-{
-    GENERATE_TAG("ManifestPipId", 0xF1A6B10E)
-
-#ifdef _DEBUG
-    uint32_t padding; // Padding needed since a struct of int and int64 has extra padding, so the int64 is properly aligned.
-#endif
-
-    typedef uint64_t    PipIdType;
-    PipIdType           PipId;
-
-    /// GetSize
-    ///
-    /// There are no variable-length members, so the length of this struct can be determined using sizeof.
-    size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestPipId_t);
-    }
-} ManifestPipId;
-typedef const ManifestPipId * PCManifestPipId;
-
-// ==========================================================================
 // == ManifestReport
 // ==========================================================================
 typedef struct ManifestReport_t
