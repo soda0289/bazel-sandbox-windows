@@ -186,25 +186,6 @@ void WriteWarningOrErrorF(PCWSTR format, ...)
 
 #endif // DETOURS_SERVICES_NATIVES_LIBRARY
 
-#ifdef BUILDXL_NATIVES_LIBRARY
-void Dbg(PCWSTR format, ...)
-{
-    UNREFERENCED_PARAMETER(format);
-}
-
-void HandleDetoursInjectionAndCommunicationErrors(int errorCode, LPCWSTR eventLogMsgPtr, LPCWSTR eventLogMsgId, bool hardExitOnErrorIfEnabled)
-{
-    UNREFERENCED_PARAMETER(errorCode);
-    UNREFERENCED_PARAMETER(eventLogMsgPtr);
-    UNREFERENCED_PARAMETER(eventLogMsgId);
-    UNREFERENCED_PARAMETER(hardExitOnErrorIfEnabled);
-
-    fflush(stdout);
-    fflush(stderr);
-}
-
-#endif // BUILDXL_NATIVES_LIBRARY
-
 // This flag allows to attach with debugger to debug problems without having to hit
 // always this DebugBreak. One can set a bpt here and set the var to true from within the debugger.
 // Then DebugBreak will break.
