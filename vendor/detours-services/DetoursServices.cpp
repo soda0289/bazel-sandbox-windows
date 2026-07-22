@@ -124,89 +124,24 @@ extern "C" {
 
 /*
 
-This project implements monitoring and enforcement of environment-facing application interactions for the BuildXL build system.
+This translation unit is the DLL bootstrap for the sandbox enforcement engine.
+Detours injects this library into each sandboxed process; the parent (our
+BazelSandbox launcher) hands it a binary File Access Manifest payload via the
+Detours payload mechanism.
 
-The BuildXL build system uses Detours to inject this library into processes executed by
-the build system.  The build system also communicates a payload to this library, which
-describes the access rules to use, in particular for the file system.
+All setup happens when the DLL is loaded into the target process, inside the
+DllMain / DLL_PROCESS_ATTACH handler: DllProcessAttach() locates the payload,
+ParseFileAccessManifest() (DetoursHelpers.cpp) parses it into the global
+manifest tree + flags, and the DetourAttach() table below installs the Win32 /
+Nt hooks (bodies in DetouredFunctions.cpp). After initialization the parsed
+manifest globals are read-only, so hook bodies need no synchronization to read
+them.
 
-For more information, look in $(ROOT)\BuildXL.Processes
-
-All of the setup for this library occurs when this DLL is loaded into the target process,
-and occurs within the DllMain DLL_PROCESS_ATTACH handler.  The setup code uses the Detours
-API to find the payload, then it parses the payload and sets up several global variables
-with the parsed form of the payload.  After initialization, these global data structures
-do not change, and so there is no need for any synchronization when accessing them.
-
-When this library initializes (during DllMain / DLL_PROCESS_ATTACH), it uses the Detours
-API to locate a "detours services manifest", which was provided by the process that created
-the current process.  (Typically, the creating process is an instance of the BuildXL build
-system.)  The manifest specifies which files this process may access.  The manifest consists
-of a list of directories (scopes) and policies that apply to them, and a list of specific
-filenames and the policies that apply to them.
-
-The manifest is encoded as a single, NUL-terminated UTF-16 string.  The string consists of
-lines, and each line is terminated by a \r\n pair.  Each line begins with a keyword, which
-indicates the type of line (directive).  The complete list of keywords:
-
-* file - specifies a policy that applies to a specific file
-* scope - specifies a policy that applies to a directory and its contents
-* end - specifies the end of the entire manifest
-* flags - specifies flags that control the behavior of the DetouredFileServices.dll
-library
-* report - specifies the absolute path to a report file (output); this directive is optional,
-and may be specified at most once.  If any 'scope' directive specifies Report=1,
-then the 'report' directive is required.
-
-
-The 'file' directive has this form:
-
-    file,<pathid>,<path>,<policy>
-
-    where:
-    * <pathid> is a short identifier of the file
-    * <path> is an absolute, drive-based path which identifies (or will identify) a file
-    * <policy> is a decimal integer which specifies the policy to apply to this file.
-        The policy must be exactly one of the following values:
-            1 - AllowRead.  Read-only access to the file is allowed.
-            2 - AllowReadWrite.  Read and write access to the file is allowed.
-
-
-The 'scope' directive has this form:
-
-    scope,<pathid>,<flags>,<path>,<policy>
-
-    where:
-    * <pathid> is a short identifier of the file
-    * <flags> is a set of flags (FileAccessScopeFlag) expressed in hexadecimal (with no hex prefix)
-    * <path> is an absolute, drive-based path which identifies (or will identify) a directory
-    * <policy> is a decimal integer which specifies the policy to apply to this directory and
-    all of its contents (including subdirectories) (DetoursFileScopePolicy).
-
-    The assigned meanings of bits of <flags> are:
-        bit 0: IsRecursive
-        bit 1: AllowSilentFailureonFileNotFound
-        bit 2: Report - If set, then all accesses will be reported to the report file.
-        (all other bits must be zero)
-
-    <policy> must be exactly one of the following values:
-        1 - AllowAll
-        2 - DenyAll
-        3 - RequireFileAccessEntry
-
-
-The 'report' directive can have two forms:
-
-    report,#<handle>
-    report,<path>
-
-    The <handle> form specifies the unsigned, decimal value of a file HANDLE.
-    The <path> form specifies a path to a file.  The file is opened with FILE_SHARE_READ | FILE_SHARE_WRITE.
-
-The report information is written as unbuffered UTF-8 text.  Each line is written in a single WriteFile() call.
-This allows multiple processes to write to the same file object concurrently; the Windows storage stack guarantees
-that the contents (the individual bytes) of the writes will not interleave, and when append-mode writes are used,
-that none of the appends will be lost.
+The manifest wire format is a compact little-endian binary blob produced by our
+own src/manifest_builder.cpp (NOT the legacy BuildXL text format). Its layout
+is documented at the builder and in DataTypes.h (the Manifest*_t structs the
+parser casts over). Access reporting, when a report path is present, is written
+as UTF-8 lines via SendReport.cpp.
 
 */
 
