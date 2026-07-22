@@ -451,3 +451,10 @@ report-file append) is deliberately **retained**.
   probe-only reparse-resolution predicate in `ShouldResolveReparsePointsInPathForDeviceOrDirectorySymlink`)
   was always true. Dropped the term, the accessor, and the enum bit (reserved-gap
   comment left). Build + 10/10 tests pass.
+- **Never-set policy bit `FileAccessPolicy_ReportDirectoryEnumerationAccess`
+  (0x80)** — the builder never sets it, so `PolicyResult::ReportDirectoryEnumeration()`
+  always returned false and the four `explicitlyReportDirectoryEnumeration =
+  isEnumeration && reportDirectoryEnumeration` sites were always false. Replaced
+  each two-line read with `const bool explicitlyReportDirectoryEnumeration = false;`
+  (downstream report-level selection collapses accordingly); removed the accessor
+  and the enum bit (reserved-gap comment left). Build + 10/10 tests pass.

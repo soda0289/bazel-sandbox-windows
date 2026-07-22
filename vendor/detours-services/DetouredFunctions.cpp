@@ -5583,9 +5583,9 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
 
     fileOperationContext.OpenedFileOrDirectoryAttributes = GetAttributesForFileOrDirectory(!searchPathIsFile);
 
-    // Only report the enumeration if specified by the policy
-    bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
-    bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
+    // ReportDirectoryEnumerationAccess is never set by this launcher, so directory
+    // enumeration is never explicitly reported by policy.
+    const bool explicitlyReportDirectoryEnumeration = false;
 
     // TODO: Perhaps should have a specific access check for enumeration.
     //       For now, we always allow enumeration and report it.
@@ -7187,9 +7187,9 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
             lastError = GetLastError();
         }
 
-        // Only report the enumeration if specified by the policy
-        bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
-        bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
+        // ReportDirectoryEnumerationAccess is never set by this launcher, so directory
+        // enumeration is never explicitly reported by policy.
+        const bool explicitlyReportDirectoryEnumeration = false;
 
         AccessCheckResult directoryAccessCheck(
             isEnumeration ? RequestedAccess::Enumerate : RequestedAccess::Probe,
@@ -7352,9 +7352,9 @@ NTSTATUS NTAPI Detoured_ZwQueryDirectoryFile(
                 lastError = GetLastError();
             }
 
-            // Only report the enumeration if specified by the policy
-            bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
-            bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
+            // ReportDirectoryEnumerationAccess is never set by this launcher, so directory
+            // enumeration is never explicitly reported by policy.
+            const bool explicitlyReportDirectoryEnumeration = false;
 
             AccessCheckResult directoryAccessCheck(
                 isEnumeration ? RequestedAccess::Enumerate : RequestedAccess::Probe,
@@ -7506,9 +7506,9 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFileEx(
             lastError = GetLastError();
         }
 
-        // Only report the enumeration if specified by the policy
-        bool reportDirectoryEnumeration = directoryPolicyResult.ReportDirectoryEnumeration();
-        bool explicitlyReportDirectoryEnumeration = isEnumeration && reportDirectoryEnumeration;
+        // ReportDirectoryEnumerationAccess is never set by this launcher, so directory
+        // enumeration is never explicitly reported by policy.
+        const bool explicitlyReportDirectoryEnumeration = false;
 
         AccessCheckResult directoryAccessCheck(
             isEnumeration ? RequestedAccess::Enumerate : RequestedAccess::Probe,

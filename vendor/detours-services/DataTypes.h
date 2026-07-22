@@ -159,9 +159,8 @@ enum FileAccessPolicy
     // BuildXL uses this information to discover dynamic anti-dependencies, such as those on an #include search path, sneaky loader search paths, etc.
     FileAccessPolicy_ReportAccessIfNonExistent = 0x40,
 
-    // If set, then we will report attempts to enumerate directories under this scope
-    // BuildXL uses this information to discover dynamic anti-dependencies/directory enumerations, such as those on an #include search path, sneaky loader search paths, etc.
-    FileAccessPolicy_ReportDirectoryEnumerationAccess = 0x80,
+    // 0x80 (was FileAccessPolicy_ReportDirectoryEnumerationAccess) removed:
+    // never set by this launcher. Left as a reserved gap for layout stability.
 
     // Allows a symlink creation to succeed.
     FileAccessPolicy_AllowSymlinkCreation = 0x100,

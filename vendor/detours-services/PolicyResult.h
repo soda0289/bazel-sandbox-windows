@@ -145,7 +145,6 @@ public:
     bool AllowSymlinkCreation() const { return (m_policy & FileAccessPolicy_AllowSymlinkCreation) != 0; }
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool OverrideAllowWriteForExistingFiles() const { return (m_policy & FileAccessPolicy_OverrideAllowWriteForExistingFiles) != 0; }
-    bool ReportDirectoryEnumeration() const { return (m_policy & FileAccessPolicy_ReportDirectoryEnumerationAccess) != 0; }
     bool IndicateUntracked() const { return ((m_policy & FileAccessPolicy_AllowAll) == FileAccessPolicy_AllowAll) && ((m_policy & FileAccessPolicy_ReportAccess) == 0); }
     bool EnableFullReparsePointParsing() const { return (m_policy & FileAccessPolicy_EnableFullReparsePointParsing) != 0; }
     DWORD GetPathId() const { return m_policySearchCursor.IsValid() ? m_policySearchCursor.Record->GetPathId() : 0; }
