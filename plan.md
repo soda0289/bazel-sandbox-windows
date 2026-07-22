@@ -189,3 +189,13 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   -> `CreateProcessAsUserW` passthrough). Builder now sets only 3 extra flags
   (`DeniedReadsAsNotFound`, `FilterDirectoryEnumeration`, `WriteOverlay`).
   Build + 10/10.
+- 2026-07-22: **Phase 4 (dc-policy-bits) complete.** Removed every never-set
+  `FileAccessPolicy` bit, each its own build+10/10 commit:
+  `TreatDirectorySymlinkAsDirectory` (0x800), `ReportDirectoryEnumerationAccess`
+  (0x80), `EnableFullReparsePointParsing` (0x1000, also deleted the
+  `IgnoreFullReparsePointResolvingForPath`/`GetLevelToEnableFullReparsePointParsing`/
+  `FindLowestConsecutiveLevelThatStillHasProperty` helpers), and
+  `ReportAccessIf{Existent,NonExistent}` (0x10/0x40) + the `ReportAccess` combo
+  (simplified `IndicateUntracked`, `explicitReport`, `CreateAccessCheckResult`).
+  Remaining bits are all builder-set: AllowRead/Write/ReadIfNonExistent/
+  CreateDirectory/SymlinkCreation, OverrideAllowWriteForExistingFiles, DeclaredInput.
