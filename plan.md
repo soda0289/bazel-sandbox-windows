@@ -166,3 +166,9 @@ Candidates to fold into DetouredFunctions/DetoursHelpers or a tiny helper:
   blocks), `ENABLE_TRACE_LOGGING`/ETW provider, dead `g_parentProcessId`. Build +
   10/10. Remaining Phase 1 item: `CreateDetouredProcess` wrapper audit.
   Note: `g_FileAccessManifestPipId` is now write-only (handle in Phase 2).
+- 2026-07-22: **Phase 1 complete.** Committed `c7ca9b5` (SUPER_VERBOSE/ETW/
+  parent-pid). Removed dead `CreateDetouredProcess` wrapper + exclusive helpers
+  (`ProcessCreationAttributes`, `InitializeAttributeList`,
+  `CreateProcAttributesForExplicitHandleInheritance`, `CreateProcessAttributes`,
+  ~224 lines in DetoursServices.cpp). Build + 10/10. Next: Phase 2 globals audit
+  (start with write-only `g_FileAccessManifestPipId`).

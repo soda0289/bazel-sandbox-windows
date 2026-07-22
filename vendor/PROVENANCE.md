@@ -339,3 +339,15 @@ report-file append) is deliberately **retained**.
   Pure dead-code removal; build + 10/10 tests pass. (`g_FileAccessManifestPipId`
   is now write-only after the TraceLogging removal; left in place pending the
   manifest-parse audit since it rides the wire format.)
+
+- **Dead `CreateDetouredProcess` public wrapper + its exclusive helpers** — the
+  standalone `CreateDetouredProcess` API (BuildXL's managed side used to P/Invoke
+  it) is not exported by this DLL (only `BazelSandboxDetoursServicesAnchor` is)
+  and is called nowhere in-tree; `main.cpp` creates the first child via upstream
+  `DetourCreateProcessWithDllExW`, and the live grandchild path is
+  `InternalCreateDetouredProcess` (called from the CreateProcess hooks). Removed
+  `CreateDetouredProcess` and its exclusively-used helpers — the
+  `ProcessCreationAttributes` struct, `InitializeAttributeList`,
+  `CreateProcAttributesForExplicitHandleInheritance`, `CreateProcessAttributes`
+  (~224 lines in `DetoursServices.cpp`) — plus the header declaration. Pure
+  dead-code removal; build + 10/10 tests pass.

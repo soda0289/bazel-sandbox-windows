@@ -71,19 +71,6 @@ InternalCreateDetouredProcess(
     bool hardExitOnDetoursErrorIfEnabled
 );
 
-CreateDetouredProcessStatus
-WINAPI
-CreateDetouredProcess(
-    LPCWSTR lpcwCommandLine,
-    DWORD dwCreationFlags,
-    LPVOID lpEnvironment,
-    LPCWSTR lpcwWorkingDirectory,
-    HANDLE hStdInput, HANDLE hStdOutput, HANDLE hStdError,
-    HANDLE hJob,
-    DetouredProcessInjector *injector,
-    HANDLE* phProcess, HANDLE* phThread, DWORD* pdwProcessId
-);
-
 void LogEventLogMessage(const std::wstring& a_msg,
     const WORD a_type,
     const WORD eventId,
