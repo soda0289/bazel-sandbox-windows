@@ -33,12 +33,6 @@ void SendReportString(_In_z_ wchar_t const* dataString)
         return;
     }
 
-    // Increment the message sent counter. The managed sandbox will decrement it upon receiving the message.
-    if (g_messageCountSemaphore != INVALID_HANDLE_VALUE)
-    {
-        ReleaseSemaphore(g_messageCountSemaphore, 1, nullptr);
-    }
-
     OVERLAPPED overlapped;
     ZeroMemory(&overlapped, sizeof(OVERLAPPED));
     // This offset specifies "append".
@@ -72,12 +66,6 @@ void SendReportString(_In_z_ wchar_t const* dataString)
 #if ENABLE_TRACE_LOGGING
         TraceLoggingWrite(g_detoursServicesTraceProvider, "SendReportStringSuccess");
 #endif
-
-        // Increment semaphore indicating that a message was sent successfully. The managed sandbox will not decrement it.
-        if (g_messageSentCountSemaphore != INVALID_HANDLE_VALUE)
-        {
-            ReleaseSemaphore(g_messageSentCountSemaphore, 1, nullptr);
-        }
     }
 
     SetLastError(lastError);

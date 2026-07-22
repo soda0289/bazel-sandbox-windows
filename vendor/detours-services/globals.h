@@ -55,9 +55,6 @@ extern std::unordered_set<std::wstring>* g_pManifestTranslatePathLookupTable;
 extern PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
 extern LPCTSTR g_internalDetoursErrorNotificationFile;
 
-extern HANDLE g_messageCountSemaphore;
-extern HANDLE g_messageSentCountSemaphore;
-
 extern HANDLE g_reportFileHandle;
 
 extern unsigned long g_injectionTimeoutInMinutes;

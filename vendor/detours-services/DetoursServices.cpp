@@ -261,9 +261,6 @@ unordered_set<std::wstring>* g_pManifestTranslatePathLookupTable = nullptr;
 PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
 LPCTSTR g_internalDetoursErrorNotificationFile = nullptr;
 
-HANDLE g_messageCountSemaphore = INVALID_HANDLE_VALUE;
-HANDLE g_messageSentCountSemaphore = INVALID_HANDLE_VALUE;
-
 HANDLE g_reportFileHandle;
 
 bool g_BreakOnAccessDenied;
