@@ -17,10 +17,6 @@
 
 using std::unique_ptr;
 
-extern volatile LONG g_detoursAllocatedNoLockConcurentPoolEntries;
-extern volatile LONG64 g_detoursMaxHandleHeapEntries;
-extern volatile LONG64 g_detoursHandleHeapEntries;
-
 // ----------------------------------------------------------------------------
 // HELPER FUNCTION DEFINITIONS
 // ----------------------------------------------------------------------------

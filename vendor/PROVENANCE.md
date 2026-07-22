@@ -358,3 +358,21 @@ report-file append) is deliberately **retained**.
   the parser no longer reads it (`DetoursHelpers.cpp`), and the `g_...PipId`
   global, its externs, and the `ManifestPipId` struct (`DataTypes.h`) are gone.
   Build + 10/10 tests pass.
+- **Write-only `g_manifestSize`** — assigned once at manifest-parse entry
+  (`payloadSize`) and never read; carried a stale BuildXL "divide by zero"
+  comment for a division that does not exist here. Definition + both externs +
+  the assignment removed. Build + 10/10 tests pass.
+- **Dead deferred-`NtClose` overlay-drain subsystem** — the whole background
+  handle-drain machinery in `HandleOverlay.cpp` was gated on
+  `UseExtraThreadToDrainNtClose()`, a FAM flag this launcher never sets, so
+  `RemoveClosedHandles()` (and therefore `AddClosedHandle`, the preallocated
+  `g_pClosedHandles`/`g_pClosedHandlesPool` SLists, `PopulateNtCloseListPool`,
+  `CleanupNtClosedHandles`, `StartCleanupNtClosedHandlesThread`) could never run;
+  `Detoured_NtClose` already always took the direct `CloseHandleOverlay` path. The
+  `ShouldLogProcessData()` map-size accounting blocks were likewise dead
+  (`LogProcessData` is never set). Rewrote `HandleOverlay.cpp` down to the live
+  overlay map + register/lookup/close, dropped the `AddClosedHandle`/
+  `RemoveClosedHandles` header decls, collapsed the `NtClose` branch, and removed
+  the now-unused pool/heap-entry stat globals
+  (`g_detoursAllocatedNoLockConcurentPoolEntries`, `g_detoursMaxHandleHeapEntries`,
+  `g_detoursHandleHeapEntries`) and their externs. Build + 10/10 tests pass.

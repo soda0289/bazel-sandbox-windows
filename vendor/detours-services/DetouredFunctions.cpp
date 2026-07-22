@@ -8954,16 +8954,10 @@ NTSTATUS NTAPI Detoured_NtClose(_In_ HANDLE handle)
             // This is to make sure the behaviour for Windows builds is not altered.
             // Also if the NtCreateFile is no monitored, the map should not grow significantly. The other cases where it is updated -
             // for example CreateFileW, the map is updated by the CloseFile detoured API.
-            if (UseExtraThreadToDrainNtClose())
-            {
-                AddClosedHandle(handle);
-            }
-            else
-            {
-                // Just remove the handle from the table directly.
-                // Pass true for recursiveCall, since we don't have anything in the handle drain list and call to drain it is not needed.
-                CloseHandleOverlay(handle, true);
-            }
+            //
+            // Remove the handle from the table directly.
+            // Pass true for recursiveCall, since we don't have anything in the handle drain list and call to drain it is not needed.
+            CloseHandleOverlay(handle, true);
         }
     }
 

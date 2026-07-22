@@ -96,9 +96,3 @@ HandleOverlayRef TryLookupHandleOverlay(HANDLE handle, bool drain = true);
 // If an overlay exists for the given handle, disassociates it from the handle. Future calls to TryLookupHandleOverlay for the handle will no
 // longer succeed. Concurrent users that already have a ref to the overlay may continue to use it safely.
 void CloseHandleOverlay(HANDLE handle, bool inRecursion = false);
-
-// Adds a closed handle to the closed handle list.
-void AddClosedHandle(HANDLE handle);
-
-// Remove all closed handlefrom the overlay map.
-void RemoveClosedHandles();

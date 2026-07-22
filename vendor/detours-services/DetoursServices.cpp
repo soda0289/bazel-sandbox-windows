@@ -258,15 +258,6 @@ volatile LONG64 g_detoursMaxAllocatedMemoryInBytes = 0;
 // Running allocated memory by Detours in its private heap.
 volatile LONG64 g_detoursHeapAllocatedMemoryInBytes = 0;
 
-// The number of entries allocated in the no-lock, concurrent list for use by NtClose.
-volatile LONG g_detoursAllocatedNoLockConcurentPoolEntries = 0;
-
-// The max number of entries in the HandleHeapMap hash table. Allocated in private heap.
-volatile LONG64 g_detoursMaxHandleHeapEntries = 0;
-
-// Currently allocated entries in the HandleHeapMap hash table. Allocated in private heap.
-volatile LONG64 g_detoursHandleHeapEntries = 0;
-
 // Bazel fork (Model W): overlay backing-store root (see globals.h).
 wchar_t* g_bazelWriteOverlayRoot = nullptr;
 // Bazel fork (Model W): overlay source root, stripped to map virtual->backing.
