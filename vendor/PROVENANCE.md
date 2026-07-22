@@ -190,3 +190,29 @@ baseline tag and reverse-apply the patch there:
 git checkout vendored-buildxl-baseline-13c5c9d
 git apply --reverse -p6 --directory=vendor/detours-services vendor/detours-services.patch
 ```
+
+### Post-fork dead-code removals
+
+Removals made after the baseline tag (each verified with a full build +
+`bazel test //tests:all`):
+
+- **SubstituteProcessExecution** — deleted `SubstituteProcessExecution.{cpp,h}`
+  (see removed-files list above).
+- **DeviceMap** — deleted `DeviceMap.{cpp,h}` (see removed-files list above).
+- **Process-data + process-detouring-status reporting** — removed
+  `ReportProcessData` / `ReportProcessDetouringStatus` (`SendReport.{cpp,h}`),
+  their gated call sites in `DetoursServices.cpp`, the now-orphan
+  `RetrieveParentProcessId`, and the `ProcessDetouringStatus` enum
+  (`DataTypes.h`). Gated on the `LogProcessData` / `LogProcessDetouringStatus`
+  manifest flags, which this launcher never sets.
+- **Message-count semaphores** — removed the `g_messageCountSemaphore` /
+  `g_messageSentCountSemaphore` open/release machinery (`DetoursHelpers.cpp`,
+  `DetoursServices.cpp`, `SendReport.cpp`, `globals.h`). Gated on the
+  `CheckDetoursMessageCount` flag / report-pipe mode, neither of which this
+  launcher uses.
+
+The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
+`LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert
+definitions so the manifest flag layout is unchanged. The `--trace`
+flat-file access-reporting path (`ReportFileAccess` → `SendReportString` →
+report-file append) is deliberately **retained**.

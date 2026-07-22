@@ -215,9 +215,10 @@ false → `ParseFileAccessManifest` calls `CreateFileW(ReportPath, …, OPEN_ALW
 and appends), **not** the report-**pipe** mode. So `--trace` needs no pipe,
 reader thread, or payload handle slot; the report path is inherited by every
 child, which each open and append to it. This re-activates `SendReport.cpp` /
-`ReportIfNeeded`, but nothing else (process-data/USN/detouring-status reports
-stay gated behind flags we still don't set, so the trace is file-access lines
-only). See README → *Debugging: `-D` and `--trace`*.
+`ReportIfNeeded`, but nothing else (USN reports stay gated behind flags we
+still don't set, so the trace is file-access lines only). The process-data /
+process-detouring-status report types were removed outright (see below). See
+README → *Debugging: `-D` and `--trace`*.
 
 ### Consequences (dead / inert code paths for us)
 Because those flags/policies are off, large parts of the engine are compiled but
@@ -231,8 +232,9 @@ never meaningfully executed in our configuration:
 - The reporting subsystem (`SendReport`, most of `DebuggingHelpers`) — inert by
   default; `--trace` re-activates the file-access report path (see above).
 
-(`SubstituteProcessExecution` and `DeviceMap` were removed outright — see the
-hard-fork note in `vendor/PROVENANCE.md`.)
+(`SubstituteProcessExecution`, `DeviceMap`, the process-data /
+process-detouring-status report types, and the message-count semaphores were
+removed outright — see the hard-fork note in `vendor/PROVENANCE.md`.)
 
 ## 6. Guidance for future shrinking / extraction
 
