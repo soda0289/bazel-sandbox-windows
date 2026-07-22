@@ -210,6 +210,27 @@ Removals made after the baseline tag (each verified with a full build +
   `DetoursServices.cpp`, `SendReport.cpp`, `globals.h`). Gated on the
   `CheckDetoursMessageCount` flag / report-pipe mode, neither of which this
   launcher uses.
+- **LaunchDebugger** — removed the unused `LaunchDebugger()` helper (both
+  definitions in `DebuggingHelpers.cpp` and its `DebuggingHelpers.h` decl).
+- **Injector pipe / report-pipe handshake (wire-format change)** — removed the
+  three fixed injector handles (device-map, remote-injector pipe, report pipe)
+  and the WOW64→Native64 remote-injection handshake. Deleted from
+  `DetouredProcessInjector.{h,cpp}`: the `_mapDirectory` / `_remoteInjectorPipe`
+  / `_reportPipe` members, `NeedRemoteInjection`, `RemoteInjectProcess`, the
+  explicit `Init(remoteInjectorPipe, reportPipe, …)` overload, the
+  `SetAlwaysRemoteInjectFromWow64Process` setter + `_alwaysRemoteInject…`
+  field, the dead `GetInjectionData` accessor, the `MapDirectory` /
+  `RemoteInjectorPipe` / `ReportPipe` getters, and the never-exported
+  `DetouredProcessInjector_Create/_Destroy/_Inject` C wrappers. In
+  `DetoursHelpers.cpp` the report-PIPE branch collapsed to report-FILE only.
+  `c_minHandleCount` is now `0`; the payload wrapper written by `src/main.cpp`
+  drops the three `INVALID_HANDLE_VALUE` slots — the wire format is now
+  `[u32 totalSize][u32 handleCount=0][manifest bytes]`. Producer (main.cpp),
+  deserializer (`Init`) and re-serializer (`LocalInjectProcess`, used for
+  grandchild injection) were changed in lockstep; the launcher-injection e2e
+  test (grandchild coverage) passes. The inert
+  `AlwaysRemoteInjectDetoursFrom32BitProcess` extra-flag bit is kept for layout
+  stability.
 
 The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 `LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert

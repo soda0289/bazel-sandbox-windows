@@ -859,18 +859,10 @@ int wmain(int argc, wchar_t** argv) {
     // DetoursServices.dll does not read the raw manifest directly. It reads a
     // "payload wrapper" (see DetouredProcessInjector::Init) laid out as:
     //   [u32 totalSize][u32 handleCount][u64 handles...][manifest bytes...]
-    // handleCount must be >= 3 (c_minHandleCount): mapDirectory, remote
-    // injector pipe, and report pipe. We use none of those features.
-    //
-    // IMPORTANT: these handle slots must be INVALID_HANDLE_VALUE (all 0xFF), NOT
-    // zero. The injector's handle wrapper treats INVALID_HANDLE_VALUE as "no
-    // handle" (isValid() == false), but a NULL (0) handle is considered *valid*.
-    // If mapDirectory reads as valid, the DLL calls ApplyMapping when it injects
-    // a child process; that fails and aborts child injection, so grandchildren
-    // would not be sandboxed (the first process still works because the launcher
-    // copies the payload directly and never calls ApplyMapping).
-    const uint32_t kHandleCount = 3;
-    const uint64_t kInvalidHandle = ~0ull;  // INVALID_HANDLE_VALUE as u64
+    // The fixed device-map / remote-injector-pipe / report-pipe handle slots
+    // were removed (hard fork), so we pass zero handles. handleCount is 0 and
+    // the manifest bytes follow immediately after the two u32 header fields.
+    const uint32_t kHandleCount = 0;
     const uint32_t kPrefixSize =
         2 * sizeof(uint32_t) + kHandleCount * sizeof(uint64_t);
     const uint32_t kTotalSize =
@@ -882,11 +874,6 @@ int wmain(int argc, wchar_t** argv) {
         p += sizeof(uint32_t);
         *reinterpret_cast<uint32_t*>(p) = kHandleCount;
         p += sizeof(uint32_t);
-        // mapDirectory, remoteInjectorPipe, reportPipe: all "no handle".
-        for (uint32_t h = 0; h < kHandleCount; ++h) {
-            *reinterpret_cast<uint64_t*>(p) = kInvalidHandle;
-            p += sizeof(uint64_t);
-        }
         memcpy(p, manifest.data(), manifest.size());
     }
 

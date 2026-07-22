@@ -884,7 +884,6 @@ bool ParseFileAccessManifest(
     PCManifestExtraFlags extraFlags = reinterpret_cast<PCManifestExtraFlags>(&payloadBytes[offset]);
     extraFlags->AssertValid();
     g_fileAccessManifestExtraFlags = static_cast<FileAccessManifestExtraFlag>(extraFlags->ExtraFlags);
-    g_pDetouredProcessInjector->SetAlwaysRemoteInjectFromWow64Process(CheckAlwaysRemoteInjectDetoursFrom32BitProcess(g_fileAccessManifestExtraFlags));
     g_pDetouredProcessInjector->SetPayload(payloadBytes, payloadSize);
     offset += extraFlags->GetSize();
 
@@ -897,18 +896,9 @@ bool ParseFileAccessManifest(
     report->AssertValid();
 
     if (report->IsReportPresent()) {
-        if (report->IsReportHandle()) {
-            g_reportFileHandle = g_pDetouredProcessInjector->ReportPipe();
-#ifdef _DEBUG
-#pragma warning( push )
-#pragma warning( disable: 4302 4310 4311 4826 )
-#if SUPER_VERBOSE
-            Dbg(L"report file handle: %llu", (unsigned long long)g_reportFileHandle);
-#endif // SUPER_VERBOSE
-#pragma warning( pop )
-#endif
-        }
-        else {
+        {
+            // Report-PIPE mode was removed together with the injector handshake;
+            // this launcher only ever emits a report-FILE path.
             // NOTE: This calls the real CreateFileW(), not our detoured version, because we have not yet installed
             // our detoured functions.
             g_reportFileHandle = CreateFileW(

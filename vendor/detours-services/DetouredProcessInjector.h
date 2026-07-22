@@ -9,15 +9,14 @@ using std::unique_ptr;
 using std::vector;
 using std::string;
 
-// This class does drive mapping and injection of payload and DLL into
-// a process. It may do it directly or remotely. The remote injection
-// is required when a WOW64 process creates a child. Exact conditions
-// are in NeedRemoteInjection method. Do do it, just send a request
-// via an inherited pip to the top-of-the-process-tree server.
+// This class injects the payload and the detours DLL into a process. It may
+// do so for the process it just created (local injection). It can be created
+// with the data to be used, or it can be initialized from the previously
+// injected payload during child process startup so the sandbox propagates
+// down the whole process tree.
 //
-// The class can be created by C# code with the data to be used, or
-// it can be initialized from the previously injected payload by
-// during child process startup.
+// The NT DOS-device-map feature and the remote (WOW64 -> Native64) injection
+// handshake were removed in this hard fork; all injection is now local.
 class DetouredProcessInjector
 {
 private:
@@ -29,22 +28,19 @@ private:
     // A flag set for 64 bit process
     static bool s_is64BitProcess;
 
-    // Minimum number of handles required
-    static const uint32_t c_minHandleCount = 3;
+    // Minimum number of handles required. The injector no longer passes any
+    // fixed handles (device map / remote-injector pipe / report pipe were all
+    // removed); only optional "other" handles remain in the wire format.
+    static const uint32_t c_minHandleCount = 0;
 
     static const uint32_t c_buildxlInjectorTag = 0xD031B09E;      // DOMIno BONE
 
-    // We own these handles
-    unique_handle<INVALID_HANDLE_VALUE> _mapDirectory;
-    unique_handle<INVALID_HANDLE_VALUE> _remoteInjectorPipe;
-    unique_handle<INVALID_HANDLE_VALUE> _reportPipe;
     unique_ptr<unsigned char[]> _payload = nullptr;
     uint32_t _payloadSize = 0;
     vector<HANDLE> _otherHandles;
     string _dllX86;
     string _dllX64;
     GUID _payloadGuid;
-    bool _alwaysRemoteInjectFromWow64Process = false;
     bool _initialized = false;
 
     CRITICAL_SECTION _injectorLock;
@@ -88,21 +84,6 @@ private:
         return HandleToUint64(targetValue);
     }
 
-    // Check if the injection can only happen remotely.
-    // We should be able to do all we need in all cases, except WOW64 to Native 64 bit
-    // process. For now we have an additional condition for WOW64 to WOW64 bit process
-    // when we need to do drive mapping due to a kernel thunk bug in WOW64.
-    //
-    // Disable the warning about processHandle being unused and
-    // change the check to the one commented out when the bug is fixed.
-#pragma warning( push )
-#pragma warning( disable: 4100 )
-    inline bool NeedRemoteInjection(HANDLE processHandle)
-    {
-        return s_isWow64Process && (_alwaysRemoteInjectFromWow64Process || _mapDirectory.isValid() || !isWow64Process(processHandle));
-    }
-#pragma warning( pop )
-
     // Given all data, compute the size of the wrapped payload
     uint32_t inline WrapperSize() const
     {
@@ -131,9 +112,6 @@ public:
 
     // Populate the data from the serialized wrapper.
     bool Init(LPCBYTE payloadWrapper, std::wstring& errorMessage, _Out_ LPCBYTE* payload, _Out_ uint32_t& payloadSize);
-    void Init(HANDLE remoteInterjectorPipe, HANDLE reportPipe,
-        uint32_t payloadSize, LPCBYTE payload,
-        uint32_t otherHandleCount, PHANDLE otherHandles);
 
     void SetPayload(LPCBYTE payload, uint32_t payloadSize);
 
@@ -142,11 +120,6 @@ public:
     {
         _dllX86 = dllX86;
         _dllX64 = dllX64;
-    }
-
-    void inline SetAlwaysRemoteInjectFromWow64Process(bool alwaysRemoteInjectFromWow64Process)
-    {
-        _alwaysRemoteInjectFromWow64Process = alwaysRemoteInjectFromWow64Process;
     }
 
     // Set "other" handles. These are duplicated if needed.
@@ -161,9 +134,6 @@ public:
     }
 
     // Getters
-    HANDLE MapDirectory() const { return _mapDirectory.get(); }
-    HANDLE RemoteInjectorPipe() const { return _remoteInjectorPipe.get(); }
-    HANDLE ReportPipe() const { return _reportPipe.get(); }
     LPCBYTE Payload() const { return _payload.get(); }
     uint32_t PayloadSize() const { return _payloadSize; }
     uint32_t OtherHandleCount() const { return static_cast<uint32_t>(_otherHandles.size()); }
@@ -177,16 +147,12 @@ public:
     //                      are inherited. The handles stored in
     //                      the object need to be duplicated.
     DWORD LocalInjectProcess(HANDLE processHandle, bool inheritedHandles);
-    // This method will ask for the remote injection
-    DWORD RemoteInjectProcess(HANDLE processHandle, bool inheritedHandles) const;
 
-    // Do either local or remote injection, depending on bitness of the
-    // injector and injectee processes.
+    // Remote injection (WOW64 -> Native64 via a top-of-process-tree server pipe)
+    // was removed with the injector handshake; all injection is now local.
     DWORD InjectProcess(HANDLE processHandle, bool inheritedHandles)
     {
-        return NeedRemoteInjection(processHandle)
-            ? RemoteInjectProcess(processHandle, inheritedHandles)
-            : LocalInjectProcess(processHandle, inheritedHandles);
+        return LocalInjectProcess(processHandle, inheritedHandles);
     }
 
     // No default constructor, no copies
@@ -210,18 +176,5 @@ public:
         }
     }
 #pragma warning( pop )
-
-    inline void GetInjectionData(
-        HANDLE processHandle,
-        bool& isCurrent64BitProcess,
-        bool& isCurrentWow64Process,
-        bool& isProcessWow64,
-        bool& needsRemoteInjection)
-    {
-        isCurrent64BitProcess = s_is64BitProcess;
-        isCurrentWow64Process = s_isWow64Process;
-        isProcessWow64 = isWow64Process(processHandle);
-        needsRemoteInjection = NeedRemoteInjection(processHandle);
-    }
 };
 

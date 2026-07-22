@@ -191,8 +191,11 @@ Policy bits we **never** use: `ReportAccessIfExistent`, `ReportUsnAfterOpen`,
 
 ### Reporting channel: off by default, opt-in via `--trace`
 By default both report flags are **off** and the manifest emits a **size-0
-report block** (`manifest_builder.cpp`), with **no** report pipe, injector pipe,
-or device map (`main.cpp`: "all no handle"). In that default configuration:
+report block** (`manifest_builder.cpp`). The payload wrapper carries **zero
+injector handles** — the fixed report-pipe / remote-injector-pipe / device-map
+slots were removed (hard fork), so `main.cpp` emits
+`[u32 totalSize][u32 handleCount=0][manifest bytes]`. In that default
+configuration:
 
 - The sandbox is **pure API-level enforcement** — a denied access returns
   `ERROR_ACCESS_DENIED` (etc.) to the child. There is **no telemetry** back to
@@ -233,7 +236,8 @@ never meaningfully executed in our configuration:
   default; `--trace` re-activates the file-access report path (see above).
 
 (`SubstituteProcessExecution`, `DeviceMap`, the process-data /
-process-detouring-status report types, and the message-count semaphores were
+process-detouring-status report types, the message-count semaphores, and the
+injector report-pipe / remote-injection (WOW64→Native64) handshake were
 removed outright — see the hard-fork note in `vendor/PROVENANCE.md`.)
 
 ## 6. Guidance for future shrinking / extraction

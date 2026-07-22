@@ -37,9 +37,6 @@ bool DetouredProcessInjector::isWow64Process(HANDLE processHandle)
 void DetouredProcessInjector::Clear()
 {
     _initialized = false;
-    _mapDirectory.reset();
-    _remoteInjectorPipe.reset();
-    _reportPipe.reset();
     _payload.reset(nullptr);
     _payloadSize = 0;
     _otherHandles.clear();
@@ -50,8 +47,9 @@ void DetouredProcessInjector::Clear()
 // Initialize object with the payload wrapper that has the following data:
 // uint32_t size - the size of the block
 // uint32_t handleCount - the number of handles
-// uint64_t handles - handles passed from the parent.
-//                    There must be c_minHandleCount handles there.
+// uint64_t handles - handles passed from the parent. All of these are
+//                    "other" handles now; the fixed device-map / remote-injector
+//                    / report pipe handles were removed (hard fork).
 // payload
 bool DetouredProcessInjector::Init(LPCBYTE payloadWrapper, std::wstring& errorMessage, _Out_ LPCBYTE* payload, _Out_ uint32_t& payloadSize)
 {
@@ -110,9 +108,6 @@ bool DetouredProcessInjector::Init(LPCBYTE payloadWrapper, std::wstring& errorMe
 
     // Compute the size remaining after the handles are copied
     size -= handleCount * sizeof(uint64_t);
-    _mapDirectory.reset(Uint64ToHandle(*handles++));
-    _remoteInjectorPipe.reset(Uint64ToHandle(*handles++));
-    _reportPipe.reset(Uint64ToHandle(*handles++));
 
     handleCount -= c_minHandleCount;
 
@@ -156,56 +151,11 @@ bool DetouredProcessInjector::Init(LPCBYTE payloadWrapper, std::wstring& errorMe
     return true;
 }
 
-// Initialize object based on the explicit data. The NT DOS-device-map feature
-// was removed (hard fork); _mapDirectory stays INVALID_HANDLE_VALUE and is kept
-// only as an inert slot in the injector handle-passing layout.
-void DetouredProcessInjector::Init(
-    HANDLE remoteInterjectorPipe,
-    HANDLE reportPipe,
-    uint32_t payloadSize,
-    LPCBYTE payload,
-    uint32_t otherHandleCount,
-    PHANDLE otherHandles)
-{
-    LockGuard lock(_injectorLock);
-
-    // Each object can be initialized only once.
-    if (_initialized)
-    {
-        return;
-    }
-
-    _mapDirectory.reset();
-    _remoteInjectorPipe.duplicate(remoteInterjectorPipe);
-    _reportPipe.duplicate(reportPipe);
-    _payloadSize = payloadSize;
-    if (payloadSize == 0)
-    {
-        _payload = nullptr;
-    }
-    else {
-        _payload = make_unique<unsigned char[]>(payloadSize);
-        memcpy_s(_payload.get(), payloadSize, payload, payloadSize);
-    }
-
-    SetHandles(otherHandleCount, otherHandles);
-    _initialized = true;
-}
-
 void DetouredProcessInjector::SetPayload(LPCBYTE payload, uint32_t payloadSize)
 {
     if (_payload.get() != nullptr)
     {
         // Payload can be set only once.
-        return;
-    }
-
-    if (s_isWow64Process && (_alwaysRemoteInjectFromWow64Process || _mapDirectory.isValid()))
-    {
-        // If this is a WOW64 process, don't set the payload if injection is always set to be remote or if there is map directory.
-        // In such cases the injection will be done remotely by the DetouredProcessInjector created by BuildXL.
-        _payloadSize = 0;
-        _payload = nullptr;
         return;
     }
 
@@ -257,11 +207,9 @@ DWORD DetouredProcessInjector::LocalInjectProcess(HANDLE processHandle, bool inh
     *sizes++ = size;
     *sizes++ = static_cast<uint32_t>(c_minHandleCount + _otherHandles.size());
 
-    // Write handles
+    // Write handles. Only optional "other" handles remain; the fixed
+    // device-map / remote-injector-pipe / report-pipe handles were removed.
     uint64_t *handles = reinterpret_cast<uint64_t *>(sizes);
-    *handles++ = inheritedHandles ? HandleToUint64(_mapDirectory.get()) : DuplicateHandleToUint64(processHandle, _mapDirectory.get());
-    *handles++ = inheritedHandles ? HandleToUint64(_remoteInjectorPipe.get()) : DuplicateHandleToUint64(processHandle, _remoteInjectorPipe.get());
-    *handles++ = inheritedHandles ? HandleToUint64(_reportPipe.get()) : DuplicateHandleToUint64(processHandle, _reportPipe.get());
 
     if (!_otherHandles.empty())
     {
@@ -287,209 +235,4 @@ DWORD DetouredProcessInjector::LocalInjectProcess(HANDLE processHandle, bool inh
     }
 
     return ERROR_SUCCESS;
-}
-
-DWORD DetouredProcessInjector::RemoteInjectProcess(HANDLE processHandle, bool inheritedHandles) const
-{
-    DWORD processId = GetProcessId(processHandle);
-
-    if (processId == 0)
-    {
-        DWORD err = GetLastError();
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Failed to get process id for a process: 0x%08x", (int)err);
-        return err;
-    }
-
-    if (!_remoteInjectorPipe.isValid())
-    {
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Override pipe is invalid, process will not be injected");
-        return ERROR_INVALID_FUNCTION;
-    }
-
-    LARGE_INTEGER counter = { { 0 } };
-    long long unsigned timeValue = QueryPerformanceCounter(&counter) ? counter.QuadPart : GetTickCount64();
-
-    // CODESYNC: Public/Src/Engine/Processes/Internal/ProcessTreeContext.cs
-    // The event name is 'Global\wwwwwwww-xxxxxxxx-yyyyyyyy-z', where:
-    // wwwwwwww         - child process id
-    // xxxxxxxx         - current process id
-    // yyyyyyyyyyyyyyyy - timer part
-    // z                - since we need two events -- success ends with S and failure ends with F.
-    // The length of the result is 7 characters for the head (Global\),
-    // 8 hex digits for the child process id,
-    // 8 hex digits for the current process id,
-    // 16 hex digits for the tick count,
-    // one character for F OR S,
-    // and three characters for the dashes.
-    // And the null character makes 7 + 8 + 1 + 8 + 1 + 16 + 1 + 1 + 1 = 44.
-    wchar_t nameSuccess[44];
-
-    int retPrintf = swprintf_s(nameSuccess, 44, L"Global\\%08lx-%08lx-%016llx-S", processId, GetCurrentProcessId(), timeValue);
-    UNREFERENCED_PARAMETER(retPrintf);
-    assert(retPrintf != -1);
-
-    wchar_t nameFailure[44];
-    wcscpy_s(nameFailure, 44, nameSuccess);
-    nameFailure[33] = L'F';
-    
-    // The remote injection request contains:
-    // - the success event name (44 characters)
-    // - the failure event name (44 characters)
-    // - True when inherited handles, False otherwise (5 character)
-    // - process id as a hex number (8 characters)
-    // The fields are separated by commas and terminated (<eventSuccess>,<eventFailure>,<True/False>,<processID>\r\n),
-    // making the total length 44+1+44+1+5+1+8+4=108 characters with the terminating null.
-    wchar_t request[108];
-    int charsWritten = swprintf_s(request, 108, L"%s,%s,%s,%08lx\r\n", nameSuccess, nameFailure, inheritedHandles ? L"True" : L"False", processId);
-
-    assert(charsWritten != -1);
-
-    SECURITY_ATTRIBUTES sa;
-    SECURITY_DESCRIPTOR sd;
-    LPSECURITY_ATTRIBUTES lpSecurityAttributes = nullptr;
-
-    // Create a permissive security descriptor.
-    if (InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)
-        // Set a null DACL, which allows access to everyone.
-        && SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE)) // CodeQL [SM02987] This permissive security descriptor is to allow the remote injector to see the events although it runs in different security contexts.
-    {
-        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-        sa.lpSecurityDescriptor = &sd;
-        sa.bInheritHandle = FALSE;
-        lpSecurityAttributes = &sa;
-    }
-
-    // Create the event
-    unique_handle<> eventSuccess(CreateEventW(lpSecurityAttributes, FALSE, FALSE, nameSuccess));
-    if (!eventSuccess.isValid())
-    {
-        DWORD err = GetLastError();
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Failed creating event %s (error code: 0x%08x)", nameSuccess, (int)err);
-        return err;
-    }
-
-    unique_handle<> eventFailure(CreateEventW(lpSecurityAttributes, FALSE, FALSE, nameFailure));
-    if (!eventFailure.isValid())
-    {
-        DWORD err = GetLastError();
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Failed creating event %s (error code: 0x%08x)", nameFailure, (int)err);
-        return err;
-    }
-
-    // Send it
-    //
-    // write to report stream
-    //
-    OVERLAPPED overlapped;
-    ZeroMemory(&overlapped, sizeof(OVERLAPPED));
-    overlapped.Offset = 0xFFFFFFFF;
-    overlapped.OffsetHigh = 0xFFFFFFFF;
-    DWORD bytesWritten;
-
-    if (!WriteFile(_remoteInjectorPipe.get(), request, charsWritten * sizeof(wchar_t), &bytesWritten, &overlapped))
-    {
-        DWORD error = GetLastError();
-        std::wstring errorMsg = DebugStringFormat(L"DetouredProcessInjector::RemoteInjectProcess: Failed to write to pipe for requesting process injection for process id %d (error code: 0x%08x)", (int)processId, (int)error);
-        Dbg(errorMsg.c_str());
-        HandleDetoursInjectionAndCommunicationErrors(DETOURS_PIPE_WRITE_ERROR_3, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_3);
-        return error;
-    }
-
-    // Wait for any of the events to fire.
-    // Note that we only use these events to tell if the remote injection succeeded or failed, i.e., we do not get the error code from the failed injection.
-    // Treatments for error codes that can affect the injection behavior must be implemented in the remote injector. For example, if an injection failed due to
-    // partial copy, the remote injector must retry the injection.
-    HANDLE events[2] = { eventSuccess.get(), eventFailure.get() };
-
-    // If for some reason there is no timeout passed using the FileAccessManifest, set it to 3 min.
-    // If the machine is busy it can potentially take up to 3 minutes (maybe longer in other rare cases) for remote injection.
-    // CODESYNC: Defaults.ProcessInjectionTimeoutInMinutes in Public/Src/Utilities/Utilities.Core/Defaults.cs
-    g_injectionTimeoutInMinutes = 3;
-
-    ULONGLONG startWait = GetTickCount64();
-    DWORD result = WaitForMultipleObjects(2, events, FALSE, g_injectionTimeoutInMinutes * 60000); // Convert to ms.
-    ULONGLONG endWait = GetTickCount64();
-    if (((endWait - startWait) / 60000) > (g_injectionTimeoutInMinutes - 1))
-    {
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Wait time > %d min. - %d min.", g_injectionTimeoutInMinutes, (int)((endWait - startWait) / 60000));
-    }
-
-    if (result == WAIT_TIMEOUT)
-    {
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Timeout requesting process injection for process id %d", (int)processId);
-    }
-    else if (result == WAIT_OBJECT_0 + 1)
-    {
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Remote injection failed for process id %d", (int)processId);
-
-        // Unfortunately, we only use events to tell if the remote injection succeeded or failed, i.e., we do not get the error code from the failed injection.
-        result = ERROR_INVALID_FUNCTION;
-    }
-    else if (result != WAIT_OBJECT_0)
-    {
-        Dbg(L"DetouredProcessInjector::RemoteInjectProcess: Failed waiting for request for process injection for process id %d, wait result: 0x%08x", (int)processId, (int)result);
-    }
-    else
-    {
-        return ERROR_SUCCESS;
-    }
-
-    return result;
-}
-
-DetouredProcessInjector *WINAPI DetouredProcessInjector_Create(const GUID &payloadGuid,
-    HANDLE remoteInterjectorPipe, HANDLE reportPipe,
-    LPCSTR dllX86, LPCSTR dllX64,
-    uint32_t payloadSize, const unsigned char *payload)
-{
-    DetouredProcessInjector *injector = new DetouredProcessInjector(payloadGuid);
-    injector->Init(remoteInterjectorPipe, reportPipe, payloadSize, payload, 0, nullptr);
-    injector->SetDlls(dllX86, dllX64);
-    return injector;
-}
-
-void WINAPI DetouredProcessInjector_Destroy(DetouredProcessInjector *injector)
-{
-    if (injector != nullptr && injector->IsValid())
-    {
-        delete injector;
-    }
-    else {
-        Dbg(L"DetouredProcessInjector_Destroy: Injector is not valid");
-    }
-}
-
-DWORD WINAPI DetouredProcessInjector_Inject(DetouredProcessInjector *injector, DWORD pid, bool)
-{
-    if (injector == nullptr)
-    {
-        // If no report pipe is set, this Dbg() call will be a no-op.
-        // If invalid parameter is returned at a different point in this function, there should also be a Dbg()
-        // message to differentiate it from this one.
-        Dbg(L"DetouredProcessInjector_Inject: Injector is null");
-        return ERROR_INVALID_PARAMETER;
-    }
-
-    if (!injector->IsValid()) {
-        Dbg(L"DetouredProcessInjector_Inject: Injector is not valid");
-        return ERROR_INVALID_FUNCTION;
-    }
-
-    // Ensure that the report pipe is set so that Dbg() can write to it.
-    // This is important for remote injection because the injector can be created externally (e.g., by BuildXL's managed code)
-    // and this function is called from external code (e.g., by BuildXL's managed code) where the report pipe is not set.
-    if (g_reportFileHandle == NULL || g_reportFileHandle == INVALID_HANDLE_VALUE)
-    {
-        g_reportFileHandle = injector->ReportPipe();
-    }
-
-    unique_handle<nullptr> processHandle (OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid));
-
-    if (!processHandle.isValid())
-    {
-        Dbg(L"DetouredProcessInjector_Inject: Process handle is not valid");
-        return GetLastError();
-    }
-
-    return injector->LocalInjectProcess(processHandle.get(), false);
 }
