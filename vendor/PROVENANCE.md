@@ -322,3 +322,20 @@ The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 definitions so the manifest flag layout is unchanged. The `--trace`
 flat-file access-reporting path (`ReportFileAccess` → `SendReportString` →
 report-file append) is deliberately **retained**.
+
+- **Diagnostic scaffolding (`SUPER_VERBOSE`) + ETW TraceLogging + dead
+  `g_parentProcessId`** — removed three inert diagnostic facilities.
+  `SUPER_VERBOSE` was `#define`d to `0`; its ~40 `#if SUPER_VERBOSE` blocks
+  (verbose per-hook tracing) across `DetouredFunctions.cpp`, `DetoursHelpers.cpp`,
+  `PolicyResult.cpp`, `DebuggingHelpers.cpp` were dead — stripped along with the
+  `#define`/`#undef`. The `ENABLE_TRACE_LOGGING` (`#define 0`) ETW provider was
+  never written to (all `TraceLoggingWrite`s sat behind the guard), yet the
+  provider was still declared/defined and `TraceLoggingRegister`/`Unregister`'d
+  unconditionally — removed the provider (`g_detoursServicesTraceProvider`),
+  the register/unregister calls, the guarded writes in `SendReport.cpp`, the
+  `ENABLE_TRACE_LOGGING` define, and the `<TraceLoggingProvider.h>` includes.
+  `g_parentProcessId` was defined but never read (its last reader,
+  `RetrieveParentProcessId`, went with the process-data reporting) — deleted.
+  Pure dead-code removal; build + 10/10 tests pass. (`g_FileAccessManifestPipId`
+  is now write-only after the TraceLogging removal; left in place pending the
+  manifest-parse audit since it rides the wire format.)

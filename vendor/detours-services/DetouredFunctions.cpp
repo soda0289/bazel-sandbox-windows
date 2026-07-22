@@ -2801,9 +2801,6 @@ static bool ShouldBreakawayFromJob(const CanonicalizedPath& fullApplicationPath,
         {
             if (it->RequiredCommandLineArgsSubstring.empty())
             {
-#if SUPER_VERBOSE
-                Dbg(L"Allowing process to breakaway from job object. Image name: '%s'", imageName.c_str());
-#endif
                 return true;
             }
 
@@ -2816,17 +2813,11 @@ static bool ShouldBreakawayFromJob(const CanonicalizedPath& fullApplicationPath,
                     return std::towlower(c1) == std::towlower(c2);
                     }) != commandArgs.end())
                 {
-#if SUPER_VERBOSE
-                    Dbg(L"Allowing process to breakaway from job object. Image name: '%s' | Command line args: '%s'.", imageName.c_str(), commandArgs.c_str());
-#endif
                     return true;
                 }
             }
             else if (commandArgs.find(it->RequiredCommandLineArgsSubstring) != std::wstring::npos)
             {
-#if SUPER_VERBOSE
-                Dbg(L"Allowing process to breakaway from job object. Image name: '%s' | Command line args: '%s'.", imageName.c_str(), commandArgs.c_str());
-#endif
                 return true;
             }
         }
@@ -5968,9 +5959,6 @@ BOOL WINAPI Detoured_FindNextFileW(
     }
     else
     {
-#if SUPER_VERBOSE
-        Dbg(L"FindNextFile: Failed to find a handle overlay for policy information; conservatively not overriding timestamps");
-#endif // SUPER_VERBOSE
     }
 
     SetLastError(error);
@@ -7928,16 +7916,10 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
             //       and we ignore potential deletes on *directories* (specifically, robocopy likes to open target directories with delete access, without actually deleting them).
             if (!CheckIfNtCreateMayDeleteFile(CreateOptions, DesiredAccess))
             {
-#if SUPER_VERBOSE
-                Dbg(L"NtCreateFile: Ignoring a write-level access since it is not a delete: %s", policyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
                 accessCheck = AccessCheckResult(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
             }
             else if (isDirectoryCreation)
             {
-#if SUPER_VERBOSE
-                Dbg(L"NtCreateFile: Ignoring a delete-level access since it will only apply to directories: %s", policyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
                 accessCheck = AccessCheckResult(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
             }
         }
@@ -8464,16 +8446,10 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
             //       and we ignore potential deletes on *directories* (specifically, robocopy likes to open target directories with delete access, without actually deleting them).
             if (!CheckIfNtCreateMayDeleteFile(CreateOptions, DesiredAccess))
             {
-#if SUPER_VERBOSE
-                Dbg(L"NtCreateFile: Ignoring a write-level access since it is not a delete: %s", policyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
                 accessCheck = AccessCheckResult(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
             }
             else if (isDirectoryCreation)
             {
-#if SUPER_VERBOSE
-                Dbg(L"NtCreateFile: Ignoring a delete-level access since it will only apply to directories: %s", policyResult.GetCanonicalizedPath().GetPathString());
-#endif // SUPER_VERBOSE
                 accessCheck = AccessCheckResult(RequestedAccess::None, ResultAction::Allow, ReportLevel::Ignore);
             }
         }

@@ -67,20 +67,11 @@ void PolicyResult::InitializeFromCursor(CanonicalizedPathType const& canonicaliz
 
     if (GetSpecialCaseRulesForWindows(fullTranslatedPath, fullTranslatedPathLength, /*out*/ m_policy)) 
     {
-#if SUPER_VERBOSE
-        Dbg(L"match (special case rules for Windows): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
-#endif // SUPER_VERBOSE
     }
     else if (GetSpecialCaseRulesForCoverageAndSpecialDevices(fullTranslatedPath, fullTranslatedPathLength, canonicalizedPath.Type, /*out*/ m_policy)) {
-#if SUPER_VERBOSE
-        Dbg(L"match (special case rules for coverage and special devices): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
-#endif // SUPER_VERBOSE
     }
     else if (GetSpecialCaseRulesForSpecialTools(fullTranslatedPath, fullTranslatedPathLength, /*out*/ m_policy))
     {
-#if SUPER_VERBOSE
-            Dbg(L"match (special case rules for special tools): %s - policySearchCursor: %x, searchSuffix: %s", canonicalizedPath.GetPathString(), policySearchCursor, searchSuffix);
-#endif // SUPER_VERBOSE
     }
 }
 

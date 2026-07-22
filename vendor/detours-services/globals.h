@@ -8,16 +8,12 @@
 #include "DetouredProcessInjector.h"
 #include "UtilityHelpers.h"
 #include <vector>
-#include <TraceLoggingProvider.h>
 
 using std::vector;
 
 // ----------------------------------------------------------------------------
 // DEFINES
 // ----------------------------------------------------------------------------
-
-#define SUPER_VERBOSE 0
-#define ENABLE_TRACE_LOGGING 0
 
 // ----------------------------------------------------------------------------
 // FORWARD DECLARATIONS
@@ -63,8 +59,6 @@ extern LPCSTR g_lpDllNameX86;
 extern LPCSTR g_lpDllNameX64;
 
 extern DetouredProcessInjector* g_pDetouredProcessInjector;
-
-TRACELOGGING_DECLARE_PROVIDER(g_detoursServicesTraceProvider);
 
 // Bazel fork (Model W write-overlay): absolute path to the launcher-created
 // per-invocation overlay backing directory. Undeclared writes in the execroot

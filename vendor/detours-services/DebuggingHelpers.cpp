@@ -17,7 +17,6 @@ using std::unique_ptr;
 // DEFINES
 // ----------------------------------------------------------------------------
 
-#define SUPER_VERBOSE 0
 
 // ----------------------------------------------------------------------------
 // STATIC FUNCTIONS
@@ -87,9 +86,6 @@ static void WriteMessage(PCWSTR text)
     DWORD ansiLength2 = (DWORD) WideCharToMultiByte(CP_ACP, 0, text, -1, const_cast<char*>(ansiBuffer.c_str()), (int) ansiLength, NULL, NULL);
     assert(ansiLength == ansiLength2);
 
-#if SUPER_VERBOSE
-    fputs(ansiBuffer.c_str(), stderr);
-#endif
 
     if ((g_fileAccessManifestFlags & FileAccessManifestFlag::DiagnosticMessagesEnabled) != FileAccessManifestFlag::None) {
         HANDLE stderrHandle = GetStdHandle(STD_ERROR_HANDLE);
@@ -147,9 +143,6 @@ void Dbg(PCWSTR format, ...)
 
     PCWSTR buffer = report.c_str();
 
-#if SUPER_VERBOSE
-    fputws(buffer, stderr);
-#endif
 
     OVERLAPPED overlapped;
     ZeroMemory(&overlapped, sizeof(OVERLAPPED));
@@ -199,12 +192,8 @@ void MaybeBreakOnAccessDenied()
     }
 
     if (g_BreakOnAccessDenied) {
-#if SUPER_VERBOSE
-        Dbg(L"g_BreakOnAccessDenied is true, and access was denied.  Breaking into debugger.");
-#endif // SUPER_VERBOSE
         DebugBreak();
     }
 }
 
 
-#undef SUPER_VERBOSE

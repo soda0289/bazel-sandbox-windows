@@ -15,8 +15,6 @@
 #include "buildXL_mem.h"
 #include "ReportType.h"
 
-#include <TraceLoggingProvider.h>
-
 using std::unique_ptr;
 
 extern volatile LONG g_detoursAllocatedNoLockConcurentPoolEntries;
@@ -42,16 +40,6 @@ void SendReportString(_In_z_ wchar_t const* dataString)
     size_t length = wcslen(dataString);
     size_t reportLineLength = sizeof(wchar_t) * length;
 
-#if ENABLE_TRACE_LOGGING
-    TraceLoggingWrite(
-        g_detoursServicesTraceProvider,
-        "SendReportString",
-        TraceLoggingInt64((int64_t)g_FileAccessManifestPipId, "PipId"),
-        TraceLoggingUInt64(length, "Length"),
-        TraceLoggingCountedWideString(dataString, (ULONG)min((size_t)32, length), "Start")
-    );
-#endif
-
     DWORD bytesWritten;
     DWORD lastError = GetLastError();
     if (!WriteFile(g_reportFileHandle, dataString, (DWORD)reportLineLength, &bytesWritten, &overlapped))
@@ -60,12 +48,6 @@ void SendReportString(_In_z_ wchar_t const* dataString)
         std::wstring errorMsg = DebugStringFormat(L"SendReportString: Failed to write file access report line '%s' (error code: 0x%08X)", dataString, (int)error);
         Dbg(errorMsg.c_str());
         HandleDetoursInjectionAndCommunicationErrors(DETOURS_PIPE_WRITE_ERROR_4, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_4);
-    }
-    else
-    {
-#if ENABLE_TRACE_LOGGING
-        TraceLoggingWrite(g_detoursServicesTraceProvider, "SendReportStringSuccess");
-#endif
     }
 
     SetLastError(lastError);

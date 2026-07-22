@@ -277,9 +277,6 @@ bool GetSpecialCaseRulesForWindows(
         // it's deleted as usual. When the file system is mounted, all existing files in the “\$Extend\$Deleted” directory, if any, are deleted,
         // The same logic also applies to deleted directories.
         // Details can be found in this unofficial documentation: https://dfir.ru/2020/03/21/the-extenddeleted-directory/
-#if SUPER_VERBOSE
-        Dbg(L"special case: files in staged deletion: %s", absolutePath);
-#endif // SUPER_VERBOSE
         policy = FileAccessPolicy::FileAccessPolicy_AllowAll;
         return true;
     }
@@ -310,9 +307,6 @@ bool GetSpecialCaseRulesForSpecialTools(
         // Some tools emit temporary files into the same directory
         // as the final output file.
         if (HasSuffix(absolutePath, absolutePathLength, L".tmp")) {
-#if SUPER_VERBOSE
-            Dbg(L"special case: temp file: %s", absolutePath);
-#endif // SUPER_VERBOSE
             int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
             policy = (FileAccessPolicy)intPolicy;
             return true;
@@ -323,9 +317,6 @@ bool GetSpecialCaseRulesForSpecialTools(
         // The native resource compiler (RC) emits temporary files into the same
         // directory as the final output file.
         if (StringLooksLikeRCTempFile(absolutePath, absolutePathLength)) {
-#if SUPER_VERBOSE
-            Dbg(L"special case: temp file: %s", absolutePath);
-#endif // SUPER_VERBOSE
             int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
             policy = (FileAccessPolicy)intPolicy;
             return true;
@@ -335,9 +326,6 @@ bool GetSpecialCaseRulesForSpecialTools(
     case SpecialProcessKind::Mt:
         // The Mt tool emits temporary files into the same directory as the final output file.
         if (StringLooksLikeMtTempFile(absolutePath, absolutePathLength, L".tmp")) {
-#if SUPER_VERBOSE
-            Dbg(L"special case: temp file: %s", absolutePath);
-#endif // SUPER_VERBOSE
             int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
             policy = (FileAccessPolicy)intPolicy;
             return true;
@@ -351,9 +339,6 @@ bool GetSpecialCaseRulesForSpecialTools(
         // The cc-line of tools like to find pdb files by using the pdb path embedded in a dll/exe.
         // If the dll/exe was built with different roots, then this results in somewhat random file accesses.
         if (HasSuffix(absolutePath, absolutePathLength, L".pdb")) {
-#if SUPER_VERBOSE
-            Dbg(L"special case: pdb file: %s", absolutePath);
-#endif // SUPER_VERBOSE
             int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
             policy = (FileAccessPolicy)intPolicy;
             return true;
@@ -370,9 +355,6 @@ bool GetSpecialCaseRulesForSpecialTools(
     if (StringLooksLikeBuildExeTraceLog(absolutePath, absolutePathLength)) {
         int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
         policy = (FileAccessPolicy)intPolicy;
-#if SUPER_VERBOSE
-        Dbg(L"Build.exe trace log path: %s", absolutePath);
-#endif // SUPER_VERBOSE
         return true;
     }
 
@@ -400,9 +382,6 @@ bool GetSpecialCaseRulesForCoverageAndSpecialDevices(
             HasSuffix(absolutePath, absolutePathLength, L".nls") ||
             HasSuffix(absolutePath, absolutePathLength, L".dll"))
         {
-#if SUPER_VERBOSE
-            Dbg(L"Ignoring possibly code coverage related path: %s", absolutePath);
-#endif // SUPER_VERBOSE
             int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
             policy = (FileAccessPolicy)intPolicy;
             return true;
@@ -415,9 +394,6 @@ bool GetSpecialCaseRulesForCoverageAndSpecialDevices(
         // For a normal Win32 path, C: means C:<current directory on C> or C:\ if one is not set. But \\.\C:, \\?\C:, and \??\C:
         // mean 'the device C:'. We don't care to model access to devices (volumes in this case).
         if (maybeStartsWithDrive && absolutePathLength == 2) {
-#if SUPER_VERBOSE
-            Dbg(L"Ignoring access to drive device (not the volume root; missing a trailing slash): %s", absolutePath);
-#endif // SUPER_VERBOSE
             policy = FileAccessPolicy_AllowAll;
             return true;
         }
@@ -430,18 +406,12 @@ bool GetSpecialCaseRulesForCoverageAndSpecialDevices(
         // Note that this also allows access to the named pipe filesystem under \\.\pipe.
         bool startsWithDriveRoot = maybeStartsWithDrive && absolutePath[2] == L'\\';
         if (!startsWithDriveRoot) {
-#if SUPER_VERBOSE
-            Dbg(L"Ignoring non-drive device path: %s", absolutePath);
-#endif // SUPER_VERBOSE
             policy = FileAccessPolicy_AllowAll;
             return true;
         }
     }
 
     if (IsPathToNamedStream(absolutePath, absolutePathLength)) {
-#if SUPER_VERBOSE
-        Dbg(L"Ignoring path to a named stream: %s", absolutePath);
-#endif // SUPER_VERBOSE
         policy = FileAccessPolicy_AllowAll;
         return true;
     }
@@ -528,9 +498,6 @@ bool LocateFileAccessManifest(
         DWORD payloadSize;
         const void* payload = DetourFindPayload(currentModule, __uuidof(IDetourServicesManifest), &payloadSize);
         if (payload != NULL) {
-#if SUPER_VERBOSE
-            Dbg(L"Found Detours payload at %p len 0x%x", payload, payloadSize);
-#endif // SUPER_VERBOSE
             manifest = payload;
             manifestSize = payloadSize;
             return true;
@@ -919,9 +886,6 @@ bool ParseFileAccessManifest(
                 return false;
             }
 
-#if SUPER_VERBOSE
-            Dbg(L"report file opened: %s", report->Report.ReportPath);
-#endif // SUPER_VERBOSE
         }
     }
     else {

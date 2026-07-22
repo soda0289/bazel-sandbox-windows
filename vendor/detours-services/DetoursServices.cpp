@@ -32,7 +32,6 @@
 #include <Psapi.h>
 #include "FilesCheckedForAccess.h"
 #include "locale.h"
-#include <TraceLoggingProvider.h>
 
 // BazelSandbox network sandboxing (-N / -n). Winsock-free interface; the actual
 // Winsock detours live in a separate stdafx-free translation unit.
@@ -228,7 +227,6 @@ DWORD g_manifestSize = 0;
 
 DWORD g_currentProcessId;
 PCWSTR g_currentProcessCommandLine = nullptr;
-DWORD g_parentProcessId = 0;
 
 FileAccessManifestFlag g_fileAccessManifestFlags;
 
@@ -370,15 +368,6 @@ ZwSetInformationFile_t Real_ZwSetInformationFile;
 
 CreatePipe_t Real_CreatePipe;
 DeviceIoControl_t Real_DeviceIoControl;
-
-TRACELOGGING_DEFINE_PROVIDER(
-    g_detoursServicesTraceProvider,
-    "DetoursServicesTraceLogging",
-    // See https://learn.microsoft.com/en-us/windows/win32/api/traceloggingprovider/nf-traceloggingprovider-tracelogging_define_provider
-    // Run the following in PowerShell to get the GUID for the provider: 
-    //     [System.Diagnostics.Tracing.EventSource]::new("DetoursServicesTraceLogging").Guid
-    // {eee7223c-8b2d-5291-43f0-d539ab87e3a8}
-    (0xeee7223c, 0x8b2d, 0x5291, 0x43, 0xf0, 0xd5, 0x39, 0xab, 0x87, 0xe3, 0xa8));
 
 // Value used to signal the the exit code of the current process cannot be retrieved
 #define PROCESS_EXIT_CODE_CANNOT_BE_RETRIEVED 0xFFFFFF9A
@@ -927,7 +916,6 @@ static int __cdecl CrtDebugHook(int nReportType, wchar_t* szMsg, int* pnRet) {
 
 static bool DllProcessDetach()
 {
-    TraceLoggingUnregister(g_detoursServicesTraceProvider);
     return TRUE;
 }
 
@@ -980,8 +968,6 @@ static bool DllProcessAttach()
         Dbg(L"Failure creating private heap. Last Error: %d", (int)GetLastError());
         return false;
     }
-
-    TraceLoggingRegister(g_detoursServicesTraceProvider);
 
     g_breakawayChildProcesses = new vector<BreakawayChildProcess>();
     g_pManifestTranslatePathTuples = new vector<TranslatePathTuple*>();
