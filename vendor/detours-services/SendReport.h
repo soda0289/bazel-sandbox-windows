@@ -19,7 +19,6 @@ void ReportFileAccess(
     PolicyResult const& policyResult,
     AccessCheckResult const& accessCheckResult,
     DWORD error,
-    USN usn,
     wchar_t const* filter = nullptr);
 
 void ReportFileAccess(
@@ -29,5 +28,4 @@ void ReportFileAccess(
     AccessCheckResult const& accessCheckResult,
     DWORD error,
     DWORD rawError,
-    USN usn,
     wchar_t const* filter = nullptr);

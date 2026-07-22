@@ -120,8 +120,7 @@ void PolicyResult::ReportIndeterminatePolicyAndSetLastError(FileOperationContext
         FileAccessStatus::FileAccessStatus_CannotDeterminePolicy,
         *this,
         fakeAccessCheck,
-        ERROR_SUCCESS,
-        -1);
+        ERROR_SUCCESS);
 }
 
 bool PolicyResult::AllowWrite(bool basedOnlyOnPolicy) const {

@@ -107,29 +107,6 @@ PolicySearchCursor FindFileAccessPolicyInTreeEx(
     return FindFileAccessPolicyInTreeEx(PolicySearchCursor(childRecord, cursor.Level + 1, MakePPolicySearchCursor(cursor)), remainder, remainderLength);
 }
 
-#ifdef BUILDXL_NATIVES_LIBRARY
-BOOL WINAPI FindFileAccessPolicyInTree(
-    __in  ManifestRecord const* record,
-    __in  PCPathChar absolutePath,
-    __in  size_t absolutePathLength,
-	__out FileAccessPolicy& conePolicy,
-	__out FileAccessPolicy& nodePolicy,
-    __out DWORD& pathId,
-    __out USN& expectedUsn)
-{
-    if (record == nullptr || absolutePath == nullptr) {
-        return false;
-    }
-
-    PolicySearchCursor newCursor = FindFileAccessPolicyInTreeEx(PolicySearchCursor(record, 0, 0), absolutePath, absolutePathLength);
-	conePolicy = newCursor.Record->GetConePolicy();
-	nodePolicy = newCursor.Record->GetNodePolicy();
-    expectedUsn = newCursor.GetExpectedUsn();
-    pathId = newCursor.Record->GetPathId();
-    return true;
-}
-#endif // BUILDXL_NATIVES_LIBRARY
-
 /// FindChild
 ///
 /// Search for the given partial path in the children of the given node.

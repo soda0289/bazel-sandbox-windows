@@ -231,6 +231,25 @@ Removals made after the baseline tag (each verified with a full build +
   test (grandchild coverage) passes. The inert
   `AlwaysRemoteInjectDetoursFrom32BitProcess` extra-flag bit is kept for layout
   stability.
+- **USN reporting / verification (manifest-record wire-format change)** — removed
+  the NTFS Update-Sequence-Number machinery BuildXL used for incremental-build
+  change detection (we do pure enforcement, so nothing consumes it and USN never
+  denied — it only reported). Deleted: `TryGetUsn` + the USN check/report block
+  in `DetouredFunctions.cpp` (it *was* executed for exact-file scopes because the
+  builder wrote `ExpectedUsn = 0`, not `NoUsn`); the `usn` parameter threaded
+  through `ReportIfNeeded` (`DetoursHelpers.{h,cpp}`) and
+  `ReportFileAccess`/`SendReportString` (`SendReport.{h,cpp}`) incl. the `Usn`
+  column in the `--trace` line; `PolicyResult::{ReportUsnAfterOpen,GetExpectedUsn}`;
+  `PolicySearchCursor::GetExpectedUsn` and the dead
+  `#ifdef BUILDXL_NATIVES_LIBRARY` `FindFileAccessPolicyInTree` export
+  (`PolicySearch.{h,cpp}`); and from `DataTypes.h` the `NoUsn` macro, the
+  `ExpectedUsnLo/Hi` fields + `ExpectedUsnPartType` + `GetExpectedUsn` in
+  `ManifestRecord_t`. **Wire-format change:** each manifest record shrank by 8
+  bytes (28→20-byte fixed prefix, still 4-aligned); `src/manifest_builder.cpp`
+  drops the `PutU64(0)` ExpectedUsn field in lockstep. Record navigation is all
+  field-relative and child offsets are record-relative, so the layout stays
+  self-consistent; `manifest_unit` + the exact-file enforce tests pass. The
+  `FileAccessPolicy` bit `0x20` (`ReportUsnAfterOpen`) is left as a reserved gap.
 
 The corresponding `FileAccessManifestFlag` bits (`LogProcessData`,
 `LogProcessDetouringStatus`, `CheckDetoursMessageCount`) are kept as inert

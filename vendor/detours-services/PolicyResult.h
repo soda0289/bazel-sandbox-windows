@@ -189,14 +189,12 @@ public:
     bool AllowCreateDirectory() const { return (m_policy & FileAccessPolicy_AllowCreateDirectory) != 0; }
     bool AllowRealInputTimestamps() const { return (m_policy & FileAccessPolicy_AllowRealInputTimestamps) != 0; }
     bool OverrideAllowWriteForExistingFiles() const { return (m_policy & FileAccessPolicy_OverrideAllowWriteForExistingFiles) != 0; }
-    bool ReportUsnAfterOpen() const { return (m_policy & FileAccessPolicy_ReportUsnAfterOpen) != 0; }
     bool ReportDirectoryEnumeration() const { return (m_policy & FileAccessPolicy_ReportDirectoryEnumerationAccess) != 0; }
     bool IndicateUntracked() const { return ((m_policy & FileAccessPolicy_AllowAll) == FileAccessPolicy_AllowAll) && ((m_policy & FileAccessPolicy_ReportAccess) == 0); }
     bool TreatDirectorySymlinkAsDirectory() const { return (m_policy & FileAccessPolicy_TreatDirectorySymlinkAsDirectory) != 0; }
     bool EnableFullReparsePointParsing() const { return (m_policy & FileAccessPolicy_EnableFullReparsePointParsing) != 0; }
     DWORD GetPathId() const { return m_policySearchCursor.IsValid() ? m_policySearchCursor.Record->GetPathId() : 0; }
     FileAccessPolicy GetPolicy() const { return m_policy; }
-    USN GetExpectedUsn() const { return m_policySearchCursor.GetExpectedUsn(); }
     // Indicates if this policy is invalid (iff Initialize did not complete successfully or has not been called).
     bool IsIndeterminate() const { return m_isIndeterminate; }
 

@@ -119,10 +119,9 @@ void ReportFileAccess(
     PolicyResult const& policyResult,
     AccessCheckResult const& accessCheckResult,
     DWORD error,
-    USN usn,
     wchar_t const* filter)
 {
-    ReportFileAccess(fileOperationContext, status, policyResult, accessCheckResult, error, error, usn, filter);
+    ReportFileAccess(fileOperationContext, status, policyResult, accessCheckResult, error, error, filter);
 }
 
 void ReportFileAccess(
@@ -132,7 +131,6 @@ void ReportFileAccess(
     AccessCheckResult const& accessCheckResult,
     DWORD error,
     DWORD rawError,
-    USN usn,
     wchar_t const* filter)
 {
     if (g_reportFileHandle == NULL || g_reportFileHandle == INVALID_HANDLE_VALUE) {
@@ -187,7 +185,6 @@ void ReportFileAccess(
     // (int)(accessCheckResult.ReportLevel == ReportLevel::ReportExplicit) - 1 char(0 or 1)
     // Error - 8 chars
     // RawError - 8 chars
-    // Usn - 16 chars
     // fileOperationContext.DesiredAccess - 8 chars
     // fileOperationContext.ShareMode - 8 chars
     // fileOperationContext.CreationDisposition - 8 chars,
@@ -221,7 +218,7 @@ void ReportFileAccess(
         std::replace(commandLine.begin(), commandLine.end(), L'\r', L' ');
         std::replace(commandLine.begin(), commandLine.end(), L'\n', L' ');
 
-        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%llx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s|%s\r\n",
+        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s|%s\r\n",
             buildxl::common::ReportType::kFileAccess,
             fileOperationContext.Operation,
             g_currentProcessId,
@@ -232,7 +229,6 @@ void ReportFileAccess(
             (int)(accessCheckResult.Level == ReportLevel::ReportExplicit),
             error,
             rawError,
-            usn,
             fileOperationContext.DesiredAccess,
             fileOperationContext.ShareMode,
             fileOperationContext.CreationDisposition,
@@ -245,7 +241,7 @@ void ReportFileAccess(
     }
     else
     {
-        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%llx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s\r\n",
+        constructReportResult = swprintf_s(report.get(), reportBufferSize, L"%d,%s:%lx|%lx|%lx|%x|%x|%x|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%lx|%s|%s\r\n",
             buildxl::common::ReportType::kFileAccess,
             fileOperationContext.Operation,
             g_currentProcessId,
@@ -256,7 +252,6 @@ void ReportFileAccess(
             (int)(accessCheckResult.Level == ReportLevel::ReportExplicit),
             error,
             rawError,
-            usn,
             fileOperationContext.DesiredAccess,
             fileOperationContext.ShareMode,
             fileOperationContext.CreationDisposition,

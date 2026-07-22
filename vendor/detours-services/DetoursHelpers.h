@@ -119,7 +119,6 @@ void ReportIfNeeded(
     FileOperationContext const& context,
     PolicyResult const& policyResult,
     DWORD error,
-    USN usn = -1,
     wchar_t const* filter = nullptr);
 
 void ReportIfNeeded(
@@ -128,7 +127,6 @@ void ReportIfNeeded(
     PolicyResult const& policyResult,
     DWORD error,
     DWORD rawError,
-    USN usn = -1,
     wchar_t const* filter = nullptr);
 
 bool EnumerateDirectory(

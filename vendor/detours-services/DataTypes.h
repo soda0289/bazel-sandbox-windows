@@ -21,8 +21,6 @@
 #pragma warning( disable : 26446 26485 26482 26490 26497 26812 )
 #endif
 
-#define NoUsn -1
-
 // ----------------------------------------------------------------------------
 // ENUMS
 // ----------------------------------------------------------------------------
@@ -158,9 +156,8 @@ enum FileAccessPolicy
     // BuildXL uses this information to discover dynamic dependencies, such as #include-ed files.
     FileAccessPolicy_ReportAccessIfExistent = 0x10,
 
-    /// If set, then we will report the USN just after a file open operation for a particular file, or under a scope
-    /// to the access report file.  BuildXL uses this information to make sure that the same file version that's hashed that's actually read by a process.
-    FileAccessPolicy_ReportUsnAfterOpen = 0x20,
+    // 0x20 was FileAccessPolicy_ReportUsnAfterOpen (USN reporting/verification,
+    // removed in this hard fork). Left as a reserved gap for layout stability.
 
     // If set, then we will report attempts to access files under this scope that fail due to the path or file being absent.
     // BuildXL uses this information to discover dynamic anti-dependencies, such as those on an #include search path, sneaky loader search paths, etc.
@@ -622,7 +619,6 @@ typedef struct ManifestRecord_t
     typedef uint32_t    HashType;
     typedef uint32_t    PolicyType;
     typedef uint32_t    PathIdType;
-    typedef uint32_t    ExpectedUsnPartType;
     typedef uint32_t    BucketCountType;
     typedef uint32_t    ChildOffsetType;
     typedef PCPathChar  PartialPathType;
@@ -631,7 +627,6 @@ typedef struct ManifestRecord_t
     PolicyType          ConePolicy;
     PolicyType          NodePolicy;
     PathIdType          PathId;
-    ExpectedUsnPartType ExpectedUsnLo, ExpectedUsnHi; // we split this value up as we don't want to introduce 64-bit alignment here (USN is a 64-bit integer)
     BucketCountType     BucketCount;
     ChildOffsetType     Buckets[ANYSIZE_ARRAY];
     // PartialPathType PartialPath (after the end of the Buckets array)
@@ -639,10 +634,6 @@ typedef struct ManifestRecord_t
 #pragma warning( push )
 // warning C26472: Don't use a static_cast for arithmetic conversions. Use brace initialization, gsl::narrow_cast or gsl::narrow (type.1).
 #pragma warning( disable : 26472)
-    inline USN GetExpectedUsn() const noexcept {
-        return ((static_cast<USN>(this->ExpectedUsnHi)) << 32) | this->ExpectedUsnLo;
-    }
-
     inline DWORD GetPathId() const noexcept {
         return static_cast<DWORD>(this->PathId);
     }

@@ -227,7 +227,6 @@ void ManifestBuilder::SerializeNode(const Node* node,
     PutU32(out, node->conePolicy);
     PutU32(out, node->nodePolicy);
     PutU32(out, 0);           // PathId (unused)
-    PutU64(out, 0);           // ExpectedUsn (Lo,Hi)
 
     const uint32_t childCount = static_cast<uint32_t>(node->children.size());
     // bucketCount = childCount == 0 ? 0 : (uint)(childCount / 0.7)

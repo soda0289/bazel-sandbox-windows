@@ -48,17 +48,6 @@ struct PolicySearchCursor {
         assert(record != nullptr);
     }
 
-    // Gets the expected USN corresponding to this match. Returns -1 if this match was not for the complete
-    // path (and so a USN is not known) or if the cursor is invalid.
-    USN GetExpectedUsn() const {
-        if (SearchWasTruncated || !IsValid()) {
-            return -1;
-        }
-        else {
-            return Record->GetExpectedUsn();
-        }
-    }
-    
     // Indicates if this cursor is valid. The Record field of an invalid cursor should not be used.
     bool IsValid() const {
         return Record != nullptr;
@@ -86,17 +75,5 @@ PolicySearchCursor FindFileAccessPolicyInTreeEx(
     __in  PolicySearchCursor const& startCursor,
     __in  PCPathChar absolutePath,
     __in  size_t absolutePathLength);
-
-// This is equivalent to FindFileAccessPolicyInTreeEx, but taking just a start record
-// rather than a full cursor, and returning only the matched record details rather than a cursor.
-// This is a simplified variant for easier C#-side testing.
-BOOL WINAPI FindFileAccessPolicyInTree(
-    __in  PCManifestRecord record,
-    __in  PCPathChar absolutePath,
-    __in  size_t absolutePathLength,
-	__out FileAccessPolicy& conePolicy,
-	__out FileAccessPolicy& nodePolicy,
-    __out DWORD& pathId,
-    __out USN& expectedUsn);
 
 #endif

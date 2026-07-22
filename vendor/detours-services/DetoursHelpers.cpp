@@ -992,8 +992,7 @@ bool ParseFileAccessManifest(
             FileAccessStatus::FileAccessStatus_CannotDeterminePolicy,
             PolicyResult(), // Indeterminate
             AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-            GetLastError(),
-            -1);
+            GetLastError());
         return true;
     }
 
@@ -1080,8 +1079,7 @@ bool ParseFileAccessManifest(
         readCheck.GetFileAccessStatus(),
         policyResult,
         readCheck,
-        ERROR_SUCCESS, // No interesting error code to observe or return to anyone.
-        -1);
+        ERROR_SUCCESS); // No interesting error code to observe or return to anyone.
 
     return true;
 }
@@ -1150,10 +1148,9 @@ void ReportIfNeeded(
     FileOperationContext const& context,
     PolicyResult const& policyResult,
     DWORD error,
-    USN usn,
     wchar_t const* filter)
 {
-    ReportIfNeeded(checkResult, context, policyResult, error, error, usn, filter);
+    ReportIfNeeded(checkResult, context, policyResult, error, error, filter);
 }
 
 void ReportIfNeeded(
@@ -1162,7 +1159,6 @@ void ReportIfNeeded(
     PolicyResult const& policyResult,
     DWORD error,
     DWORD rawError,
-    USN usn,
     wchar_t const* filter) 
 {
     if (!checkResult.ShouldReport()) {
@@ -1176,7 +1172,6 @@ void ReportIfNeeded(
         checkResult,
         error,
         rawError,
-        usn,
         filter);
 }
 

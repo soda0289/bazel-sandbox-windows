@@ -184,10 +184,12 @@ simple allow/deny **cone tree** built in `main.cpp`:
 All scopes use mask `MaskAll` (`0x0`), i.e. absolute (non-inherited) policy:
 `(parentPolicy & mask) | values`.
 
-Policy bits we **never** use: `ReportAccessIfExistent`, `ReportUsnAfterOpen`,
+Policy bits we **never** use: `ReportAccessIfExistent`,
 `ReportAccessIfNonExistent`, `ReportDirectoryEnumerationAccess`,
 `AllowRealInputTimestamps`, `OverrideAllowWriteForExistingFiles`,
 `TreatDirectorySymlinkAsDirectory`, `EnableFullReparsePointParsing`.
+(`ReportUsnAfterOpen` / `0x20` was **removed** — see below — and is now a
+reserved gap in the `FileAccessPolicy` enum.)
 
 ### Reporting channel: off by default, opt-in via `--trace`
 By default both report flags are **off** and the manifest emits a **size-0
@@ -218,9 +220,9 @@ false → `ParseFileAccessManifest` calls `CreateFileW(ReportPath, …, OPEN_ALW
 and appends), **not** the report-**pipe** mode. So `--trace` needs no pipe,
 reader thread, or payload handle slot; the report path is inherited by every
 child, which each open and append to it. This re-activates `SendReport.cpp` /
-`ReportIfNeeded`, but nothing else (USN reports stay gated behind flags we
-still don't set, so the trace is file-access lines only). The process-data /
-process-detouring-status report types were removed outright (see below). See
+`ReportIfNeeded`, but nothing else (the trace is file-access lines only). The
+process-data / process-detouring-status report types and the USN
+reporting/verification machinery were removed outright (see below). See
 README → *Debugging: `-D` and `--trace`*.
 
 ### Consequences (dead / inert code paths for us)
@@ -231,14 +233,16 @@ never meaningfully executed in our configuration:
   gated on `NormalizeReadTimestamps` / short-name flags we don't set.
 - Full reparse-point resolution + `ResolvedPathCache` — gated behind
   `IgnoreFullReparsePointResolving` (which we set), so the resolver is bypassed.
-- USN reporting, directory-enumeration reporting, process-arg reporting.
+- Directory-enumeration reporting, process-arg reporting. (USN
+  reporting/verification was removed outright — see below.)
 - The reporting subsystem (`SendReport`, most of `DebuggingHelpers`) — inert by
   default; `--trace` re-activates the file-access report path (see above).
 
 (`SubstituteProcessExecution`, `DeviceMap`, the process-data /
-process-detouring-status report types, the message-count semaphores, and the
-injector report-pipe / remote-injection (WOW64→Native64) handshake were
-removed outright — see the hard-fork note in `vendor/PROVENANCE.md`.)
+process-detouring-status report types, the message-count semaphores, the
+injector report-pipe / remote-injection (WOW64→Native64) handshake, and the
+USN reporting/verification machinery were removed outright — see the hard-fork
+note in `vendor/PROVENANCE.md`.)
 
 ## 6. Guidance for future shrinking / extraction
 

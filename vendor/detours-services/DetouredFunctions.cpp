@@ -3298,41 +3298,6 @@ BOOL WINAPI Detoured_CreateProcessAsUserA(
     return result;
 }
 
-static bool TryGetUsn(
-    _In_    HANDLE handle,
-    _Inout_ USN&   usn,
-    _Inout_ DWORD& error)
-{
-    // TODO: http://msdn.microsoft.com/en-us/library/windows/desktop/aa364993(v=vs.85).aspx says to call GetVolumeInformation to get maximum component length.
-    const size_t MaximumComponentLength = 255;
-    const size_t MaximumChangeJournalRecordSize =
-        (MaximumComponentLength * sizeof(WCHAR)
-            + sizeof(USN_RECORD) - sizeof(WCHAR));
-    union {
-        USN_RECORD_V2 usnRecord;
-        BYTE reserved[MaximumChangeJournalRecordSize];
-    };
-    DWORD bytesReturned;
-    if (!DeviceIoControl(handle,
-        FSCTL_READ_FILE_USN_DATA,
-        NULL,
-        0,
-        &usnRecord,
-        MaximumChangeJournalRecordSize,
-        &bytesReturned,
-        NULL))
-    {
-        error = GetLastError();
-        return false;
-    }
-
-    assert(bytesReturned <= MaximumChangeJournalRecordSize);
-    assert(bytesReturned == usnRecord.RecordLength);
-    assert(2 == usnRecord.MajorVersion);
-    usn = usnRecord.Usn;
-    return true;
-}
-
 // If we are not attached this is not App use of RAM but the OS proess startup side of the world.
 extern bool g_isAttached;
 
@@ -3426,8 +3391,7 @@ HANDLE WINAPI Detoured_CreateFileW(
                     FileAccessStatus::FileAccessStatus_Allowed,
                     policyResult,
                     AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0,
-                    -1);
+                    0);
 
                 forceReadOnlyForRequestedRWAccess = true;
             }
@@ -3509,57 +3473,6 @@ HANDLE WINAPI Detoured_CreateFileW(
     else if (WantsProbeOnlyAccess(dwDesiredAccess))
     {
         accessCheck = AccessCheckResult::Combine(accessCheck, policyResult.CheckReadAccess(RequestedReadAccess::Probe, readContext));
-    }
-
-    // Additionally, for files (not directories) we can enforce a USN match (or report).
-    bool unexpectedUsn = false;
-    bool reportUsn = false;
-    USN usn = -1; // -1, or 0xFFFFFFFFFFFFFFFF indicates that USN could/was not obtained
-    if (!readContext.OpenedDirectory) // We do not want to report accesses to directories.
-    {
-        reportUsn = handle != INVALID_HANDLE_VALUE && policyResult.ReportUsnAfterOpen();
-        bool checkUsn = handle != INVALID_HANDLE_VALUE && policyResult.GetExpectedUsn() != -1;
-
-        DWORD getUsnError = ERROR_SUCCESS;
-        if ((reportUsn || checkUsn) && !TryGetUsn(handle, /* inout */ usn, /* inout */ getUsnError))
-        {
-            WriteWarningOrErrorF(L"Could not obtain USN for file path '%s'. Error: %d",
-                policyResult.GetCanonicalizedPath().GetPathString(), getUsnError);
-            MaybeBreakOnAccessDenied();
-
-            ReportFileAccess(
-                opContext,
-                FileAccessStatus::FileAccessStatus_CannotDeterminePolicy,
-                policyResult,
-                AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                getUsnError,
-                usn);
-
-            if (handle != INVALID_HANDLE_VALUE)
-            {
-                CloseHandle(handle);
-            }
-
-            SetLastError(ERROR_ACCESS_DENIED);
-            return INVALID_HANDLE_VALUE;
-        }
-
-        if (checkUsn && usn != policyResult.GetExpectedUsn())
-        {
-            WriteWarningOrErrorF(L"USN mismatch.  Actual USN: 0x%08x, expected USN: 0x%08x.",
-                policyResult.GetCanonicalizedPath().GetPathString(), usn, policyResult.GetExpectedUsn());
-            unexpectedUsn = true;
-        }
-    }
-
-    // ReportUsnAfterOpen implies reporting.
-    // TODO: Would be cleaner to just use the normal Report flags (per file / scope) and a global 'look at USNs' flag.
-    // Additionally, we report (but do never deny) if a USN did not match an expectation. We must be tolerant to USN changes
-    // (which the consumer of these reports may interpret) due to e.g. hard link changes (when a link is added or removed to a file).
-    if (reportUsn || unexpectedUsn)
-    {
-        accessCheck.Level = ReportLevel::ReportExplicit;
-        accessCheck = AccessCheckResult::Combine(accessCheck, accessCheck.With(ReportLevel::ReportExplicit));
     }
 
     bool isHandleToReparsePoint = (dwFlagsAndAttributes & FILE_FLAG_OPEN_REPARSE_POINT) != 0;
@@ -3686,7 +3599,7 @@ HANDLE WINAPI Detoured_CreateFileW(
 
     if (shouldReportAccessCheck)
     {
-        ReportIfNeeded(accessCheck, opContext, policyResult, reportedError, error, usn);
+        ReportIfNeeded(accessCheck, opContext, policyResult, reportedError, error);
     }
 
     // Propagate the correct error code to the caller.
@@ -5830,7 +5743,7 @@ static HANDLE WINAPI ReportFindFirstFileExWAccesses(
     // For the enumeration itself, we report ERROR_SUCCESS in the case that no matches were found (the directory itself exists).
     // FindFirstFileEx indicates no matches with ERROR_FILE_NOT_FOUND.
     DWORD enumerationError = (success || error == ERROR_FILE_NOT_FOUND) ? ERROR_SUCCESS : error;
-    ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, GetReportedError(success, enumerationError), error, -1, filter);
+    ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, GetReportedError(success, enumerationError), error, filter);
 
     // TODO: Respect ShouldDenyAccess for directoryAccessCheck.
 
@@ -7480,7 +7393,7 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFile(
         overlay->EnumerationHasBeenReported = NT_SUCCESS(result) && directoryAccessCheck.ShouldReport();
 
         // We can report the status for directory now.
-        ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, reportedError, lastError, -1, filter.c_str());
+        ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, reportedError, lastError, filter.c_str());
     }
 
     return result;
@@ -7814,7 +7727,7 @@ NTSTATUS NTAPI Detoured_NtQueryDirectoryFileEx(
 
         overlay->EnumerationHasBeenReported = NT_SUCCESS(result) && directoryAccessCheck.ShouldReport();
 
-        ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, reportedError, lastError, -1, filter.c_str());
+        ReportIfNeeded(directoryAccessCheck, fileOperationContext, directoryPolicyResult, reportedError, lastError, filter.c_str());
     }
 
     return result;
@@ -8127,8 +8040,7 @@ NTSTATUS NTAPI Detoured_ZwCreateFile(
                     FileAccessStatus::FileAccessStatus_Allowed,
                     policyResult,
                     AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0,
-                    -1);
+                    0);
 
                 forceReadOnlyForRequestedRWAccess = true;
             }
@@ -8664,8 +8576,7 @@ NTSTATUS NTAPI Detoured_NtCreateFile(
                     FileAccessStatus::FileAccessStatus_Allowed,
                     policyResult,
                     AccessCheckResult(RequestedAccess::None, ResultAction::Deny, ReportLevel::Report),
-                    0,
-                    -1);
+                    0);
 
                 forceReadOnlyForRequestedRWAccess = true;
             }
