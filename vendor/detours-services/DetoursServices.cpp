@@ -546,11 +546,6 @@ InternalCreateDetouredProcess(
         creationFlags |= CREATE_SUSPENDED;
     }
 
-    bool isCurrent64BitProcess = false;
-    bool isCurrentWow64Process = false;
-    bool isProcessWow64 = false;
-    bool needsRemoteInjection = false;
-
     // If there are configured processes that need to break away from
     // the current job object, that means the job object was configured with
     // the JOB_OBJECT_LIMIT_BREAKAWAY_OK limit. But if we reached this point
@@ -559,25 +554,6 @@ InternalCreateDetouredProcess(
     if (!g_breakawayChildProcesses->empty())
     {
         creationFlags &= ~CREATE_BREAKAWAY_FROM_JOB;
-    }
-
-    if (LogProcessDetouringStatus())
-    {
-        ReportProcessDetouringStatus(
-            ProcessDetouringStatus::ProcessDetouringStatus_Starting,
-            lpApplicationName,
-            lpCommandLine,
-            needsInjection,
-            isCurrent64BitProcess,
-            isCurrentWow64Process,
-            isProcessWow64,
-            needsRemoteInjection,
-            INVALID_HANDLE_VALUE,
-            disabledDetours,
-            creationFlags,
-            fProcDetoured,
-            error,
-            status);
     }
 
     // It appears the AV might hold exclusive read lock while scaning and this can fail create process.
@@ -637,16 +613,6 @@ InternalCreateDetouredProcess(
         // attributes are preset, we are inheriting specific handles. The flag, when not set
         // will cause the injection function to duplicate required handles. When set, we assume
         // all handles are inherited and there is no need for duplication.
-        if (LogProcessDetouringStatus())
-        {
-            pInjector->GetInjectionData(
-                lpProcessInformation->hProcess,
-                isCurrent64BitProcess,
-                isCurrentWow64Process,
-                isProcessWow64,
-                needsRemoteInjection);
-        }
-
         bool fullInheritHandles = bInheritHandles == TRUE && !(dwCreationFlags & EXTENDED_STARTUPINFO_PRESENT);
 
         // Do not retry process injection on the same process handle on failure. This is because the target process may
@@ -709,25 +675,6 @@ InternalCreateDetouredProcess(
                     lpApplicationName, lpCommandLine, (int)terminateProcessError);
             }
         }
-    }
-
-    if (LogProcessDetouringStatus())
-    {
-        ReportProcessDetouringStatus(
-            ProcessDetouringStatus::ProcessDetouringStatus_Done,
-            lpApplicationName,
-            lpCommandLine,
-            needsInjection,
-            isCurrent64BitProcess,
-            isCurrentWow64Process,
-            isProcessWow64,
-            needsRemoteInjection,
-            INVALID_HANDLE_VALUE,
-            disabledDetours,
-            creationFlags,
-            fProcDetoured,
-            error,
-            status);
     }
 
     if (status == CreateDetouredProcessStatus::DetouringFailed ||
@@ -876,25 +823,6 @@ static CreateDetouredProcessStatus CreateProcessAttributes(
         Dbg(errorMsg.c_str());
         HandleDetoursInjectionAndCommunicationErrors(DETOURS_CREATE_PROCESS_ATTRIBUTE_LIST_21, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_21);
 
-        if (LogProcessDetouringStatus())
-        {
-            ReportProcessDetouringStatus(
-                ProcessDetouringStatus::ProcessDetouringStatus_Done,
-                L"",
-                (LPWSTR)lpcwCommandLine,
-                0,
-                0,
-                0,
-                0,
-                0,
-                INVALID_HANDLE_VALUE,
-                0,
-                dwCreationFlags,
-                false,
-                GetLastError(),
-                CreateDetouredProcessStatus::CreateProcessAttributeListFailed);
-        }
-
         return CreateDetouredProcessStatus::CreateProcessAttributeListFailed;
     }
 
@@ -910,25 +838,6 @@ static CreateDetouredProcessStatus CreateProcessAttributes(
             (int)GetLastError());
         Dbg(errorMsg.c_str());
         HandleDetoursInjectionAndCommunicationErrors(DETOURS_INHERIT_HANDLES_ERROR_7, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_7);
-
-        if (LogProcessDetouringStatus())
-        {
-            ReportProcessDetouringStatus(
-                ProcessDetouringStatus::ProcessDetouringStatus_Done,
-                L"",
-                (LPWSTR)lpcwCommandLine,
-                0,
-                0,
-                0,
-                0,
-                0,
-                INVALID_HANDLE_VALUE,
-                0,
-                dwCreationFlags,
-                false,
-                GetLastError(),
-                CreateDetouredProcessStatus::HandleInheritanceFailed);
-        }
 
         return CreateDetouredProcessStatus::HandleInheritanceFailed;
     }
@@ -1038,43 +947,6 @@ static int __cdecl CrtDebugHook(int nReportType, wchar_t* szMsg, int* pnRet) {
 
 static bool DllProcessDetach()
 {
-    if (ShouldLogProcessData())
-    {
-        FILETIME creationTime;
-        FILETIME exitTime;
-        FILETIME kernelTime;
-        FILETIME userTime;
-        IO_COUNTERS counters;
-        DWORD exitCode = PROCESS_EXIT_CODE_CANNOT_BE_RETRIEVED;
-        HANDLE const currentProcess = GetCurrentProcess();
-
-        if (GetProcessIoCounters(currentProcess, &counters) == 0)
-        {
-            Dbg(L"DllProcessDetach failed GetProcessIoConters with GLE=%d.", GetLastError());
-            return TRUE;
-        }
-
-        if (GetProcessTimes(currentProcess, &creationTime, &exitTime, &kernelTime, &userTime) == 0)
-        {
-            Dbg(L"DllProcessDetach failed GetProcessTimes with GLE=%d.", GetLastError());
-            return TRUE;
-        }
-
-        // The exitCode will be PROCESS_EXIT_CODE_CANNOT_BE_RETRIEVED when GetExitCodeProcess fails.
-        if (GetExitCodeProcess(currentProcess, &exitCode) == 0)
-        {
-            Dbg(L"DllProcessDetach failed GetExitCodeProcess with GLE=%d.", GetLastError());
-        }
-
-        // The time reported by GetSystemTimeAsFileTime is in UTC format. It is also just
-        // a read of the system clock (no calculations are performed), so it is quick
-        // to retrieve. The time is read in the detour rather than in the processing of the
-        // report in BuildXL to reduce the time difference between the time the report
-        // is generated, and handling of the report message.
-        GetSystemTimeAsFileTime(&exitTime);
-        ReportProcessData(counters, creationTime, exitTime, kernelTime, userTime, exitCode, g_parentProcessId, (LONG64)g_detoursMaxAllocatedMemoryInBytes);
-    }
-
     TraceLoggingUnregister(g_detoursServicesTraceProvider);
 
 #if MEASURE_DETOURED_NT_CLOSE_IMPACT
@@ -1206,12 +1078,6 @@ static bool DllProcessAttach()
         // When DetoursServices.dll is loaded, there always must be a valid FileAccess manifest.
         // Otherwise it is an error.
         return false;
-    }
-
-    // Retrieve the id of the current processe's parent process
-    if (ShouldLogProcessData())
-    {
-        RetrieveParentProcessId();
     }
 
     g_invariantLocale = _wcreate_locale(LC_CTYPE, L"");
@@ -1507,24 +1373,6 @@ static bool DllProcessAttach()
 #error BUILDXL_NATIVES_LIBRARY or DETOURS_SERVICES_NATIVES_LIBRARY must be defined.
 #endif // DETOURS_SERVICES_NATIVES_LIBRARY
 
-
-void RetrieveParentProcessId()
-{
-    PROCESS_BASIC_INFORMATION processBasicInformation;
-    ULONG structSize = 0;
-
-    HANDLE const currentProcess = GetCurrentProcess();
-
-    if ((NtQueryInformationProcess(currentProcess, ProcessBasicInformation, &processBasicInformation, sizeof(processBasicInformation), &structSize) >= 0) &&
-        (structSize == sizeof(processBasicInformation)))
-    {
-        g_parentProcessId = ((ULONG_PTR)processBasicInformation.Reserved3) & 0xFFFFFFFF;
-    }
-    else
-    {
-        g_parentProcessId = 0;
-    }
-}
 
 #pragma warning( disable : 4100)
 

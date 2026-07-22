@@ -220,20 +220,6 @@ enum FileAccessStatus
     FileAccessStatus_CannotDeterminePolicy = 3
 };
 
-// Keep this in sync with the C# version declared in ProcessDetouringStatus.cs
-enum class ProcessDetouringStatus
-{
-    ProcessDetouringStatus_None = 0,
-    ProcessDetouringStatus_Starting = 1,
-    ProcessDetouringStatus_Created = 2,
-    ProcessDetouringStatus_Injecting = 3,
-    ProcessDetouringStatus_Resuming = 4,
-    ProcessDetouringStatus_Resumed = 5,
-    ProcessDetouringStatus_Cleanup = 7,
-    ProcessDetouringStatus_Done = 8,
-    ProcessDetouringStatus_Max = 9,
-};
-
 // Keep this in sync with the C# version declared in FileAccessManifest.cs
 enum FileAccessBucketOffsetFlag
 {

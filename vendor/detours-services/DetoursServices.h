@@ -93,8 +93,6 @@ void LogEventLogMessage(const std::wstring& a_msg,
     const WORD eventId,
     const std::wstring& a_name);
 
-void RetrieveParentProcessId();
-
 class TranslatePathTuple
 {
 private:
