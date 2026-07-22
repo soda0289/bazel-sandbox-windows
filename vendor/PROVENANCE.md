@@ -565,3 +565,16 @@ report-file append) is deliberately **retained**.
   translate-paths `count 0` word (`manifest_builder.cpp`); producer + parser changed
   in lockstep (`TestHeaderLayout` now reads the error-dump location length at
   offset 4). Build + 10/10 tests pass.
+- **Write-overlay coverage extended to `GetFinalPathNameByHandleA` (functional
+  fix, not a removal)** — a follow-up to the path-translation removal. In the
+  original engine the ANSI variant delegated to the wide hook only when
+  path-translation tuples were present; this launcher never sets any, so in shipped
+  behavior the ANSI variant was always a plain passthrough and the Model-W overlay
+  backing->virtual reverse-mapping (`ReverseOverlayFinalPath`, applied in
+  `Detoured_GetFinalPathNameByHandleW`) was **never** applied to ANSI callers. The
+  ANSI variant now fast-paths to `Real_` when `ShouldWriteOverlay()` is false, and
+  otherwise delegates to `Detoured_GetFinalPathNameByHandleW` and converts the
+  (possibly overlay-rewritten) result back to ANSI via `WideCharToMultiByte` —
+  restoring the delegation machinery but gating it on overlay instead of the
+  removed translate check. `Detoured_DeviceIoControl` remains a hooked passthrough.
+  Build + 10/10 tests pass.

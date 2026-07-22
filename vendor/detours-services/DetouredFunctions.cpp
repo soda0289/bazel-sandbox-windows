@@ -6731,9 +6731,57 @@ DWORD WINAPI Detoured_GetFinalPathNameByHandleA(
         }
     }
 
-    // Path translation was the only reason to detour the ANSI variant; with it gone
-    // this hook simply forwards to the real API.
-    return Real_GetFinalPathNameByHandleA(hFile, lpszFilePath, cchFilePath, dwFlags);
+    if (!ShouldWriteOverlay())
+    {
+        // Write-overlay is the only reason to detour the ANSI variant: when it is off
+        // the real API already reports the correct final path, so just forward.
+        return Real_GetFinalPathNameByHandleA(hFile, lpszFilePath, cchFilePath, dwFlags);
+    }
+
+    // Delegate to the wide hook so the overlay backing->virtual reverse-mapping in
+    // Detoured_GetFinalPathNameByHandleW is applied, then convert the result back to
+    // ANSI for the caller.
+    unique_ptr<wchar_t[]> wideFilePathBuffer(new wchar_t[cchFilePath]);
+    DWORD length = Detoured_GetFinalPathNameByHandleW(hFile, wideFilePathBuffer.get(), cchFilePath, dwFlags);
+
+    if (length == 0 || length > cchFilePath)
+    {
+        return length;
+    }
+
+    int numCharsRequiredIncTerminatingNull = WideCharToMultiByte(
+        CP_ACP,
+        0,
+        wideFilePathBuffer.get(),
+        // Processes the entire input string, including the terminating null character.
+        // The resulting character string has a terminating null character, and the length returned by the function includes this character.
+        -1,
+        // Only check for required buffer size.
+        NULL,
+        0,
+        NULL,
+        NULL);
+
+    if ((unsigned)numCharsRequiredIncTerminatingNull <= cchFilePath)
+    {
+        int numCharsWritten = WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wideFilePathBuffer.get(),
+            -1,
+            lpszFilePath,
+            (int)cchFilePath,
+            NULL,
+            NULL);
+
+        if (numCharsWritten == 0)
+        {
+            return (DWORD)numCharsWritten;
+        }
+    }
+
+    // Substract -1 since the \0 char is included.
+    return (DWORD)(numCharsRequiredIncTerminatingNull - 1);
 }
 
 IMPLEMENTED(Detoured_GetFinalPathNameByHandleW)
