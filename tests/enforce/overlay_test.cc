@@ -150,6 +150,19 @@ TEST_F(EnforceTest, OverlayGetCurrentDirectoryReportsVirtualPath) {
     EXPECT_FALSE(Exists(scratch));
 }
 
+// ANSI counterpart of the above: the same overlay-only-cwd child instead reads its
+// current directory via GetCurrentDirectoryA (the narrow-char API used by the CRT's
+// _getcwd). The GetCurrentDirectoryA hook must apply the same backing->virtual
+// reverse-map (by delegating to the wide hook) so ANSI callers are hermetic too.
+TEST_F(EnforceTest, OverlayGetCurrentDirectoryAnsiReportsVirtualPath) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawncwdisa", scratch, ProbePath(), scratch}));
+    EXPECT_FALSE(Exists(scratch));
+}
+
 // --- Relative-path resolution from an overlay-only cwd ------------------------
 //
 // A child launched with cwd = a directory that exists only in the overlay backing

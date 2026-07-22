@@ -3483,6 +3483,82 @@ DWORD WINAPI Detoured_GetCurrentDirectoryW(
     return needed;
 }
 
+IMPLEMENTED(Detoured_GetCurrentDirectoryA)
+DWORD WINAPI Detoured_GetCurrentDirectoryA(
+    _In_  DWORD  nBufferLength,
+    _Out_writes_opt_(nBufferLength) LPSTR lpBuffer)
+{
+    {
+        DetouredScope scope;
+        if (scope.Detoured_IsDisabled())
+        {
+            return Real_GetCurrentDirectoryA(nBufferLength, lpBuffer);
+        }
+    }
+
+    if (!ShouldWriteOverlay())
+    {
+        // Write-overlay is the only reason to detour the ANSI variant: when it is off
+        // the real API already reports the correct current directory, so just forward.
+        return Real_GetCurrentDirectoryA(nBufferLength, lpBuffer);
+    }
+
+    // Delegate to the wide hook so the overlay backing->virtual reverse-mapping in
+    // Detoured_GetCurrentDirectoryW is applied, then convert the result back to ANSI.
+    unique_ptr<wchar_t[]> wideBuffer(new wchar_t[nBufferLength == 0 ? 1 : nBufferLength]);
+    DWORD wideLength = Detoured_GetCurrentDirectoryW(nBufferLength, wideBuffer.get());
+
+    if (wideLength == 0)
+    {
+        // Failure: preserve the wide hook's GetLastError.
+        return 0;
+    }
+
+    if (wideLength >= nBufferLength)
+    {
+        // Buffer too small (or query-only): the wide hook did not fill wideBuffer and
+        // returned the required size INCLUDING the null terminator. The ANSI required
+        // size matches for path strings; return it so the caller can resize.
+        return wideLength;
+    }
+
+    // wideBuffer holds the reported directory (wideLength chars, excluding null).
+    int numCharsRequiredIncTerminatingNull = WideCharToMultiByte(
+        CP_ACP,
+        0,
+        wideBuffer.get(),
+        // Includes the terminating null character in the count.
+        -1,
+        NULL,
+        0,
+        NULL,
+        NULL);
+
+    if ((unsigned)numCharsRequiredIncTerminatingNull <= nBufferLength)
+    {
+        int numCharsWritten = WideCharToMultiByte(
+            CP_ACP,
+            0,
+            wideBuffer.get(),
+            -1,
+            lpBuffer,
+            (int)nBufferLength,
+            NULL,
+            NULL);
+
+        if (numCharsWritten == 0)
+        {
+            return 0;
+        }
+
+        // On success GetCurrentDirectory returns the length EXCLUDING the null.
+        return (DWORD)(numCharsWritten - 1);
+    }
+
+    // Buffer too small for the ANSI form: return required size INCLUDING the null.
+    return (DWORD)numCharsRequiredIncTerminatingNull;
+}
+
 IMPLEMENTED(Detoured_GetFileAttributesW)
 DWORD WINAPI Detoured_GetFileAttributesW(_In_  LPCWSTR lpFileName)
 {

@@ -129,6 +129,11 @@ typedef DWORD (WINAPI *GetCurrentDirectoryW_t)(
     __out LPWSTR lpBuffer
     );
 
+typedef DWORD (WINAPI *GetCurrentDirectoryA_t)(
+    __in  DWORD  nBufferLength,
+    __out LPSTR  lpBuffer
+    );
+
 typedef DWORD (WINAPI *GetFileAttributesA_t)(
     __in LPCSTR lpFileName
     );

@@ -163,6 +163,11 @@ DWORD WINAPI Detoured_GetCurrentDirectoryW(
     __out LPWSTR lpBuffer
     );
 
+DWORD WINAPI Detoured_GetCurrentDirectoryA(
+    __in  DWORD  nBufferLength,
+    __out LPSTR  lpBuffer
+    );
+
 // See GetFileAttributes on MSDN: http://msdn.microsoft.com/en-us/library/windows/desktop/aa915578(v=vs.85).aspx
 DWORD WINAPI Detoured_GetFileAttributesA(
     __in  LPCSTR lpFileName

@@ -205,6 +205,7 @@ GetVolumePathNameW_t Real_GetVolumePathNameW;
 GetFileAttributesA_t Real_GetFileAttributesA;
 GetFileAttributesW_t Real_GetFileAttributesW;
 GetCurrentDirectoryW_t Real_GetCurrentDirectoryW;
+GetCurrentDirectoryA_t Real_GetCurrentDirectoryA;
 GetFileAttributesExW_t Real_GetFileAttributesExW;
 GetFileAttributesExA_t Real_GetFileAttributesExA;
 CloseHandle_t Real_CloseHandle;
@@ -694,6 +695,7 @@ static bool DllProcessAttach()
             ATTACH(GetFileAttributesExW);
             ATTACH(GetFileAttributesExA);
             ATTACH(GetCurrentDirectoryW);
+            ATTACH(GetCurrentDirectoryA);
 
             // GetFileInformationByName is a modern (Win8+/Win11) handle-less attribute probe
             // resolved dynamically: it may be absent on older OSes and isn't guaranteed to be

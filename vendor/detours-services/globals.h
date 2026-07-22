@@ -84,6 +84,7 @@ extern GetVolumePathNameW_t Real_GetVolumePathNameW;
 extern GetFileAttributesA_t Real_GetFileAttributesA;
 extern GetFileAttributesW_t Real_GetFileAttributesW;
 extern GetCurrentDirectoryW_t Real_GetCurrentDirectoryW;
+extern GetCurrentDirectoryA_t Real_GetCurrentDirectoryA;
 extern GetFileAttributesExW_t Real_GetFileAttributesExW;
 extern GetFileAttributesExA_t Real_GetFileAttributesExA;
 extern CloseHandle_t Real_CloseHandle;

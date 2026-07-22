@@ -49,6 +49,7 @@
 //   probe exit  <code>            exit with <code> (exit-code fidelity)
 //   probe sleep <ms>              sleep <ms> (used to exercise -T timeout)
 //   probe cwdis <dir>             0 iff the current directory equals <dir>
+//   probe cwdisa <dir>            0 iff GetCurrentDirectoryA (ANSI) equals <dir>
 //   probe tempfile <dir>          GetTempFileNameW in <dir> (intercepted API)
 //   probe ntread <path>           open <path> for read via native NtCreateFile
 //   probe ntwriteread <base>      create+write <base>\ntov.txt via native NtCreateFile
@@ -1339,6 +1340,19 @@ int DoCwdIs(const wchar_t* expected) {
     return (_wcsicmp(buf, expected) == 0) ? kOk : kOtherError;
 }
 
+// ANSI counterpart of DoCwdIs: reads the current directory via GetCurrentDirectoryA
+// (the narrow-char API) to verify the overlay backing->virtual reverse-map is also
+// applied to ANSI callers (e.g. the CRT's _getcwd).
+int DoCwdIsA(const wchar_t* expected) {
+    char buf[MAX_PATH * 4];
+    DWORD n = GetCurrentDirectoryA(_countof(buf), buf);
+    if (n == 0 || n >= _countof(buf)) return kOtherError;
+    char expectedA[MAX_PATH * 4];
+    int m = WideCharToMultiByte(CP_ACP, 0, expected, -1, expectedA, _countof(expectedA), NULL, NULL);
+    if (m == 0) return kOtherError;
+    return (_stricmp(buf, expectedA) == 0) ? kOk : kOtherError;
+}
+
 // Creates an overlay-only <dir>, then spawns <childExe> with its working directory
 // set to that dir (lpCurrentDirectory = the overlay-only path, which the CreateProcess
 // detour rewrites to the concrete backing directory so the child can launch). The child
@@ -1349,10 +1363,11 @@ int DoCwdIs(const wchar_t* expected) {
 // the raw backing path and returns kOtherError. (Note: an in-process SetCurrentDirectoryW
 // stores the input string verbatim, so it would NOT reproduce the leak - only an
 // inherited/injected child cwd does.)
-int DoMkdirSpawnCwdIs(const wchar_t* dir, const wchar_t* childExe, const wchar_t* expected) {
+int DoMkdirSpawnCwdIs(const wchar_t* dir, const wchar_t* childExe, const wchar_t* expected,
+                      const wchar_t* childOp = L"cwdis") {
     if (!CreateDirectoryW(dir, nullptr)) return MapLastError();
     std::wstring cmd = L"\"";
-    cmd += childExe; cmd += L"\" cwdis \""; cmd += expected; cmd += L"\"";
+    cmd += childExe; cmd += L"\" "; cmd += childOp; cmd += L" \""; cmd += expected; cmd += L"\"";
     std::wstring mutableCmd = cmd;
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -1845,12 +1860,20 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"exit") return DoExit(argv[2]);
     if (op == L"sleep") return DoSleep(argv[2]);
     if (op == L"cwdis") return DoCwdIs(argv[2]);
+    if (op == L"cwdisa") return DoCwdIsA(argv[2]);
     if (op == L"mkdirspawncwdis") {
         if (argc < 5) {
             fwprintf(stderr, L"usage: probe mkdirspawncwdis <dir> <childExe> <expected>\n");
             return kBadUsage;
         }
         return DoMkdirSpawnCwdIs(argv[2], argv[3], argv[4]);
+    }
+    if (op == L"mkdirspawncwdisa") {
+        if (argc < 5) {
+            fwprintf(stderr, L"usage: probe mkdirspawncwdisa <dir> <childExe> <expected>\n");
+            return kBadUsage;
+        }
+        return DoMkdirSpawnCwdIs(argv[2], argv[3], argv[4], L"cwdisa");
     }
     // Child-side relative-op verbs (run with cwd = overlay-only dir):
     if (op == L"relread_w") return DoRelReadW(argv[2]);

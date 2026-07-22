@@ -578,3 +578,26 @@ report-file append) is deliberately **retained**.
   restoring the delegation machinery but gating it on overlay instead of the
   removed translate check. `Detoured_DeviceIoControl` remains a hooked passthrough.
   Build + 10/10 tests pass.
+- **Hook `GetCurrentDirectoryA` for write-overlay coverage (functional fix, new
+  hook)** — companion to the `GetFinalPathNameByHandleA` fix. `GetCurrentDirectoryW`
+  reverse-maps an overlay backing-store cwd back to the virtual execroot, but the
+  ANSI `GetCurrentDirectoryA` (used by the CRT's `_getcwd`) was **not hooked at all**,
+  so ANSI cwd reads leaked the physical backing path. Reading the cwd hits the PEB
+  directly (no syscall), so unlike directory enumeration there is no `Nt*` hook
+  backstop — the A variant needs its own hook (usvfs likewise hooks both
+  `GetCurrentDirectoryA` and `W`). Added `Real_GetCurrentDirectoryA` +
+  `GetCurrentDirectoryA_t` (`DetoursServices.cpp`, `globals.h`,
+  `DetouredFunctionTypes.h`), the `ATTACH(GetCurrentDirectoryA)` entry, the decl
+  (`DetouredFunctions.h`), and the body: fast-path to `Real_` when
+  `ShouldWriteOverlay()` is false, otherwise delegate to
+  `Detoured_GetCurrentDirectoryW` and convert to ANSI via `WideCharToMultiByte`.
+  New characterization test `OverlayGetCurrentDirectoryAnsiReportsVirtualPath`
+  (probe verb `cwdisa` / `mkdirspawncwdisa`) covers it. Build + 10/10 tests pass.
+
+  Audit note: the ANSI directory-enumeration variants (`FindFirstFileA`,
+  `FindFirstFileExA`, `FindNextFileA`) remain plain passthroughs by design and are
+  NOT gaps — all `Find*` APIs funnel through `NtQueryDirectoryFile` /
+  `NtQueryDirectoryFileEx`, whose hooks already apply input filtering
+  (`ApplyEnumerationFilterNt`) and the write-overlay splice (`InsertOverlayEntries`),
+  so ANSI enumeration is virtualized at the Nt layer (the same design usvfs uses:
+  it hooks only `FindFirstFileExW` plus the Nt directory functions).
