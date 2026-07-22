@@ -10,7 +10,6 @@
 #include "buildXL_mem.h"
 #include "SendReport.h"
 #include "StringOperations.h"
-#include "DeviceMap.h"
 #include "CanonicalizedPath.h"
 #include "PolicyResult.h"
 #include <list>

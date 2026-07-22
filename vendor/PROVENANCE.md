@@ -148,6 +148,16 @@ upstream files are intentionally absent:
   also dropped from the manifest wire format (`ManifestSubstituteProcessExecutionShim_t`
   in `DataTypes.h` + the producer block in `src/manifest_builder.cpp` + the parse
   block in `DetoursHelpers.cpp`, removed in lockstep).
+- **`DeviceMap.{cpp,h}`** — removed 2026-07-21 (hard fork). BuildXL used the NT
+  DOS-device-map feature to give a sandboxed process a private drive-letter view;
+  it was already compiled as no-op stubs here (`FEATURE_DEVICE_MAP` undefined, so
+  `CurrentMappingHandle()` returned `INVALID_HANDLE_VALUE` and `ApplyMapping()`
+  returned `false`), making every device-map branch dead. The `RemapDevices` /
+  `PathMapping` / `CurrentMappingHandle` / `ApplyMapping` API and its two call
+  sites in `DetouredProcessInjector` were removed, along with a vestigial include
+  in `DetoursHelpers.cpp`. The `_mapDirectory` member is retained as an inert,
+  always-`INVALID_HANDLE_VALUE` slot so the injector's handle-passing layout is
+  unchanged (behavioral no-op).
 
 As of the **2026-07-21 hard fork**, feature areas we do not use at runtime
 (reporting, timestamp faking, substitute-process shim, full reparse-point

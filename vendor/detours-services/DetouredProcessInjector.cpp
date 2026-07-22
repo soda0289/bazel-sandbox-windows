@@ -5,7 +5,6 @@
 using namespace std;
 #include "DetouredProcessInjector.h"
 #include "DetoursHelpers.h"
-#include "DeviceMap.h"
 #include <iomanip>
 #include "buildXL_mem.h"
 
@@ -157,8 +156,9 @@ bool DetouredProcessInjector::Init(LPCBYTE payloadWrapper, std::wstring& errorMe
     return true;
 }
 
-// Initialize object based on the explicit data. Note that the mapDirectory handle
-// is not provided -- it's global to the process.
+// Initialize object based on the explicit data. The NT DOS-device-map feature
+// was removed (hard fork); _mapDirectory stays INVALID_HANDLE_VALUE and is kept
+// only as an inert slot in the injector handle-passing layout.
 void DetouredProcessInjector::Init(
     HANDLE remoteInterjectorPipe,
     HANDLE reportPipe,
@@ -175,7 +175,7 @@ void DetouredProcessInjector::Init(
         return;
     }
 
-    _mapDirectory.duplicate(CurrentMappingHandle());
+    _mapDirectory.reset();
     _remoteInjectorPipe.duplicate(remoteInterjectorPipe);
     _reportPipe.duplicate(reportPipe);
     _payloadSize = payloadSize;
@@ -245,16 +245,6 @@ DWORD DetouredProcessInjector::LocalInjectProcess(HANDLE processHandle, bool inh
         DWORD err = GetLastError();
         Dbg(L"DetouredProcessInjector::LocalInjectProcess: Failed to inject %S from %s process into %s process (error code: 0x%08x)",
               dll, s_isWow64Process ? L"WOW64" : L"Native", isWow64Process(processHandle) ? L"WOW64" : L"Native", (int)err);
-        return err;
-    }
-
-    if (_mapDirectory.isValid() && !ApplyMapping(processHandle, _mapDirectory.get()))
-    {
-        DWORD err = GetLastError();
-        Dbg(L"DetouredProcessInjector::LocalInjectProcess: Failed to apply mapping handle %d from %s to %s process (error code: 0x%08x)",
-            (uint32_t)((intptr_t)_mapDirectory.get() & UINT32_MAX),
-            s_isWow64Process ? L"WOW64" : L"Native",
-            isWow64Process(processHandle) ? L"WOW64" : L"Native", (int)err);
         return err;
     }
 

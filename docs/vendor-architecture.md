@@ -31,9 +31,9 @@ The vendored sources can compile into two different DLLs, selected by a macro
   what we define** (`vendor/BUILD.bazel` `local_defines`).
 - **`BUILDXL_NATIVES_LIBRARY`** — BuildXL's separate `BuildXLNatives.dll` (job
   objects, path-translation tables, private heap). **We never define this**, so
-  every `#ifdef BUILDXL_NATIVES_LIBRARY` block is dead code for us. This is why
-  `DeviceMap.cpp` compiles down to no-op stubs (its real body is in the
-  `BUILDXL_NATIVES`-only branch).
+  every `#ifdef BUILDXL_NATIVES_LIBRARY` block is dead code for us. (This is why
+  the now-removed `DeviceMap.cpp` was only ever no-op stubs here — its real body
+  lived in the `BUILDXL_NATIVES`-only branch.)
 
 ## 3. Translation units by role
 
@@ -47,7 +47,7 @@ The vendored sources can compile into two different DLLs, selected by a macro
 | **Reporting** (inert for us, see §5) | `SendReport.cpp`, `DebuggingHelpers.cpp` |
 | **Support** | `DetouredScope.cpp`, `HandleOverlay.cpp`, `MetadataOverrides.cpp`, `FilesCheckedForAccess.cpp`, header-only `ResolvedPathCache.h`, `UnicodeConverter.h`, `UniqueHandle.h`, `UtilityHelpers.h`, `buildXL_mem.h`, `Assertions.cpp` |
 | **Child process handling** | `DetouredProcessInjector.cpp` |
-| **Inert in our build** | `DeviceMap.cpp` (stubs), all `BUILDXL_NATIVES_LIBRARY` blocks |
+| **Inert in our build** | all `BUILDXL_NATIVES_LIBRARY` blocks |
 
 ## 4. The `DetoursServices` ↔ `DetouredFunctions` contract
 
@@ -230,8 +230,9 @@ never meaningfully executed in our configuration:
 - USN reporting, directory-enumeration reporting, process-arg reporting.
 - The reporting subsystem (`SendReport`, most of `DebuggingHelpers`) — inert by
   default; `--trace` re-activates the file-access report path (see above).
-- `DeviceMap` (stubs). (`SubstituteProcessExecution` was removed outright — see
-  the hard-fork note in `vendor/PROVENANCE.md`.)
+
+(`SubstituteProcessExecution` and `DeviceMap` were removed outright — see the
+hard-fork note in `vendor/PROVENANCE.md`.)
 
 ## 6. Guidance for future shrinking / extraction
 
@@ -239,9 +240,9 @@ Ordered by risk:
 
 1. **Safe** — delete provably-unreferenced files. (`ConcurrentQueue.h`,
    `FileAccessManifest.h` already removed.)
-2. **Low risk, contained** — remove self-contained inert features, e.g.
-   `DeviceMap` (already no-op stubs; 2 call sites in `DetouredProcessInjector` +
-   1 include in `DetoursHelpers`).
+2. **Low risk, contained** — remove self-contained inert features. Done so far:
+   `SubstituteProcessExecution` and `DeviceMap` (the latter was no-op stubs with
+   2 call sites in `DetouredProcessInjector` + 1 include in `DetoursHelpers`).
 3. **High risk — do not treat as cleanup:**
    - Rewriting `DetoursServices.cpp` (must reproduce §4a–4d: 40 globals, 67
      `Real_` pointers, 72 `ATTACH` entries, payload parse, process-kind gating).
@@ -305,7 +306,7 @@ Because we never populate the list, breakaway is a genuine **shrink candidate**
 (the user has confirmed we don't need it) — but note it is *not* self-contained:
 removing it touches the manifest wire format (`manifest_builder.cpp` +
 `DataTypes.h`), the parser, and the child-process hook path. It is higher effort
-than `DeviceMap` (§6 step 2), though lower risk than rewriting the facade, since
+than the removed `DeviceMap` (§6 step 2), though lower risk than rewriting the facade, since
 with an empty list the relevant branches are already never taken.
 
 ### 7b. Nothing else worth adding
