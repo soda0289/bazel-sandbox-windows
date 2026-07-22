@@ -747,7 +747,6 @@ bool ParseFileAccessManifest(
     g_lpDllNameX86 = NULL;
     g_lpDllNameX64 = NULL;
 
-    g_manifestSize = payloadSize;
     size_t offset = 0;
 
     PCManifestDebugFlag debugFlag = reinterpret_cast<PCManifestDebugFlag>(&payloadBytes[offset]);

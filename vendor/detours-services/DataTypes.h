@@ -222,12 +222,6 @@ enum FileAccessBucketOffsetFlag
 // STRUCTS
 // ----------------------------------------------------------------------------
 
-#ifndef _DEBUG
-// This is needed here because we need a global DWORD to use to divide by zero.
-// Do not include "globals.h" because it depends on "DataTypes.h" and circular dependencies are bad.
-extern DWORD g_manifestSize;
-#endif
-
 extern unsigned long g_injectionTimeoutInMinutes;
 
 // Generates a uint32_t tag, along with CheckValid() and AssertValid() methods.

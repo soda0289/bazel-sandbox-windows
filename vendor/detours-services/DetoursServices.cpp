@@ -223,8 +223,6 @@ using std::make_unique;
 
 _locale_t g_invariantLocale;
 
-DWORD g_manifestSize = 0;
-
 DWORD g_currentProcessId;
 PCWSTR g_currentProcessCommandLine = nullptr;
 
