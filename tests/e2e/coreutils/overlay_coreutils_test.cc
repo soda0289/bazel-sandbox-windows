@@ -345,5 +345,39 @@ TEST_F(OverlayTest, CoreutilsNestedChdirRelativeToolWrite) {
     EXPECT_FALSE(Exists(Join(ws, L"a"))) << "overlay scratch dir leaked onto real disk";
 }
 
+// Stat/open consistency for the action's OWN overlay content, from an
+// overlay-only cwd under the COMBINED --filter-inputs --write-overlay mode (the
+// embedded-JDK stat/open desync, through uutils/coreutils). A uutils tool cd'd
+// into an overlay-only dir writes a file by relative name, then STATs it (`ls`
+// -> GetFileAttributes/FindFirstFile) and OPENs it (`cat` -> CreateFileW); both
+// must agree it exists. Before the backing-reverse-map existence guard the
+// existing backing file's stat reverse-mapped to its undeclared virtual path and
+// was masked NOT_FOUND under --filter-inputs while the open still hit backing.
+TEST_F(OverlayTest, CoreutilsOverlayCwdStatOpenConsistent) {
+    REQUIRE_TOOL(mkdir, "E2E_UU_MKDIR");
+    REQUIRE_TOOL(ls, "E2E_UU_LS");
+    REQUIRE_TOOL(cat, "E2E_UU_CAT");
+
+    auto ws = NewWorkspace();
+    auto r = RunFilteredOverlayBat(ws, /*declared*/ {}, {
+        Q(mkdir) + L" wd",
+        L"cd wd",
+        L"echo STATOPEN>rel.txt",       // action's own overlay write (relative)
+        Q(ls) + L" rel.txt",            // stat
+        Q(cat) + L" rel.txt",           // open
+    });
+
+    EXPECT_TRUE(Contains(r.out, "rel.txt"))
+        << "stat (`ls`) of the action's own overlay file failed (stat/open desync):\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "No such file"))
+        << "stat reported the overlay file absent:\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "cannot access"))
+        << "stat reported the overlay file inaccessible:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "STATOPEN"))
+        << "open (`cat`) disagreed with stat:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay write leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
