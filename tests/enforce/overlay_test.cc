@@ -738,6 +738,26 @@ TEST_F(EnforceTest, OverlayEnumInsideOverlayOnlySubdir) {
                                {L"writeovsubdirinnerenum", ws2}));
 }
 
+// End-to-end JavaBuilder _javac scratch-tree flow (the full-Bazel regression class):
+// a tool creates a nested scratch subdirectory inside the execroot, writes a file
+// into it, enumerates the parent + the subdir to find its own entries, then
+// recursively deletes them. This is exactly what SimpleJavaLibraryBuilder does with
+// its _javac class-output directory. Under --write-overlay the fresh scratch dir is
+// created in the process-private backing store (the execroot working-dir cone grants
+// AllowCreateDirectory), stays visible to this action's own enumerations, and never
+// leaks onto the real execroot. Runs in both the bare --write-overlay mode and the
+// real windows-sandbox mode (--filter-inputs --write-overlay).
+TEST_F(EnforceTest, OverlayScratchTreeJavaBuilder) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"scratchtree", ws}));
+    EXPECT_FALSE(Exists(Join(ws, L"d")));
+    auto ws2 = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws2, L"--filter-inputs", L"--write-overlay"},
+                               {L"scratchtree", ws2}));
+    EXPECT_FALSE(Exists(Join(ws2, L"d")));
+}
+
 // Wildcard filtering of spliced overlay entries (gap #1).
 TEST_F(EnforceTest, OverlayWildcardWin32Find) {
     SetOverlayNames(L"");
