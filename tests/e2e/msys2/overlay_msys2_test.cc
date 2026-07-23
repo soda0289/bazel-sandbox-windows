@@ -439,5 +439,36 @@ TEST_F(OverlayTest, Msys2ExecNoExtFromOverlaySubdir) {
     EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay bin dir leaked onto real disk";
 }
 
+// Stat/open consistency for the action's OWN overlay content, from an
+// overlay-only cwd under the COMBINED --filter-inputs --write-overlay mode (the
+// embedded-JDK stat/open desync, seen through the MSYS/Cygwin POSIX layer). bash
+// cd's into an overlay-only scratch dir, writes a file by relative name, then
+// STATs it (`test -f` / `stat` -> GetFileAttributes) and OPENs it (`cat` ->
+// CreateFileW). Both must agree it exists. Before the backing-reverse-map
+// existence guard, the existing backing file's stat reverse-mapped to its
+// undeclared virtual path and was masked NOT_FOUND under --filter-inputs while
+// the open still resolved to backing.
+TEST_F(OverlayTest, Msys2OverlayCwdStatOpenConsistent) {
+    REQUIRE_MSYS(bash, "E2E_MSYS_BASH");
+
+    auto ws = NewWorkspace();
+    std::wstring script =
+        L"cd '" + Fwd(ws) + L"' && mkdir -p wd && cd wd && "
+        L"echo STATOPEN > rel.txt && "
+        L"if [ -f rel.txt ]; then echo STAT=yes; else echo STAT=no; fi && "
+        L"echo SIZE=$(stat -c %s rel.txt) && "
+        L"echo READ=$(cat rel.txt)";
+    auto r = RunFilteredOverlay(ws, /*declared*/ {}, {bash, L"-c", script});
+
+    EXPECT_TRUE(Contains(r.out, "STAT=yes"))
+        << "stat of the action's own overlay file reverse-mapped to NOT_FOUND "
+           "(stat/open desync):\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "STAT=no")) << r.out;
+    EXPECT_TRUE(Contains(r.out, "SIZE=9")) << "stat reported the wrong size:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READ=STATOPEN")) << "open/read disagreed with stat:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay directory leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
