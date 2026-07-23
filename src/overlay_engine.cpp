@@ -466,6 +466,34 @@ std::wstring ResolveOverlayOpenPath(
     {
         return backing;
     }
+
+    // The leaf has no backing copy. If its PARENT directory exists ONLY in the
+    // backing store (an overlay-only scratch dir with no real counterpart), a Real
+    // open of the virtual path fails with STATUS_OBJECT_PATH_NOT_FOUND ("a directory
+    // component is missing") because the parent is absent on the real disk. Some
+    // tools treat that differently from STATUS_OBJECT_NAME_NOT_FOUND ("the leaf is
+    // missing but its directory exists"): notably cygwin/msys .exe-completion retries
+    // "<name>.exe" ONLY on NAME_NOT_FOUND and gives up on PATH_NOT_FOUND. So a genrule
+    // that unzips a JDK into a scratch dir and then execs "<scratch>/bin/jlink" never
+    // resolves it to the extracted "<scratch>/bin/jlink.exe" and the exec fails with
+    // ENOENT (Exit 127). Redirect the (missing) leaf open to the backing path so the
+    // OS reports the correct NAME_NOT_FOUND (parent present in backing, leaf absent);
+    // the subsequent "<name>.exe" probe then hits the backingExists branch above and
+    // opens the real scratch binary. Restricted to overlay-only parents so real
+    // directories keep returning their authentic status and real siblings stay visible.
+    {
+        const size_t vsep = virtualPath.find_last_of(L'\\');
+        const size_t bsep = backing.find_last_of(L'\\');
+        if (vsep != std::wstring::npos && bsep != std::wstring::npos)
+        {
+            const std::wstring realParentWide = L"\\\\?\\" + virtualPath.substr(0, vsep);
+            const std::wstring backingParent = backing.substr(0, bsep);
+            if (!OverlayPathExists(realParentWide) && OverlayIsDirectory(backingParent))
+            {
+                return backing;
+            }
+        }
+    }
     return std::wstring();
 }
 

@@ -1128,6 +1128,40 @@ int DoScratchTree(const wchar_t* base) {
     return DoRmdir(dir.c_str());
 }
 
+// Regression for the overlay-only-directory not-found STATUS bug (the jlink/Exit 127
+// genrule failure). A tool unzips a JDK into a scratch dir <base>\d that lives ONLY in
+// the write-overlay backing store (no real on-disk counterpart), writes <d>\tool.exe,
+// then - like a bare `exec "<d>/bin/jlink"` under cygwin/msys - PROBES the extension-less
+// name <d>\tool first. Cygwin appends ".exe" and retries ONLY when that probe reports
+// "file missing, directory present" (ERROR_FILE_NOT_FOUND); a "directory component
+// missing" (ERROR_PATH_NOT_FOUND) makes it give up with ENOENT. Before the overlay fix a
+// Real open of the virtual <d>\tool went to the real disk where <d> is absent -> PATH,
+// not FILE, NOT_FOUND. This verb asserts the correct behaviour:
+//   * opening the extension-less <d>\tool fails with ERROR_FILE_NOT_FOUND (kOk), NOT
+//     ERROR_PATH_NOT_FOUND (kOtherError = the bug),
+//   * the sibling <d>\tool.exe that WAS written opens successfully.
+int DoScratchNoExt(const wchar_t* base) {
+    std::wstring dir = std::wstring(base) + L"\\d";
+    std::wstring realExe = dir + L"\\tool.exe";
+    std::wstring noExt = dir + L"\\tool";
+
+    int rc = DoMkdir(dir.c_str());
+    if (rc != kOk) return rc;
+    rc = DoWrite(realExe.c_str());
+    if (rc != kOk) return rc;
+
+    // Probe the extension-less name: it does not exist, but its parent DOES (in backing).
+    HANDLE h = CreateFileW(noExt.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) { CloseHandle(h); return kOtherError; }  // must not exist
+    DWORD e = GetLastError();
+    if (e == ERROR_PATH_NOT_FOUND) return kOtherError;   // the bug: parent looked absent
+    if (e != ERROR_FILE_NOT_FOUND) return MapLastError();
+
+    // The extension-completed sibling that was actually written must open.
+    return DoRead(realExe.c_str());
+}
+
 int DoHardlink(const wchar_t* link, const wchar_t* target) {
     if (CreateHardLinkW(link, target, nullptr)) return kOk;
     return MapLastError();
@@ -1939,6 +1973,7 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"writeovreplace") return DoWriteOvReplace(argv[2]);
     if (op == L"writeovrmdir") return DoWriteOvRmdir(argv[2]);
     if (op == L"scratchtree") return DoScratchTree(argv[2]);
+    if (op == L"scratchnoext") return DoScratchNoExt(argv[2]);
     if (op == L"copy") {
         if (argc < 4) {
             fwprintf(stderr, L"usage: probe copy <src> <dst>\n");

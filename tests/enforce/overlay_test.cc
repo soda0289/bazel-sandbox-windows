@@ -758,7 +758,22 @@ TEST_F(EnforceTest, OverlayScratchTreeJavaBuilder) {
     EXPECT_FALSE(Exists(Join(ws2, L"d")));
 }
 
-// Wildcard filtering of spliced overlay entries (gap #1).
+// Regression: probing a non-existent extension-less name inside an OVERLAY-ONLY
+// scratch dir must report ERROR_FILE_NOT_FOUND (dir present, leaf missing), not
+// ERROR_PATH_NOT_FOUND. Cygwin/msys .exe-completion (used by bash to run
+// "<scratch>/bin/jlink" -> jlink.exe) only retries "<name>.exe" on the former;
+// PATH_NOT_FOUND made a JDK-minimizing genrule fail with Exit 127. See
+// DoScratchNoExt / ResolveOverlayOpenPath read-intent tail.
+TEST_F(EnforceTest, OverlayScratchNoExtCygwinCompletion) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"scratchnoext", ws}));
+    EXPECT_FALSE(Exists(Join(ws, L"d")));
+    auto ws2 = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws2, L"--filter-inputs", L"--write-overlay"},
+                               {L"scratchnoext", ws2}));
+    EXPECT_FALSE(Exists(Join(ws2, L"d")));
+}
 TEST_F(EnforceTest, OverlayWildcardWin32Find) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();
