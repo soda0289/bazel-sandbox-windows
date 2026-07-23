@@ -20,6 +20,11 @@ to build it. Use this folder for the deeper design, comparison, and testing docs
   [`vendor-architecture.md`](vendor-architecture.md). The bootstrap↔hooks
   contract, the policy/report facade, and exactly which manifest flags and policy
   bits `BazelSandbox` actually uses from the vendored code.
+* **Every Windows API we intercept** →
+  [`hooked-functions.md`](hooked-functions.md). The authoritative, module-grouped
+  reference of all 79 detoured `kernel32.dll` / `ntdll.dll` / `advapi32.dll`
+  functions, each with its role in the sandbox, mirroring the `ATTACH()` table in
+  `DetoursServices.cpp`.
 
 ## `design/` — how it's built and why
 
