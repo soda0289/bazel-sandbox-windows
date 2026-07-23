@@ -362,6 +362,48 @@ func writeout(out, sibling string) {
 	fmt.Printf("OUT=%s SIB=%s", readOrErr(out), readOrErr(sibling))
 }
 
+// childstatopen: the spawnstatopen child. Launched from an overlay-only cwd, it
+// writes scratch.bin by RELATIVE name, then stats (os.Stat) and opens/reads
+// (os.ReadFile) it by relative name. All three must agree the file exists. Before
+// the backing-reverse-map existence guard the existing backing file's stat
+// reverse-mapped to its undeclared virtual path and was masked NOT_FOUND under
+// --filter-inputs while the read still resolved to backing (the stat/open desync).
+func childstatopen() {
+	if err := os.WriteFile("scratch.bin", []byte("STATOPEN"), 0o644); err != nil {
+		fmt.Printf("CHILD=WRERR:%v", err)
+		os.Exit(3)
+	}
+	fi, statErr := os.Stat("scratch.bin")
+	exists := statErr == nil
+	size := int64(-1)
+	if exists {
+		size = fi.Size()
+	}
+	read := readOrErr("scratch.bin")
+	fmt.Printf("CHILD=OK STAT=%v SIZE=%d READ=%s", exists, size, read)
+}
+
+// spawnstatopen: mkdir an overlay-only dir, then os/exec a child (childstatopen)
+// with its cwd set to that dir, mirroring the java/python/nodejs lanes.
+func spawnstatopen(ws string) {
+	self, err := os.Executable()
+	if err != nil {
+		die("os.Executable: %v", err)
+	}
+	dir := filepath.Join(ws, "spawnstatdir")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		die("mkdir spawnstatdir: %v", err)
+	}
+	cmd := exec.Command(self, "childstatopen")
+	cmd.Dir = dir // lpCurrentDirectory = overlay-only dir -> redirected to backing
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("SPAWN=ERR:%v OUT=%s", err, string(combined))
+		os.Exit(1)
+	}
+	fmt.Printf("SPAWN=%s", strings.TrimSpace(string(combined)))
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		die("usage: ops <fsops|enum|filter|filteroverlay|spawncwd|childcwd|writeout> [args...]")
@@ -380,6 +422,10 @@ func main() {
 	}
 	if op == "childcwdrel" {
 		childcwdrel()
+		return
+	}
+	if op == "childstatopen" {
+		childstatopen()
 		return
 	}
 	if op == "writeout" {
@@ -412,6 +458,8 @@ func main() {
 		spawncwd(ws)
 	case "spawncwdrel":
 		spawncwdrel(ws)
+	case "spawnstatopen":
+		spawnstatopen(ws)
 	default:
 		die("unknown op: %s", op)
 	}

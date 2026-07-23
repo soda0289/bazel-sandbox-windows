@@ -292,5 +292,32 @@ TEST_F(OverlayTest, GoGetCurrentDirectoryReportsVirtualPath) {
     EXPECT_FALSE(Exists(Join(ws, L"cwddir"))) << "overlay cwd leaked onto real disk";
 }
 
+// Stat/open consistency for the action's OWN overlay content, from an
+// overlay-only cwd under the COMBINED --filter-inputs --write-overlay mode (the
+// embedded-JDK stat/open desync, through the Go runtime). The child, spawned with
+// an overlay-only cwd, writes scratch.bin by relative name, then os.Stat and
+// os.ReadFile must agree it exists. Before the backing-reverse-map existence guard
+// the existing backing file's stat reverse-mapped to its undeclared virtual path
+// and was masked NOT_FOUND under --filter-inputs while the read still hit backing.
+TEST_F(OverlayTest, GoOverlayCwdStatOpenConsistent) {
+    std::wstring ops = OpsExe();
+    if (ops.empty()) GTEST_SKIP() << "go ops binary missing from runfiles (E2E_GO_OPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunFilteredOverlay(ws, /*declared*/ {}, {ops, L"spawnstatopen", ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "CHILD=OK")) << "child failed from overlay-only cwd:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "STAT=true"))
+        << "stat of the action's own overlay file reverse-mapped to NOT_FOUND "
+           "(stat/open desync):\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "STAT=false")) << r.out;
+    EXPECT_TRUE(Contains(r.out, "SIZE=8")) << "stat reported the wrong size:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READ=STATOPEN")) << "open/read disagreed with stat:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay write leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"spawnstatdir"))) << "overlay cwd leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
