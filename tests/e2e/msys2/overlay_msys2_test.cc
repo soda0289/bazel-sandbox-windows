@@ -405,5 +405,39 @@ TEST_F(OverlayTest, Msys2BashSpawnFromOverlayOnlyCwd) {
     EXPECT_FALSE(Exists(Join(ws, L"scratch"))) << "overlay scratch dir leaked onto real disk";
 }
 
+// Regression for the overlay-only-dir missing-leaf NOT_FOUND status fix (the
+// //src:embedded_jdk_minimal jlink case): a native tool .exe copied into an
+// overlay-only SUBDIR of the execroot is invoked by a NO-EXTENSION path
+// (./wd/bin/tool). Cygwin's exec only appends ".exe" and retries when the probe
+// of the bare name returns NAME_NOT_FOUND; before the fix a missing leaf inside
+// an overlay-only dir (whose parent is absent on the real disk) returned
+// PATH_NOT_FOUND, so cygwin gave up ("No such file or directory") and never
+// completed to tool.exe. With the fix the probe returns NAME_NOT_FOUND, the
+// ".exe" completion succeeds, and the native tool runs. All in one invocation
+// (the overlay backing store is per invocation). A NATIVE Win32 tool is used as
+// the payload (matching the real jlink.exe): cygwin's role here is purely the
+// shell-level ".exe" name completion, not a Cygwin-to-Cygwin exec handshake.
+TEST_F(OverlayTest, Msys2ExecNoExtFromOverlaySubdir) {
+    REQUIRE_MSYS(bash, "E2E_MSYS_BASH");
+    REQUIRE_MSYS(cp, "E2E_MSYS_CP");
+
+    auto ws = NewWorkspace();
+    std::wstring script =
+        L"cd '" + Fwd(ws) + L"' && mkdir -p wd/bin && "
+        L"'" + Fwd(cp) + L"' 'C:/Windows/System32/hostname.exe' wd/bin/tool.exe && "
+        L"./wd/bin/tool >/dev/null 2>&1 && "  // no .exe -> cygwin completion on NAME_NOT_FOUND
+        L"echo EXECNOEXT=RAN";
+    auto r = RunOverlay(ws, {bash, L"-c", script});
+
+    EXPECT_TRUE(Contains(r.out, "EXECNOEXT=RAN"))
+        << "no-extension exec from an overlay-only subdir failed (cygwin .exe "
+           "completion did not fire; leaf probe likely returned PATH_NOT_FOUND):\n"
+        << r.out;
+    EXPECT_FALSE(Contains(r.out, "No such file"))
+        << "cygwin reported the tool path absent instead of completing to .exe:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay scratch leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"wd"))) << "overlay bin dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
