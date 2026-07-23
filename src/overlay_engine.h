@@ -45,6 +45,16 @@ bool OverlayIsDirectory(const std::wstring& p);
 void ListBackingChildren(const std::wstring& virtualDir, std::vector<std::wstring>& out);
 bool OverlayRealFileHiddenByFilter(const PolicyResult& policyResult);
 std::wstring ResolveOverlayOpenPath(const PolicyResult& policyResult, DWORD dwDesiredAccess, DWORD dwCreationDisposition);
+// Strips a leading \\?\ extended-length prefix from an overlay backing path so it can be
+// handed to a CHILD process (as its image path or working directory). The \\?\ form is
+// required for our own long-path file opens, but it must not leak into a child: it
+// disables Win32 path normalization, so a launched JVM derives application.home=\\?\...
+// and then fails to build <home>/lib/modules (crash "jimage file name is null"); cmd.exe
+// likewise rejects a \\?\ current directory. Returns the plain drive-letter form when it
+// fits within MAX_PATH, otherwise the original \\?\ path unchanged (too long to de-prefix
+// safely). A path without the prefix is returned unchanged.
+std::wstring PlainOverlayChildPath(const std::wstring& backing);
+
 // Resolves a child process's working directory through the write-overlay. When
 // `workingDirectory` names a process-private overlay scratch dir that has no counterpart
 // on the real execroot, returns the concrete backing directory (so CreateProcess does

@@ -2757,6 +2757,12 @@ BOOL WINAPI Detoured_CreateProcessCommonW(
         const bool imageInOverlay = !overlayImagePath.empty();
         if (imageInOverlay)
         {
+            // De-prefix the \\?\ backing path before handing it to the child as its
+            // image. Left prefixed, a launched JVM derives application.home=\\?\... and
+            // crashes building <home>/lib/modules ("jimage file name is null"), because
+            // the \\?\ form disables the path normalization the JVM relies on. Mirrors
+            // the child working-directory handling below.
+            overlayImagePath = PlainOverlayChildPath(overlayImagePath);
             effectiveApplicationName = overlayImagePath.c_str();
         }
 

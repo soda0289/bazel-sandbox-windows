@@ -169,6 +169,20 @@ bool ReverseMapOverlayBackingOpen(const wchar_t* incoming, std::wstring& outNt)
     {
         return false;  // not under the backing root (or overlay disabled)
     }
+    // The incoming path IS under the overlay backing root. If it physically exists, this
+    // is a genuine access to the action's OWN backing content (the backing root is granted
+    // AllowAll), so pass it through unmapped. Reverse-mapping an existing backing file to
+    // the virtual namespace would, under --filter-inputs, mask the undeclared virtual path
+    // to NOT_FOUND and desync stat from open: a JVM whose entire runtime is unzipped into
+    // an overlay scratch dir opens <backing>\lib\modules (open resolves to backing) but
+    // stats it as MISSING, disabling CDS / failing SystemImage init and jimage.dll
+    // dependent-library loading. Only reverse-map backing paths that are ABSENT - the
+    // relative-name-resolved-against-backing-cwd -> real-declared-input case.
+    {
+        std::wstring checkPath(incoming);
+        if (checkPath.compare(0, 4, L"\\??\\") == 0) checkPath.replace(0, 4, L"\\\\?\\");
+        if (OverlayPathExists(checkPath)) return false;
+    }
     // Strip any \\?\ / \??\ prefix ReverseOverlayFinalPath preserved, then emit \??\
     // NT form (the form NtCreateFile expects for an absolute RootDirectory==NULL open).
     if (virtualPath.compare(0, 4, L"\\\\?\\") == 0 || virtualPath.compare(0, 4, L"\\??\\") == 0)
@@ -221,7 +235,17 @@ bool ReverseMapWin32Path(const wchar_t* lpFileName, std::wstring& out)
     DWORD got = GetFullPathNameW(lpFileName, need, &abs[0], nullptr);
     if (got == 0 || got >= need) return false;
     abs.resize(got);
-    return ReverseOverlayFinalPath(abs, out);  // backing -> virtual (false if not under backing)
+    // If the resolved absolute path is a genuine, existing path under the overlay backing
+    // root, pass it through unmapped (the backing root is granted AllowAll): reverse-mapping
+    // an EXISTING backing file to the virtual namespace would mask its stat to NOT_FOUND
+    // under --filter-inputs, desyncing stat from open. Only reverse-map ABSENT backing paths
+    // (a relative name resolved against the backing cwd that targets a real declared input).
+    // See ReverseMapOverlayBackingOpen for the full rationale.
+    std::wstring virt;
+    if (!ReverseOverlayFinalPath(abs, virt)) return false;  // not under backing root
+    if (OverlayPathExists(abs)) return false;
+    out = std::move(virt);
+    return true;
 }
 
 // detours on this thread), so no policy is re-applied. Failures are benign
@@ -507,7 +531,7 @@ std::wstring ResolveOverlayOpenPath(
 // path stays within MAX_PATH (a current directory cannot exceed MAX_PATH without the
 // \\?\ prefix); for longer paths keep the \\?\ form (the pre-existing behavior - a deep
 // cmd child there still degrades, but non-cmd children accept it and the launch works).
-static std::wstring PlainChildWorkingDirectory(const std::wstring& backing)
+std::wstring PlainOverlayChildPath(const std::wstring& backing)
 {
     if (backing.rfind(L"\\\\?\\", 0) != 0)
     {
@@ -566,7 +590,7 @@ static std::wstring InheritedOverlayWorkingDirectory()
     {
         return std::wstring();
     }
-    return PlainChildWorkingDirectory(cwd);
+    return PlainOverlayChildPath(cwd);
 }
 
 // See overlay_engine.h.
@@ -601,7 +625,7 @@ std::wstring ResolveOverlayWorkingDirectory(const wchar_t* workingDirectory)
     {
         return std::wstring();
     }
-    return PlainChildWorkingDirectory(backing);
+    return PlainOverlayChildPath(backing);
 }
 
 // Model W (write-overlay) delete/rename-source resolution. Decides how removing

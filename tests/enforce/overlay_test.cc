@@ -224,6 +224,27 @@ TEST_F(EnforceTest, OverlayRelativeFindFirstFileWorks) {
                                {L"mkdirspawnrel", scratch, ProbePath(), L"relfind", L"..\\seed.txt"}));
 }
 
+// Stat/open consistency for the action's OWN backing content, accessed from an
+// overlay-only cwd. The child writes a scratch file into its cwd (an overlay-only
+// dir, physically the backing store), then STATs and OPENs it by relative name -
+// both must agree it exists. Before the backing-reverse-map existence guard, an
+// existing backing file's GetFileAttributes reverse-mapped to its undeclared virtual
+// path and was masked to NOT_FOUND under --filter-inputs while the open still
+// resolved to backing, so a JVM whose whole runtime is unzipped into an overlay
+// scratch dir opened lib\modules but stat'd it as missing (broke CDS / SystemImage /
+// jimage.dll dependent-library loading, failing the embedded-JDK genrule).
+TEST_F(EnforceTest, OverlayRelativeScratchStatOpenConsistent) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    auto scratch = Join(ws, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch, ProbePath(), L"relwritestat", L"scratch.bin"}));
+    auto ws2 = NewWorkspace();
+    auto scratch2 = Join(ws2, L"cwddir");
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws2, L"--filter-inputs", L"--write-overlay"},
+                               {L"mkdirspawnrel", scratch2, ProbePath(), L"relwritestat", L"scratch.bin"}));
+}
+
 TEST_F(EnforceTest, OverlayRelativeLoadLibraryWorks) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();

@@ -1608,6 +1608,36 @@ int DoRelWriteRead(const wchar_t* rel, const wchar_t* content) {
     return kOk;
 }
 
+// Write a scratch file to a RELATIVE name from an overlay-only cwd (it lands in the
+// backing store), then STAT and OPEN it through the same relative name; every access
+// must agree the file exists. Regression for the stat/open desync fixed in the
+// backing-reverse-map: an EXISTING backing file's GetFileAttributes was reverse-mapped
+// to its (undeclared) virtual path and masked to NOT_FOUND under --filter-inputs, while
+// the open still resolved to backing. That broke a JVM whose entire runtime is unzipped
+// into an overlay scratch dir - it opened <backing>\lib\modules but stat'd it as missing,
+// disabling CDS and failing SystemImage init / jimage.dll dependent-library loading.
+// Returns kOk iff write + GetFileAttributes + GetFileAttributesEx + FindFirstFile + open
+// all succeed (i.e. stat and open are consistent).
+int DoRelWriteStat(const wchar_t* rel) {
+    const wchar_t* content = L"x";
+    const DWORD n = static_cast<DWORD>(wcslen(content) * sizeof(wchar_t));
+    HANDLE h = CreateFileW(rel, GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    DWORD wrote = 0;
+    BOOL wok = WriteFile(h, content, n, &wrote, nullptr);
+    CloseHandle(h);
+    if (!wok || wrote != n) return kOtherError;
+
+    int rc = DoRelStatW(rel);
+    if (rc != kOk) return rc;
+    rc = DoRelStatEx(rel);
+    if (rc != kOk) return rc;
+    rc = DoRelFind(rel);
+    if (rc != kOk) return rc;
+    return DoRelReadW(rel);
+}
+
 // Parent-side: creates an overlay-only <dir>, then spawns <childExe> with cwd set
 // to <dir> (the CreateProcess detour rewrites the overlay-only cwd to the concrete
 // backing dir) running "<childOp> <rel>". Returns the child's exit code. Drives the
@@ -2029,6 +2059,7 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"relstat_w") return DoRelStatW(argv[2]);
     if (op == L"relstat_ex") return DoRelStatEx(argv[2]);
     if (op == L"relfind") return DoRelFind(argv[2]);
+    if (op == L"relwritestat") return DoRelWriteStat(argv[2]);
     if (op == L"relloadlib") return DoRelLoadLib(argv[2]);
     if (op == L"relfullpathread") return DoRelFullPathRead(argv[2]);
     if (op == L"reldelete") return DoRelDelete(argv[2]);
