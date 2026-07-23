@@ -66,9 +66,52 @@ internal static class Program {
         return 0;
     }
 
+    // childstatopen: from an overlay-only cwd, write scratch.bin by RELATIVE
+    // name, then stat (File.Exists + new FileInfo(...).Length) and open/read
+    // (File.ReadAllText) it by relative name. All three must agree the file
+    // exists. Before the backing-reverse-map existence guard the existing backing
+    // file's stat reverse-mapped to its undeclared virtual path and was masked
+    // NOT_FOUND under --filter-inputs while the read still hit backing.
+    private static int ChildStatOpen() {
+        File.WriteAllText("scratch.bin", "STATOPEN");
+        bool exists = File.Exists("scratch.bin");
+        long size = exists ? new FileInfo("scratch.bin").Length : -1;
+        string read = File.ReadAllText("scratch.bin");
+        Console.Write("CHILD=OK STAT=" + (exists ? "true" : "false") + " SIZE=" + size + " READ=" + read);
+        return 0;
+    }
+
+    private static int SpawnStatOpen(string ws, string cmdExe, string self) {
+        string d = Path.Combine(ws, "spawnstatdir");
+        Directory.CreateDirectory(d);
+        var psi = new ProcessStartInfo {
+            FileName = cmdExe,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = d,  // lpCurrentDirectory = overlay-only dir
+        };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add(self);
+        psi.ArgumentList.Add("childstatopen");
+
+        var p = Process.Start(psi);
+        string childOut = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0) {
+            Console.Write("SPAWN=ERR:" + p.ExitCode + " OUT=" + childOut);
+            return 1;
+        }
+        Console.Write("SPAWN=" + childOut.Trim());
+        return 0;
+    }
+
     private static int Main(string[] args) {
         if (args.Length >= 1 && args[0] == "childcwdrel") {
             return ChildCwdRel();
+        }
+        if (args.Length >= 1 && args[0] == "childstatopen") {
+            return ChildStatOpen();
         }
         if (args.Length < 2) {
             Console.Error.WriteLine("usage: spawn_ops spawncwd <execroot> <cmd> <self> | childcwd <out>");
@@ -79,6 +122,9 @@ internal static class Program {
         }
         if (args[0] == "spawncwdrel") {
             return SpawnCwdRel(args[1], args[2], args[3]);
+        }
+        if (args[0] == "spawnstatopen") {
+            return SpawnStatOpen(args[1], args[2], args[3]);
         }
         // parent: spawncwd <execroot> <cmd.exe> <self-launcher.bat>
         string ws = args[1];
