@@ -414,5 +414,36 @@ TEST_F(OverlayTest, NodeDeclaredOutputWritesThrough) {
     EXPECT_EQ(1u, Snapshot(ws).size()) << "unexpected entries on the real execroot (only the -w output should be there)";
 }
 
+// Stat/open consistency for the action's OWN overlay content, from an
+// overlay-only cwd under the COMBINED --filter-inputs --write-overlay mode (the
+// embedded-JDK stat/open desync, through Node). spawn_ops re-launches itself with
+// an overlay-only working directory; the child writes scratch.bin by relative
+// name, then fs.existsSync + fs.statSync (GetFileInformationByName/GetFileAttributes)
+// and fs.readFileSync (CreateFileW) must all agree it exists. Before the backing-
+// reverse-map existence guard the existing backing file's stat reverse-mapped to
+// its undeclared virtual path and was masked NOT_FOUND under --filter-inputs while
+// the read still resolved to backing.
+TEST_F(OverlayTest, NodeOverlayCwdStatOpenConsistent) {
+    std::wstring node = NodeExe();
+    if (node.empty()) GTEST_SKIP() << "node.exe missing from runfiles (E2E_NODE)";
+    std::wstring script = Script("E2E_JS_SPAWNOPS");
+    if (script.empty()) GTEST_SKIP() << "spawn_ops.js missing (E2E_JS_SPAWNOPS)";
+
+    auto ws = NewWorkspace();
+    auto r = RunFilteredOverlay(ws, /*declared*/ {}, {node, script, L"spawnstatopen", ws});
+
+    EXPECT_EQ(0, r.code) << r.out;
+    EXPECT_TRUE(Contains(r.out, "CHILD=OK")) << "child failed from overlay-only cwd:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "STAT=true"))
+        << "stat of the action's own overlay file reverse-mapped to NOT_FOUND "
+           "(stat/open desync):\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "STAT=false")) << r.out;
+    EXPECT_TRUE(Contains(r.out, "SIZE=8")) << "stat reported the wrong size:\n" << r.out;
+    EXPECT_TRUE(Contains(r.out, "READ=STATOPEN")) << "open/read disagreed with stat:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay write leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"spawnstatdir"))) << "overlay cwd leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e

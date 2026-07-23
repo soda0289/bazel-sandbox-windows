@@ -52,6 +52,34 @@ function spawncwdrel(ws) {
     process.stdout.write("SPAWN=" + (res.stdout || "").trim() + " READBACK=" + readback);
 }
 
+// childstatopen: from an overlay-only cwd, write scratch.bin by RELATIVE name,
+// then stat (fs.existsSync + fs.statSync) and open/read (fs.readFileSync) it by
+// relative name. All three must agree the file exists. Before the backing-
+// reverse-map existence guard the existing backing file's stat reverse-mapped to
+// its undeclared virtual path and was masked NOT_FOUND under --filter-inputs
+// while the read still resolved to backing (the stat/open desync).
+function childstatopen() {
+    fs.writeFileSync("scratch.bin", "STATOPEN");
+    const exists = fs.existsSync("scratch.bin");
+    const size = exists ? fs.statSync("scratch.bin").size : -1;
+    const read = fs.readFileSync("scratch.bin", "utf8");
+    process.stdout.write("CHILD=OK STAT=" + exists + " SIZE=" + size + " READ=" + read);
+}
+
+function spawnstatopen(ws) {
+    const d = p.join(ws, "spawnstatdir");
+    fs.mkdirSync(d);
+    const res = cp.spawnSync(process.execPath, [__filename, "childstatopen"], {
+        cwd: d, // lpCurrentDirectory = overlay-only dir
+        encoding: "utf8",
+    });
+    if (res.status !== 0) {
+        process.stdout.write("SPAWN=ERR:" + res.status + " OUT=" + (res.stdout || "") + (res.stderr || ""));
+        process.exit(1);
+    }
+    process.stdout.write("SPAWN=" + (res.stdout || "").trim());
+}
+
 function spawncwd(ws) {
     const d = p.join(ws, "spawndir");
     fs.mkdirSync(d);
@@ -73,6 +101,10 @@ if (arg === "childcwd") {
     childcwd(process.argv[3]);
 } else if (arg === "childcwdrel") {
     childcwdrel();
+} else if (arg === "childstatopen") {
+    childstatopen();
+} else if (arg === "spawnstatopen") {
+    spawnstatopen(process.argv[3]);
 } else if (arg === "spawncwdrel") {
     spawncwdrel(process.argv[3]);
 } else {
