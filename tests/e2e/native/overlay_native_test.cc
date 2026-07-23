@@ -749,5 +749,53 @@ TEST_F(OverlayTest, NativeSpawnCmdFromOverlayOnlyCwd) {
     EXPECT_FALSE(Exists(Join(ws, L"scratch"))) << "overlay scratch dir leaked onto real disk";
 }
 
+// Regression for the overlay-only-dir missing-leaf NOT_FOUND *status* fix
+// (the generic case behind the //src:embedded_jdk_minimal jlink failure): a
+// read of a NON-EXISTENT leaf whose parent dir exists ONLY in the overlay
+// backing store (an overlay-only dir, absent on the real disk) must fail with
+// FILE_NOT_FOUND (NAME_NOT_FOUND) - "the file" - NOT PATH_NOT_FOUND - "the
+// path". cmd's `type` surfaces the distinction verbatim: STATUS_OBJECT_NAME_
+// NOT_FOUND -> "The system cannot find the file specified." while STATUS_OBJECT_
+// PATH_NOT_FOUND -> "The system cannot find the path specified.". Before the fix
+// the overlay-only-dir case wrongly reported the path form (parent absent on the
+// real disk); the contrast case (a genuinely-missing intermediate dir) still
+// reports the path form, proving the fix did not over-broaden.
+TEST_F(OverlayTest, NativeOverlayOnlyDirMissingLeafIsFileNotFound) {
+    auto ws = NewWorkspace();
+    auto od = Join(ws, L"od");                       // overlay-only dir (created this run)
+    auto nameLeaf = Join(od, L"missing.txt");        // parent exists only in backing
+    auto pathLeaf = Join(ws, L"nope\\deep\\missing.txt");  // parent truly absent
+
+    auto r = RunOverlayBat(ws, {
+        L"mkdir " + Q(od),
+        L"echo NAMECASE=",
+        L"type " + Q(nameLeaf) + L" 2>&1",
+        L"echo PATHCASE=",
+        L"type " + Q(pathLeaf) + L" 2>&1",
+    });
+
+    // Bind each error message to its case by position (echo is stdout, the type
+    // error is redirected to stdout too, so they stay in order).
+    auto np = r.out.find("NAMECASE=");
+    auto pp = r.out.find("PATHCASE=");
+    ASSERT_NE(std::string::npos, np) << r.out;
+    ASSERT_NE(std::string::npos, pp) << r.out;
+    std::string nameSeg = r.out.substr(np, pp - np);
+    std::string pathSeg = r.out.substr(pp);
+
+    // Overlay-only-dir missing leaf -> NAME_NOT_FOUND ("the file").
+    EXPECT_TRUE(Contains(nameSeg.c_str(), "cannot find the file"))
+        << "missing leaf in an overlay-only dir did not report FILE_NOT_FOUND "
+           "(cygwin/.exe-completion depends on this):\n" << r.out;
+    EXPECT_FALSE(Contains(nameSeg.c_str(), "cannot find the path"))
+        << "overlay-only-dir missing leaf wrongly reported PATH_NOT_FOUND:\n" << r.out;
+    // Genuinely-missing parent -> PATH_NOT_FOUND ("the path"); fix not over-broadened.
+    EXPECT_TRUE(Contains(pathSeg.c_str(), "cannot find the path"))
+        << "genuinely-missing parent did not report PATH_NOT_FOUND:\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay probe leaked onto the real execroot";
+    EXPECT_FALSE(Exists(od)) << "overlay dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
