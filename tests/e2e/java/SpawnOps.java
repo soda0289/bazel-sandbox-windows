@@ -33,6 +33,23 @@ public final class SpawnOps {
     // "..\seedrel.txt" (a REAL declared input one level up). The hook-layer
     // reverse-map maps the backing-store cwd resolution back to the virtual
     // execroot so both resolve.
+    // childstatopen: from an overlay-only cwd, write a scratch file by relative
+    // name, then STAT it (Files.exists -> GetFileAttributes; Files.size) and OPEN
+    // it (Files.readString -> CreateFileW). Under --filter-inputs the existing
+    // backing file's stat must NOT reverse-map to a masked virtual path while the
+    // open still resolves to backing - both must agree it exists (the embedded-JDK
+    // stat/open desync). Emits STAT / SIZE / READ so the parent can assert agreement.
+    private static void childstatopen() throws IOException {
+        Path f = Path.of("scratch.bin");
+        Files.writeString(f, "STATOPEN");
+        boolean exists = Files.exists(f);
+        long size = exists ? Files.size(f) : -1;
+        String read = Files.readString(f);
+        System.out.write(("CHILD=OK STAT=" + exists + " SIZE=" + size + " READ=" + read)
+                             .getBytes(StandardCharsets.UTF_8));
+        System.out.flush();
+    }
+
     private static void childcwdrel() throws IOException {
         Files.writeString(Path.of("childrel.txt"), "RELWROTE");
         String wb = Files.readString(Path.of("childrel.txt"));
@@ -62,9 +79,32 @@ public final class SpawnOps {
         System.out.flush();
     }
 
+    private static void spawnstatopen(String ws, String self)
+            throws IOException, InterruptedException {
+        Path d = Path.of(ws, "spawnstatdir");
+        Files.createDirectories(d);
+        ProcessBuilder pb = new ProcessBuilder(self, "childstatopen");
+        pb.directory(d.toFile());  // lpCurrentDirectory = overlay-only dir
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String childOut = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int code = p.waitFor();
+        if (code != 0) {
+            System.out.write(("SPAWN=ERR:" + code + " OUT=" + childOut).getBytes(StandardCharsets.UTF_8));
+            System.out.flush();
+            System.exit(1);
+        }
+        System.out.write(("SPAWN=" + childOut.trim()).getBytes(StandardCharsets.UTF_8));
+        System.out.flush();
+    }
+
     public static void main(String[] args) throws IOException, InterruptedException {
         if (args.length >= 1 && args[0].equals("childcwdrel")) {
             childcwdrel();
+            return;
+        }
+        if (args.length >= 1 && args[0].equals("childstatopen")) {
+            childstatopen();
             return;
         }
         if (args.length < 2) {
@@ -77,6 +117,10 @@ public final class SpawnOps {
         }
         if (args[0].equals("spawncwdrel")) {
             spawncwdrel(args[1], args[2]);
+            return;
+        }
+        if (args[0].equals("spawnstatopen")) {
+            spawnstatopen(args[1], args[2]);
             return;
         }
         // parent: spawncwd <execroot> <self-launcher-path>

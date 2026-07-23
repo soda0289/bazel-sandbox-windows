@@ -797,5 +797,37 @@ TEST_F(OverlayTest, NativeOverlayOnlyDirMissingLeafIsFileNotFound) {
     EXPECT_FALSE(Exists(od)) << "overlay dir leaked onto real disk";
 }
 
+// Stat/open consistency for the action's OWN overlay content, accessed from an
+// overlay-only cwd under the COMBINED --filter-inputs --write-overlay mode (the
+// embedded-JDK stat/open desync). cmd cd's into an overlay-only dir, writes a
+// file by relative name, then STATs it (`if exist` -> GetFileAttributes) and
+// OPENs it (`type` -> CreateFile). Both must agree it exists. Before the
+// backing-reverse-map existence guard, the existing backing file's stat
+// reverse-mapped to its undeclared virtual path and was masked NOT_FOUND under
+// --filter-inputs while the open still resolved to backing - so `if exist` said
+// no while `type` read it, exactly the inconsistency that broke the JVM's
+// lib\modules load.
+TEST_F(OverlayTest, NativeOverlayCwdStatOpenConsistent) {
+    auto ws = NewWorkspace();
+    auto wd = Join(ws, L"wd");
+
+    auto r = RunFilteredOverlayBat(ws, /*declared*/ {}, {
+        L"mkdir " + Q(wd),
+        L"cd /d " + Q(wd),
+        L"echo STATOPEN-CONTENT>f.txt",
+        L"if exist f.txt (echo STAT=yes) else (echo STAT=no)",
+        L"type f.txt",
+    });
+
+    EXPECT_TRUE(Contains(r.out, "STAT=yes"))
+        << "stat of the action's own overlay file reverse-mapped to NOT_FOUND "
+           "(stat/open desync):\n" << r.out;
+    EXPECT_FALSE(Contains(r.out, "STAT=no")) << r.out;
+    EXPECT_TRUE(Contains(r.out, "STATOPEN-CONTENT"))
+        << "open/read of the overlay file failed:\n" << r.out;
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay write leaked onto the real execroot";
+    EXPECT_FALSE(Exists(wd)) << "overlay dir leaked onto real disk";
+}
+
 }  // namespace
 }  // namespace bsxe2e
