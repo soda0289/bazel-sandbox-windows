@@ -419,6 +419,29 @@ int DoEnumFind(const wchar_t* dir, const wchar_t* name) {
     return found ? kOk : kNotFound;
 }
 
+// ANSI counterpart of DoEnumFind: enumerate <dir> via FindFirstFileA/FindNextFileA
+// (the narrow-char Win32 enumeration path). These are hooked as pure passthroughs,
+// but they funnel through the hooked ntdll!NtQueryDirectoryFile, so the input filter
+// and write-overlay splice apply at the Nt layer just as for the wide variants.
+int DoEnumFindA(const wchar_t* dir, const wchar_t* name) {
+    std::wstring patternW = std::wstring(dir) + L"\\*";
+    char patternA[MAX_PATH * 4];
+    char nameA[MAX_PATH * 4];
+    if (WideCharToMultiByte(CP_ACP, 0, patternW.c_str(), -1, patternA, _countof(patternA), NULL, NULL) == 0)
+        return kOtherError;
+    if (WideCharToMultiByte(CP_ACP, 0, name, -1, nameA, _countof(nameA), NULL, NULL) == 0)
+        return kOtherError;
+    WIN32_FIND_DATAA fd{};
+    HANDLE h = FindFirstFileA(patternA, &fd);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    bool found = false;
+    do {
+        if (_stricmp(fd.cFileName, nameA) == 0) { found = true; break; }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return found ? kOk : kNotFound;
+}
+
 // FindFirstFileEx on an EXACT file path (no wildcard) - this is a single-file
 // existence/metadata probe, not a directory enumeration. It is the path cmd.exe's
 // `type`, GetShortPathName, and many CRT stat() implementations use. Under input
@@ -427,6 +450,21 @@ int DoEnumFind(const wchar_t* dir, const wchar_t* name) {
 int DoFindFile(const wchar_t* path) {
     WIN32_FIND_DATAW fd{};
     HANDLE h = FindFirstFileExW(path, FindExInfoStandard, &fd, FindExSearchNameMatch,
+                                nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    FindClose(h);
+    return kOk;
+}
+
+// ANSI counterpart of DoFindFile: exact-path existence probe via FindFirstFileExA.
+// Like the wide variant it funnels through the hooked NtQueryDirectoryFile, so under
+// input filtering an undeclared-but-existing file must look ABSENT (kNotFound).
+int DoFindFileA(const wchar_t* path) {
+    char pathA[MAX_PATH * 4];
+    if (WideCharToMultiByte(CP_ACP, 0, path, -1, pathA, _countof(pathA), NULL, NULL) == 0)
+        return kOtherError;
+    WIN32_FIND_DATAA fd{};
+    HANDLE h = FindFirstFileExA(pathA, FindExInfoStandard, &fd, FindExSearchNameMatch,
                                 nullptr, 0);
     if (h == INVALID_HANDLE_VALUE) return MapLastError();
     FindClose(h);
@@ -779,6 +817,18 @@ int DoWriteEnumFind(const wchar_t* dir, const wchar_t* name) {
     int w = DoWrite(path.c_str());
     if (w != kOk) return w;
     return DoEnumFind(dir, name);
+}
+
+// ANSI counterpart of DoWriteEnumFind: write into the overlay, then enumerate <dir>
+// via FindFirstFileA/FindNextFileA and report whether <name> is spliced in. Proves
+// the write-overlay entry insertion reaches narrow-char Win32 enumeration (it runs
+// through the same hooked NtQueryDirectoryFile). kOk iff write succeeds AND the name
+// is enumerated.
+int DoWriteEnumFindA(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    return DoEnumFindA(dir, name);
 }
 
 typedef NTSTATUS (NTAPI* NtQueryDirectoryFileEx_fn)(
@@ -1583,6 +1633,52 @@ int DoTempFile(const wchar_t* dir) {
     return kOk;
 }
 
+// ANSI counterpart of DoTempFile: create a uniquely-named temp file under <dir> via
+// GetTempFileNameA (which creates the file, so it exercises the write policy). kOk
+// iff the file was created; kDenied when writes to <dir> are not granted.
+int DoTempFileA(const wchar_t* dir) {
+    char dirA[MAX_PATH * 4];
+    if (WideCharToMultiByte(CP_ACP, 0, dir, -1, dirA, _countof(dirA), NULL, NULL) == 0)
+        return kOtherError;
+    char out[MAX_PATH];
+    if (GetTempFileNameA(dirA, "prb", 0, out) == 0) return MapLastError();
+    return kOk;
+}
+
+// Write <dir>\<name> into the write-overlay, open it via CreateFileW, then resolve
+// its final path via GetFinalPathNameByHandleA and confirm the ANSI variant reports
+// the VIRTUAL (execroot) path, reverse-mapped from the backing store. kOk iff the
+// returned path (leading \\?\ stripped) matches the requested virtual path.
+int DoWriteFinalPathA(const wchar_t* dir, const wchar_t* name) {
+    std::wstring path = std::wstring(dir) + L"\\" + name;
+    int w = DoWrite(path.c_str());
+    if (w != kOk) return w;
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return MapLastError();
+    char got[MAX_PATH * 4];
+    DWORD n = GetFinalPathNameByHandleA(h, got, _countof(got), FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    if (n == 0 || n >= _countof(got)) return kOtherError;
+    const char* g = got;
+    if (strncmp(g, "\\\\?\\", 4) == 0) g += 4;
+    char wantA[MAX_PATH * 4];
+    if (WideCharToMultiByte(CP_ACP, 0, path.c_str(), -1, wantA, _countof(wantA), NULL, NULL) == 0)
+        return kOtherError;
+    const char* w2 = wantA;
+    if (strncmp(w2, "\\\\?\\", 4) == 0) w2 += 4;
+    return _stricmp(g, w2) == 0 ? kOk : kOtherError;
+}
+
+// Smoke test for GetVolumePathNameW: resolve the volume mount point that contains
+// <path>. kOk iff the API succeeds and returns a non-empty mount point.
+int DoVolumePath(const wchar_t* path) {
+    wchar_t mount[MAX_PATH];
+    if (!GetVolumePathNameW(path, mount, _countof(mount))) return MapLastError();
+    return mount[0] != L'\0' ? kOk : kOtherError;
+}
+
 // Opens <path> for reading via the native NtCreateFile syscall (resolved from
 // ntdll at runtime), bypassing the Win32 CreateFileW wrapper. This exercises the
 // engine's Nt* hooks directly, which is the layer many runtimes (and the CRT)
@@ -1750,12 +1846,20 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"reada") return DoReadA(argv[2]);
     if (op == L"enumerate") return DoEnumerate(argv[2]);
     if (op == L"findfile") return DoFindFile(argv[2]);
+    if (op == L"findfilea") return DoFindFileA(argv[2]);
     if (op == L"enumfind") {
         if (argc < 4) {
             fwprintf(stderr, L"usage: probe enumfind <dir> <name>\n");
             return kBadUsage;
         }
         return DoEnumFind(argv[2], argv[3]);
+    }
+    if (op == L"enumfinda") {
+        if (argc < 4) {
+            fwprintf(stderr, L"usage: probe enumfinda <dir> <name>\n");
+            return kBadUsage;
+        }
+        return DoEnumFindA(argv[2], argv[3]);
     }
     if (op == L"enumfindnt") {
         if (argc < 4) {
@@ -1797,6 +1901,14 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"writeenumfind") {
         if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumfind <dir> <name>\n"); return kBadUsage; }
         return DoWriteEnumFind(argv[2], argv[3]);
+    }
+    if (op == L"writeenumfinda") {
+        if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumfinda <dir> <name>\n"); return kBadUsage; }
+        return DoWriteEnumFindA(argv[2], argv[3]);
+    }
+    if (op == L"writefinalpatha") {
+        if (argc < 4) { fwprintf(stderr, L"usage: probe writefinalpatha <dir> <name>\n"); return kBadUsage; }
+        return DoWriteFinalPathA(argv[2], argv[3]);
     }
     if (op == L"writeenumex") {
         if (argc < 4) { fwprintf(stderr, L"usage: probe writeenumex <dir> <name>\n"); return kBadUsage; }
@@ -1914,6 +2026,8 @@ int wmain(int argc, wchar_t** argv) {
         return DoMkdirSpawnRel2(argv[2], argv[3], argv[4], argv[5], argv[6]);
     }
     if (op == L"tempfile") return DoTempFile(argv[2]);
+    if (op == L"tempfilea") return DoTempFileA(argv[2]);
+    if (op == L"volumepath") return DoVolumePath(argv[2]);
     if (op == L"ntread") return DoNtRead(argv[2]);
     if (op == L"ntwriteread") return DoNtWriteRead(argv[2]);
     fwprintf(stderr, L"probe: unknown op '%s'\n", argv[1]);

@@ -670,6 +670,33 @@ TEST_F(EnforceTest, OverlayEnumWin32Find) {
                                {L"writeenumfind", ws2, L"efind.txt"}));
 }
 
+// ANSI counterpart of OverlayEnumWin32Find: a file written into the overlay must be
+// spliced into a narrow-char FindFirstFileA/FindNextFileA enumeration too, and must
+// not leak onto the real execroot. ANSI Find* are passthroughs but funnel through the
+// hooked NtQueryDirectoryFile, so the overlay entry insertion still applies.
+TEST_F(EnforceTest, OverlayEnumWin32FindAnsi) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"}, {L"writeenumfinda", ws, L"efinda.txt"}));
+    EXPECT_FALSE(Exists(Join(ws, L"efinda.txt")));
+    auto ws2 = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws2, L"--filter-inputs", L"--write-overlay"},
+                               {L"writeenumfinda", ws2, L"efinda.txt"}));
+}
+
+// GetFinalPathNameByHandleA overlay reverse-map. A file created in the overlay is
+// opened and its final path resolved via the ANSI GetFinalPathNameByHandleA; the hook
+// must report the VIRTUAL execroot path (reverse-mapped from the backing store) just
+// like the wide variant, so ANSI callers stay hermetic. The file must not leak onto
+// the real execroot.
+TEST_F(EnforceTest, OverlayGetFinalPathNameByHandleAnsiReportsVirtualPath) {
+    SetOverlayNames(L"");
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbeRaw({L"-W", ws, L"--write-overlay"},
+                               {L"writefinalpatha", ws, L"finala.txt"}));
+    EXPECT_FALSE(Exists(Join(ws, L"finala.txt")));
+}
+
 TEST_F(EnforceTest, OverlayEnumNtEx) {
     SetOverlayNames(L"");
     auto ws = NewWorkspace();

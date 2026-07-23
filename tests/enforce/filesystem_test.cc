@@ -206,6 +206,28 @@ TEST_F(EnforceTest, GetTempFileNameInDeniedWorkdirDenied) {
     EXPECT_EQ(kDenied, RunProbe({L"-W", ws}, {L"tempfile", ws}));
 }
 
+// ANSI counterpart: GetTempFileNameA creates the temp file, so it is subject to the
+// same write policy as the wide variant (its path input widens+delegates to the wide
+// hooks). Allowed with -w, denied without.
+TEST_F(EnforceTest, GetTempFileNameAnsiInWritableAllowed) {
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbe({L"-W", ws, L"-w", ws}, {L"tempfilea", ws}));
+}
+
+TEST_F(EnforceTest, GetTempFileNameAnsiInDeniedWorkdirDenied) {
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kDenied, RunProbe({L"-W", ws}, {L"tempfilea", ws}));
+}
+
+// --- GetVolumePathNameW -----------------------------------------------------
+// Smoke test: resolving the volume mount point that contains a workspace path must
+// succeed under the sandbox (the hook widens+passes through; it is a read-only query
+// that must not be blocked).
+TEST_F(EnforceTest, GetVolumePathNameSucceedsUnderSandbox) {
+    auto ws = NewWorkspace();
+    EXPECT_EQ(kOk, RunProbe({L"-W", ws, L"-r", ws}, {L"volumepath", ws}));
+}
+
 // --- absent-file probing ----------------------------------------------------
 // Opening a NON-existent file for read reports FILE_NOT_FOUND (not-found, 11)
 // under BOTH read-only and writable scopes (Policy_AllowReadIfNonExistent),

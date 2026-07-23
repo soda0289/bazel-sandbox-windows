@@ -594,10 +594,42 @@ report-file append) is deliberately **retained**.
   New characterization test `OverlayGetCurrentDirectoryAnsiReportsVirtualPath`
   (probe verb `cwdisa` / `mkdirspawncwdisa`) covers it. Build + 10/10 tests pass.
 
-  Audit note: the ANSI directory-enumeration variants (`FindFirstFileA`,
-  `FindFirstFileExA`, `FindNextFileA`) remain plain passthroughs by design and are
-  NOT gaps — all `Find*` APIs funnel through `NtQueryDirectoryFile` /
-  `NtQueryDirectoryFileEx`, whose hooks already apply input filtering
-  (`ApplyEnumerationFilterNt`) and the write-overlay splice (`InsertOverlayEntries`),
-  so ANSI enumeration is virtualized at the Nt layer (the same design usvfs uses:
-  it hooks only `FindFirstFileExW` plus the Nt directory functions).
+  Audit note (CORRECTED below): an earlier revision claimed the ANSI
+  directory-enumeration variants were virtualized at the Nt layer. Adding test
+  coverage disproved this — see the next entry.
+- **Implement ANSI directory-enumeration hooks `FindFirstFileA`,
+  `FindFirstFileExA`, `FindNextFileA` (functional fix, real gap)** — while adding
+  test coverage for the ANSI `Find*` passthroughs, the new `enumfinda` / `findfilea`
+  characterization cases proved they were NOT virtualized: under `--filter-inputs`
+  an undeclared file stayed visible to `FindFirstFileA`, and a write-overlay file
+  was not spliced into an ANSI enumeration. Root cause: the Nt-layer enumeration
+  filter + overlay splice (`ApplyEnumerationFilterNt` / `InsertOverlayEntries` in
+  the `NtQueryDirectoryFile` hook) are gated on the search directory handle being a
+  **known overlay** (`TryLookupHandleOverlay`); that registration is performed by
+  the **wide** `Detoured_FindFirstFileExW` body (`RegisterHandleOverlay`), not by
+  the `Nt*` hook alone. The ANSI passthroughs called `Real_FindFirstFileExA`, whose
+  internal directory handle is never registered, so the Nt hook took its `noDetour`
+  path — ANSI enumeration bypassed the sandbox entirely. (The earlier "usvfs only
+  hooks `FindFirstFileExW`" observation is consistent: usvfs relies on its own
+  `NtQueryDirectoryFile*` hooks recognising the handle, the same mechanism we depend
+  on here.) Fix: the three ANSI hooks now widen their inputs and delegate to the
+  corresponding wide hooks (`Detoured_FindFirstFileExW` / `Detoured_FindNextFileW`),
+  then convert the `WIN32_FIND_DATAW` record back to `WIN32_FIND_DATAA` via a new
+  `ConvertFindDataWToA` helper (fixed metadata copied verbatim, the two name fields
+  narrowed with `WideCharToMultiByte(CP_ACP, ...)` — mirroring kernelbase's own
+  `FindFirstFileExA`). A Win32 find handle is not A/W-specific, so the wide search
+  handle returned by `FindFirstFileExA` continues correctly through `FindNextFileA`.
+  Critically the ANSI wrappers do **not** open their own `DetouredScope`: the wide
+  hook owns the single reentrancy scope, so delegating lets its `Detoured_IsDisabled()`
+  logic (and thus the filter + splice) engage instead of tripping the nested-scope
+  passthrough. `FindFirstFileA` now routes through `FindFirstFileExA` (matching the
+  wide thunk). New characterization coverage: `enumfinda` added to the
+  `FilterInputsReadProbeConsistencyMatrix` (as `findfilea`) and
+  `FilterInputsEnumerationHidesUndeclared` op loops (modes_test.cc), plus
+  `OverlayEnumWin32FindAnsi` and `OverlayGetFinalPathNameByHandleAnsiReportsVirtualPath`
+  (overlay_test.cc). Build + 10/10 tests pass.
+- **Test coverage for previously-untested ANSI/W passthrough hooks** — added
+  characterization tests (no engine change) for `GetTempFileNameA` (`tempfilea`
+  probe verb: allowed with `-w`, denied without, mirroring the wide `tempfile`
+  cases) and `GetVolumePathNameW` (`volumepath` probe verb: read-only volume mount
+  query succeeds under the sandbox), in `filesystem_test.cc`. Build + 10/10 pass.

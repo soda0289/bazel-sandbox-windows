@@ -5322,13 +5322,9 @@ HANDLE WINAPI Detoured_FindFirstFileA(
     _In_   LPCSTR             lpFileName,
     _Out_  LPWIN32_FIND_DATAA lpFindFileData)
 {
-    // TODO:replace with Detoured_FindFirstFileW below
-    return Real_FindFirstFileA(
-        lpFileName,
-        lpFindFileData);
-
-    // TODO: Note that we can't simply forward to FindFirstFileW here after a unicode conversion.
-    // The output value differs too - WIN32_FIND_DATA{A, W}
+    // FindFirstFileExA is a strict superset (mirrors the wide thunk above), so route
+    // through it to inherit the directory-enumeration filter + write-overlay splice.
+    return Detoured_FindFirstFileExA(lpFileName, FindExInfoStandard, lpFindFileData, FindExSearchNameMatch, NULL, 0);
 }
 // Directory-enumeration input filtering + write-overlay enumeration splice helpers
 // (IsEnumChildVisible, FilterDirectoryInformation, ApplyEnumerationFilterNt/Ex,
@@ -5675,6 +5671,24 @@ HANDLE WINAPI Detoured_FindFirstFileExW(
     return ReportFindFirstFileExWAccesses(lpFileName, fInfoLevelId, lpFindFileData, fSearchOp, lpSearchFilter, dwAdditionalFlags);
 }
 
+// Convert a wide find record (returned by the wide Find* hooks) to the ANSI record
+// callers of the *A enumeration APIs expect. Mirrors what kernelbase's own
+// FindFirstFileExA does: copy the fixed metadata verbatim and narrow the two name
+// fields via the process ANSI code page.
+static void ConvertFindDataWToA(const WIN32_FIND_DATAW& src, WIN32_FIND_DATAA& dst)
+{
+    dst.dwFileAttributes = src.dwFileAttributes;
+    dst.ftCreationTime = src.ftCreationTime;
+    dst.ftLastAccessTime = src.ftLastAccessTime;
+    dst.ftLastWriteTime = src.ftLastWriteTime;
+    dst.nFileSizeHigh = src.nFileSizeHigh;
+    dst.nFileSizeLow = src.nFileSizeLow;
+    dst.dwReserved0 = src.dwReserved0;
+    dst.dwReserved1 = src.dwReserved1;
+    WideCharToMultiByte(CP_ACP, 0, src.cFileName, -1, dst.cFileName, sizeof(dst.cFileName), NULL, NULL);
+    WideCharToMultiByte(CP_ACP, 0, src.cAlternateFileName, -1, dst.cAlternateFileName, sizeof(dst.cAlternateFileName), NULL, NULL);
+}
+
 IMPLEMENTED(Detoured_FindFirstFileExA)
 HANDLE WINAPI Detoured_FindFirstFileExA(
     _In_       LPCSTR             lpFileName,
@@ -5684,16 +5698,34 @@ HANDLE WINAPI Detoured_FindFirstFileExA(
     __reserved LPVOID             lpSearchFilter,
     _In_       DWORD              dwAdditionalFlags)
 {
-    // TODO: Note that we can't simply forward to FindFirstFileW here after a unicode conversion.
-    // The output value differs too - WIN32_FIND_DATA{A, W}
+    // Only the info levels the wide hook models (both return WIN32_FIND_DATAW) can be
+    // forwarded; anything else or a filtered search falls back to the untouched ANSI
+    // API. We intentionally do NOT open a DetouredScope here: the wide hook owns the
+    // single reentrancy scope, so delegating to it lets its IsDisabled() logic (and
+    // therefore the enumeration filter + write-overlay splice) engage correctly.
+    if (lpFileName == NULL ||
+        lpFindFileData == NULL ||
+        lpSearchFilter != NULL ||
+        (fInfoLevelId != FindExInfoStandard && fInfoLevelId != FindExInfoBasic))
+    {
+        return Real_FindFirstFileExA(lpFileName, fInfoLevelId, lpFindFileData, fSearchOp, lpSearchFilter, dwAdditionalFlags);
+    }
 
-    return Real_FindFirstFileExA(
-        lpFileName,
-        fInfoLevelId,
-        lpFindFileData,
-        fSearchOp,
-        lpSearchFilter,
-        dwAdditionalFlags);
+    // Widen the search path and delegate to the wide hook. The wide hook opens the
+    // directory, registers the search handle overlay (which the enumeration filter +
+    // write-overlay splice at the Nt/FindNext layer key off) and performs the access
+    // check, so ANSI callers get identical virtualization. A Win32 find handle is not
+    // A/W-specific, so FindNextFileA can continue enumerating it.
+    UnicodeConverter fileName(lpFileName);
+    WIN32_FIND_DATAW findDataW = {};
+    HANDLE result = Detoured_FindFirstFileExW(fileName, fInfoLevelId, &findDataW, fSearchOp, lpSearchFilter, dwAdditionalFlags);
+    if (result != INVALID_HANDLE_VALUE)
+    {
+        DWORD error = GetLastError();
+        ConvertFindDataWToA(findDataW, *reinterpret_cast<LPWIN32_FIND_DATAA>(lpFindFileData));
+        SetLastError(error);
+    }
+    return result;
 }
 // TryAppendOverlayFindDataW lives in src/overlay_engine.{h,cpp} (project-owned).
 
@@ -5795,12 +5827,24 @@ BOOL WINAPI Detoured_FindNextFileA(
     _In_  HANDLE             hFindFile,
     _Out_ LPWIN32_FIND_DATAA lpFindFileData)
 {
-    // TODO:replace with the same logic as Detoured_FindNextFileW
-    // Note that we can't simply forward to FindFirstFileW here after a unicode conversion.
-    // The output value differs too - WIN32_FIND_DATA{A, W}
-    return Real_FindNextFileA(
-        hFindFile,
-        lpFindFileData);
+    if (IsNullOrInvalidHandle(hFindFile) || lpFindFileData == nullptr)
+    {
+        return Real_FindNextFileA(hFindFile, lpFindFileData);
+    }
+
+    // Delegate to the wide hook (which applies the input filter + write-overlay tail)
+    // and narrow the resulting record. No DetouredScope here: the wide hook owns the
+    // single reentrancy scope. The find handle originates from the wide hook via
+    // FindFirstFileExA, so wide continuation is correct.
+    WIN32_FIND_DATAW findDataW = {};
+    BOOL result = Detoured_FindNextFileW(hFindFile, &findDataW);
+    if (result)
+    {
+        DWORD error = GetLastError();
+        ConvertFindDataWToA(findDataW, *lpFindFileData);
+        SetLastError(error);
+    }
+    return result;
 }
 
 IMPLEMENTED(Detoured_GetFileInformationByHandleEx)

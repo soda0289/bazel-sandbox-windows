@@ -119,8 +119,9 @@ TEST_F(EnforceTest, FilterInputsReadProbeConsistencyMatrix) {
         {L"absent-nested", absentNested, kNotFound},
         {L"declared-r-visible", vis, kOk},
     };
-    const wchar_t* ops[] = {L"read",  L"ntread", L"reada",     L"stat",
-                            L"stata", L"statex", L"statbyname", L"findfile"};
+    const wchar_t* ops[] = {L"read",    L"ntread",     L"reada",   L"stat",
+                            L"stata",   L"statex",     L"statbyname",
+                            L"findfile", L"findfilea"};
     for (const wchar_t* op : ops) {
         for (const auto& st : states) {
             SCOPED_TRACE(std::string("op=") + std::string(op, op + wcslen(op)));
@@ -175,7 +176,7 @@ TEST_F(EnforceTest, FilterInputsEnumerationHidesUndeclared) {
     WriteText(enDeep, "deep");
     WriteText(Join(en, L"secret.txt"), "top secret");
     std::vector<std::wstring> grants = {L"--filter-inputs", L"-W", en, L"-r", enVis, L"-r", enDeep};
-    const wchar_t* ops[] = {L"enumfind", L"enumfindnt", L"enumfindntdirect"};
+    const wchar_t* ops[] = {L"enumfind", L"enumfinda", L"enumfindnt", L"enumfindntdirect"};
     for (const std::wstring dir : {en, L"\\\\?\\" + en}) {
         for (const wchar_t* op : ops) {
             SCOPED_TRACE(std::string(op, op + wcslen(op)));
