@@ -21,6 +21,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -350,6 +351,62 @@ TEST_F(OverlayTest, JavaDeclaredOutputWritesThrough) {
     EXPECT_EQ("DECLARED-OUT", ReadText(out));
     EXPECT_FALSE(Exists(sib)) << "undeclared write leaked onto the real execroot";
     EXPECT_EQ(1u, Snapshot(ws).size()) << "unexpected entries on the real execroot (only the -w output should be there)";
+}
+
+// Regression for the overlay image-path \\?\ de-prefix fix (the
+// //src:embedded_jdk_minimal JVM crash: application.home=\\?\... ->
+// "guarantee(name != nullptr) failed: jimage file name is null"). A JVM
+// launched from a JDK that lives in the overlay backing store must derive
+// java.home WITHOUT a \\?\ extended-length prefix. We copy the hermetic JDK
+// into an overlay-only dir (robocopy - every write redirected into the private
+// backing store, nothing touching the real execroot) and then launch
+// <overlay>\myjdk\bin\java.exe in the SAME invocation (the backing store is per
+// invocation): its image is overlay-redirected to the backing path, and the
+// CreateProcess hook de-prefixes it (PlainOverlayChildPath) so GetModuleFileName
+// - and hence java.home / the launcher's derived application.home - is the plain
+// backing path. jmods/src.zip/demo/include/legal/man are excluded (java -version
+// needs only bin+lib+conf), keeping the copy small and fast.
+TEST_F(OverlayTest, JavaOverlayResidentHomeHasNoExtendedPrefix) {
+    std::wstring java = OverlayTest::ToolFromEnv("E2E_JAVA_JAVA");
+    if (java.empty()) GTEST_SKIP() << "hermetic java missing (E2E_JAVA_JAVA)";
+
+    // jdkhome = java.exe's grandparent (<home>\bin\java.exe). ToolFromEnv returns
+    // a forward-slash rlocation path, so normalize to backslashes first (robocopy
+    // and the JVM want the native separator).
+    std::wstring norm = java;
+    std::replace(norm.begin(), norm.end(), L'/', L'\\');
+    std::wstring bin = norm.substr(0, norm.find_last_of(L'\\'));
+    std::wstring jdkhome = bin.substr(0, bin.find_last_of(L'\\'));
+
+    auto ws = NewWorkspace();
+    auto overlayJava = Join(ws, L"myjdk\\bin\\java.exe");
+
+    auto r = RunOverlayBat(ws, {
+        L"robocopy " + Q(jdkhome) + L" " + Q(Join(ws, L"myjdk")) +
+            L" /E /XD jmods demo include legal man /XF src.zip /NFL /NDL /NJH /NJS /NP >nul",
+        L"echo JHOME-BEGIN",
+        // Launch the overlay-resident JVM; its image is overlay-redirected.
+        Q(overlayJava) + L" -XshowSettings:properties -version 2>&1 | findstr /C:\"java.home\"",
+        L"echo JHOME-END",
+    });
+
+    // The JVM must have started and reported java.home.
+    ASSERT_TRUE(Contains(r.out, "java.home"))
+        << "overlay-resident JVM did not start / report java.home:\n" << r.out;
+    // Isolate the java.home line and assert it is the overlay JDK with no \\?\ prefix.
+    auto b = r.out.find("JHOME-BEGIN");
+    auto e = r.out.find("JHOME-END");
+    ASSERT_NE(std::string::npos, b) << r.out;
+    ASSERT_NE(std::string::npos, e) << r.out;
+    std::string seg = r.out.substr(b, e - b);
+    EXPECT_TRUE(Contains(seg.c_str(), "myjdk"))
+        << "java.home is not the overlay JDK:\n" << r.out;
+    EXPECT_FALSE(Contains(seg.c_str(), "\\\\?\\"))
+        << "java.home carries a \\\\?\\ extended-length prefix (application.home "
+           "would too, crashing the JVM's jimage load):\n" << r.out;
+
+    EXPECT_TRUE(Snapshot(ws).empty()) << "overlay JDK copy leaked onto the real execroot";
+    EXPECT_FALSE(Exists(Join(ws, L"myjdk"))) << "overlay JDK leaked onto real disk";
 }
 
 }  // namespace
