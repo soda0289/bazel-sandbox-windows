@@ -62,6 +62,38 @@ def spawncwdrel(ws):
     return 0
 
 
+# childstatopen: from an overlay-only cwd, write a scratch file by relative name,
+# then STAT it (os.stat -> GetFileAttributes) and OPEN it (open() -> CreateFileW).
+# Under --filter-inputs the existing backing file's stat must NOT reverse-map to a
+# masked virtual path while the open still resolves to backing (the embedded-JDK
+# stat/open desync). Emits STAT / SIZE / READ so the parent can assert agreement.
+def childstatopen():
+    with open("scratch.bin", "w", encoding="utf-8") as f:
+        f.write("STATOPEN")
+    exists = os.path.exists("scratch.bin")
+    size = os.stat("scratch.bin").st_size if exists else -1
+    with open("scratch.bin", "r", encoding="utf-8") as f:
+        read = f.read()
+    sys.stdout.write("CHILD=OK STAT=%s SIZE=%d READ=%s" % (exists, size, read))
+    return 0
+
+
+def spawnstatopen(ws):
+    d = os.path.join(ws, "spawnstatdir")
+    os.mkdir(d)
+    proc = subprocess.run(
+        [sys.executable, os.path.abspath(__file__), "childstatopen"],
+        cwd=d,  # lpCurrentDirectory = overlay-only dir
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.stdout.write("SPAWN=ERR:%d OUT=%s" % (proc.returncode, proc.stdout + proc.stderr))
+        return 1
+    sys.stdout.write("SPAWN=%s" % proc.stdout.strip())
+    return 0
+
+
 def spawncwd(ws):
     d = os.path.join(ws, "spawndir")
     os.mkdir(d)
@@ -92,11 +124,18 @@ def main():
         return childcwd(sys.argv[2])
     if sys.argv[1] == "childcwdrel":
         return childcwdrel()
+    if sys.argv[1] == "childstatopen":
+        return childstatopen()
     if sys.argv[1] == "spawncwdrel":
         if len(sys.argv) < 3:
             sys.stderr.write("usage: spawn_ops.py spawncwdrel <execroot>\n")
             return 2
         return spawncwdrel(sys.argv[2])
+    if sys.argv[1] == "spawnstatopen":
+        if len(sys.argv) < 3:
+            sys.stderr.write("usage: spawn_ops.py spawnstatopen <execroot>\n")
+            return 2
+        return spawnstatopen(sys.argv[2])
     return spawncwd(sys.argv[1])
 
 
