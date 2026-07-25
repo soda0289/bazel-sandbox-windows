@@ -23,8 +23,6 @@ using std::vector;
 // GLOBALS
 // ----------------------------------------------------------------------------
 
-extern SpecialProcessKind  g_ProcessKind;
-
 extern HANDLE g_hPrivateHeap;
 
 extern DWORD g_currentProcessId;
@@ -33,9 +31,6 @@ extern FileAccessManifestFlag g_fileAccessManifestFlags;
 extern FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
 
 extern PCManifestRecord g_manifestTreeRoot;
-
-extern PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
-extern LPCTSTR g_internalDetoursErrorNotificationFile;
 
 extern HANDLE g_reportFileHandle;
 

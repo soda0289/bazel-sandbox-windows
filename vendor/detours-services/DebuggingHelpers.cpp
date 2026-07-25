@@ -84,16 +84,10 @@ static void WriteMessage(PCWSTR text)
 void HandleDetoursInjectionAndCommunicationErrors(int errorCode, LPCWSTR eventLogMsgPtr, LPCWSTR eventLogMsgId, bool hardExitOnErrorIfEnabled)
 {
     std::wstring messageWithExitCode = DebugStringFormat(L"%s -- Detours ExitCode: %d", eventLogMsgPtr, errorCode);
-    wprintf_s(L"%s", messageWithExitCode.c_str());
     fwprintf_s(stderr, L"%s", messageWithExitCode.c_str());
-
-    fflush(stdout);
     fflush(stderr);
 
-    std::wstring strMsg(messageWithExitCode.c_str());
-    WriteToInternalErrorsFile(L"%s\r\n", messageWithExitCode.c_str());
-    LogEventLogMessage(messageWithExitCode, EVENTLOG_ERROR_TYPE, EVENTLOG_ERROR_TYPE_ID, eventLogMsgId);
-
+    UNREFERENCED_PARAMETER(eventLogMsgId);
     UNREFERENCED_PARAMETER(hardExitOnErrorIfEnabled);
 }
 

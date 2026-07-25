@@ -69,9 +69,6 @@ void PolicyResult::InitializeFromCursor(CanonicalizedPathType const& canonicaliz
     }
     else if (GetSpecialCaseRulesForCoverageAndSpecialDevices(fullTranslatedPath, fullTranslatedPathLength, canonicalizedPath.Type, /*out*/ m_policy)) {
     }
-    else if (GetSpecialCaseRulesForSpecialTools(fullTranslatedPath, fullTranslatedPathLength, /*out*/ m_policy))
-    {
-    }
 }
 
 PolicyResult PolicyResult::GetPolicyForSubpath(wchar_t const* pathSuffix) const {

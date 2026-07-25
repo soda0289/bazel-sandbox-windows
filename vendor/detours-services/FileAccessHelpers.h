@@ -376,11 +376,6 @@ inline bool Should##flag_name() { return Check##flag_name(g_fileAccessManifestEx
 
 FOR_ALL_FAM_EXTRA_FLAGS(GEN_CHECK_GLOBAL_FAM_EXTRA_FLAG)
 
-inline LPCTSTR InternalDetoursErrorNotificationFile()
-{
-    return g_internalDetoursErrorNotificationFile;
-}
-
 inline bool IsNullOrEmptyA(LPCSTR lpFileName)
 {
     return (lpFileName == NULL || lpFileName[0] == 0);

@@ -54,83 +54,6 @@ bool GetSpecialCaseRulesForWindows(
     return false;
 }
 
-// Some perform file accesses, which don't yet fall into any configurable file access manifest category.
-// These files now can be allowlisted, but there are already users deployed without the allowlisting feature
-// that rely on these file accesses not blocked.
-// These are some tools that use internal files or do some implicit directory creation, etc.
-// In this list the tools are the CCI based set of products, csc compiler, resource compiler, build.exe trace log, etc.
-// For such tools we allow file accesses on the special file patterns and report the access to BuildXL. BuildXL filters these
-// accesses, but makes sure that there are reports for these accesses if some of them are declared as outputs.
-bool GetSpecialCaseRulesForSpecialTools(
-    __in  PCWSTR absolutePath,
-    __in  size_t absolutePathLength,
-    __out FileAccessPolicy& policy)
-{
-    assert(absolutePath);
-    assert(absolutePathLength == wcslen(absolutePath));
-
-    switch (GetProcessKind())
-    {
-    case SpecialProcessKind::Csc:
-    case SpecialProcessKind::Cvtres:
-    case SpecialProcessKind::Resonexe:
-        // Some tools emit temporary files into the same directory
-        // as the final output file.
-        if (HasSuffix(absolutePath, absolutePathLength, L".tmp")) {
-            int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-            policy = (FileAccessPolicy)intPolicy;
-            return true;
-        }
-        break;
-
-    case SpecialProcessKind::RC:
-        // The native resource compiler (RC) emits temporary files into the same
-        // directory as the final output file.
-        if (StringLooksLikeRCTempFile(absolutePath, absolutePathLength)) {
-            int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-            policy = (FileAccessPolicy)intPolicy;
-            return true;
-        }
-        break;
-
-    case SpecialProcessKind::Mt:
-        // The Mt tool emits temporary files into the same directory as the final output file.
-        if (StringLooksLikeMtTempFile(absolutePath, absolutePathLength, L".tmp")) {
-            int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-            policy = (FileAccessPolicy)intPolicy;
-            return true;
-        }
-        break;
-
-    case SpecialProcessKind::CCCheck:
-    case SpecialProcessKind::CCDocGen:
-    case SpecialProcessKind::CCRefGen:
-    case SpecialProcessKind::CCRewrite:
-        // The cc-line of tools like to find pdb files by using the pdb path embedded in a dll/exe.
-        // If the dll/exe was built with different roots, then this results in somewhat random file accesses.
-        if (HasSuffix(absolutePath, absolutePathLength, L".pdb")) {
-            int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-            policy = (FileAccessPolicy)intPolicy;
-            return true;
-        }
-        break;
-
-    case SpecialProcessKind::WinDbg:
-    case SpecialProcessKind::NotSpecial:
-        // no special treatment
-        break;
-    }
-
-    // build.exe and tracelog.dll capture dependency information in temporary files in the object root called _buildc_dep_out.<pass#>
-    if (StringLooksLikeBuildExeTraceLog(absolutePath, absolutePathLength)) {
-        int intPolicy = (int)policy | (int)FileAccessPolicy_AllowAll;
-        policy = (FileAccessPolicy)intPolicy;
-        return true;
-    }
-
-    return false;
-}
-
 // This functions allows file accesses for special undeclared files.
 // In the special set set we include:
 //     1. Code coverage runs
@@ -308,54 +231,6 @@ inline void VerifyManifestRoot(PCManifestRecord const root)
 }
 #pragma warning( pop )
 
-void WriteToInternalErrorsFile(PCWSTR format, ...)
-{
-    if (g_internalDetoursErrorNotificationFile != nullptr)
-    {
-        DWORD error = GetLastError();
-
-        while (true)
-        {
-            // Get a file handle.
-            HANDLE openedFile = CreateFileW(
-                g_internalDetoursErrorNotificationFile,
-                FILE_APPEND_DATA,
-                0,
-                NULL,
-                OPEN_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                NULL);
-
-            if (openedFile == INVALID_HANDLE_VALUE)
-            {
-                // Wait to get exclusive access to the file.
-                if (GetLastError() == ERROR_SHARING_VIOLATION)
-                {
-                    Sleep(10);
-                    continue;
-                }
-
-                // Failure to open the file. if that happens, we miss logging this message log, so just continue.
-                break;
-            }
-            else
-            {
-                // File was successfully opened --> format error message and write it to file
-                va_list args;
-                va_start(args, format);
-                std::wstring errorMessage = DebugStringFormatArgs(format, args);
-                WriteFile(openedFile, errorMessage.c_str(), (DWORD)(errorMessage.length() * sizeof(wchar_t)), nullptr, nullptr);
-                va_end(args);
-                CloseHandle(openedFile);
-
-                break;
-            }
-        }
-
-        SetLastError(error);
-    }
-}
-
 static inline byte ParseByte(const byte* payloadBytes, size_t& offset)
 {
     byte b = payloadBytes[offset];
@@ -371,28 +246,7 @@ static inline uint32_t ParseUint32(const byte *payloadBytes, size_t &offset)
 }
 
 /// Decodes a length plus UTF-16 non-null-terminated string written by FileAccessManifest.WriteChars()
-/// into an allocated, null-terminated string. Returns nullptr if the encoded string length is zero.
-wchar_t *CreateStringFromWriteChars(const byte *payloadBytes, size_t &offset, uint32_t *pStrLen = nullptr)
-{
-    uint32_t len = ParseUint32(payloadBytes, offset);
-    if (pStrLen != nullptr)
-    {
-        *pStrLen = len;
-    }
-
-    WCHAR *pStr = nullptr;
-    if (len != 0)
-    {
-        pStr = new wchar_t[len + 1]; // Reserve some space for \0 terminator at end.
-        uint32_t strSizeBytes = sizeof(wchar_t) * (len + 1);
-        ZeroMemory((void*)pStr, strSizeBytes);
-        memcpy_s((void*)pStr, strSizeBytes, (wchar_t*)(&payloadBytes[offset]), sizeof(wchar_t) * len);
-        offset += sizeof(wchar_t) * len;
-    }
-
-    return pStr;
-}
-
+/// and appends it to the given result string.
 void AppendStringFromWriteChars(const byte* payloadBytes, size_t& offset, _Out_ std::wstring& result)
 {
     uint32_t len = ParseUint32(payloadBytes, offset);
@@ -513,14 +367,6 @@ bool ParseFileAccessManifest(
     }
 
     offset += debugFlag->GetSize();
-
-    g_manifestInternalDetoursErrorNotificationFileString = reinterpret_cast<const PManifestInternalDetoursErrorNotificationFileString>(&payloadBytes[offset]);
-    g_manifestInternalDetoursErrorNotificationFileString->AssertValid();
-#ifdef _DEBUG
-    offset += sizeof(uint32_t);
-#endif
-    uint32_t manifestInternalDetoursErrorNotificationFileSize;
-    g_internalDetoursErrorNotificationFile = CreateStringFromWriteChars(payloadBytes, offset, &manifestInternalDetoursErrorNotificationFileSize);
 
     PCManifestFlags flags = reinterpret_cast<PCManifestFlags>(&payloadBytes[offset]);
     flags->AssertValid();
@@ -735,44 +581,6 @@ bool LocateAndParseFileAccessManifest()
     }
 
     return ParseFileAccessManifest(manifest, manifestSize);
-}
-
-SpecialProcessKind  g_ProcessKind = SpecialProcessKind::NotSpecial;
-
-void InitProcessKind()
-{
-    struct ProcessPair {
-        LPCWSTR Name;
-        SpecialProcessKind Kind;
-    };
-
-    // This list must be kept in sync with those in C# SandboxedProcessPipExecutor.cs
-    const struct ProcessPair pairs[] = {
-            { L"csc.exe", SpecialProcessKind::Csc },
-            { L"rc.exe", SpecialProcessKind::RC },
-            { L"mt.exe", SpecialProcessKind::Mt },
-            { L"cvtres.exe", SpecialProcessKind::Cvtres },
-            { L"resonexe.exe", SpecialProcessKind::Resonexe},
-            { L"windbg.exe", SpecialProcessKind::WinDbg },
-            { L"ccrewrite.exe", SpecialProcessKind::CCRewrite },
-            { L"cccheck.exe", SpecialProcessKind::CCCheck },
-            { L"ccrefgen.exe", SpecialProcessKind::CCRefGen },
-            { L"ccdocgen.exe", SpecialProcessKind::CCDocGen } };
-
-    size_t count = sizeof(pairs) / sizeof(pairs[0]);
-
-    WCHAR wszFileName[MAX_PATH];
-    DWORD nFileName = GetModuleFileNameW(NULL, wszFileName, MAX_PATH);
-    if (nFileName == 0 || nFileName == MAX_PATH) {
-        return;
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        if (HasSuffix(wszFileName, nFileName, pairs[i].Name)) {
-            g_ProcessKind = pairs[i].Kind;
-            return;
-        }
-    }
 }
 
 DWORD GetReportedError(BOOL result, DWORD error)

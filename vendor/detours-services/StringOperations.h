@@ -18,7 +18,6 @@
 
 typedef WCHAR PathChar;
 #define pathlen wcslen
-#define BUILD_EXE_TRACE_FILE L"_buildc_dep_out.pass"
 
 typedef PathChar* PPathChar;
 typedef const PathChar* PCPathChar;
@@ -205,12 +204,6 @@ bool HasSuffix(PCPathChar str, size_t str_length, PCPathChar suffix) noexcept;
 // Both values are required to be absolute paths, except 'tree' may be an empty string
 // (in which case any path is considered to be under it).
 bool IsPathWithinTree(PCPathChar tree, PCPathChar path) noexcept;
-
-bool StringLooksLikeRCTempFile(PCPathChar str, size_t str_length) noexcept;
-
-bool StringLooksLikeBuildExeTraceLog(PCPathChar str, size_t str_length) noexcept;
-
-bool StringLooksLikeMtTempFile(PCPathChar str, size_t str_length, PCPathChar expected_extension) noexcept;
 
 // Find the index of the final directory separator (possibly zero), or zero if none are found.
 size_t FindFinalPathSeparator(PCPathChar const original) noexcept;

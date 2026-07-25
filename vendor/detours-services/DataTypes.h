@@ -314,20 +314,6 @@ typedef struct ManifestDebugFlag_t
 typedef const ManifestDebugFlag * PCManifestDebugFlag;
 
 // ==========================================================================
-// == ManifestInternalDetoursErrorNotificationFileString
-// ==========================================================================
-typedef struct ManifestInternalDetoursErrorNotificationFileString_t
-{
-    GENERATE_TAG("ManifestInternalDetoursErrorNotificationFileString", 0xABCDEF03)
-
-    inline size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestInternalDetoursErrorNotificationFileString_t);
-    }
-} ManifestInternalDetoursErrorNotificationFileString_t;
-typedef const ManifestInternalDetoursErrorNotificationFileString_t * PManifestInternalDetoursErrorNotificationFileString;
-
-// ==========================================================================
 // == ManifestFlags
 // ==========================================================================
 typedef struct ManifestFlags_t
@@ -566,23 +552,3 @@ typedef struct ManifestRecord_t
         __out PCManifestRecord& child) const;
 } ManifestRecord;
 typedef const ManifestRecord * PCManifestRecord; // duplicated for use in scopes outside of the struct
-
-// ==========================================================================
-// == SpecialProcessKind
-// ==========================================================================
-// Characterization of the currently running process
-// These are special processes for which we remove some artificial file accesses from reporting.
-// We should not detour anything if the process is WinDbg.
-enum class SpecialProcessKind {
-    NotSpecial,
-    WinDbg,
-    RC,
-    CCCheck,
-    CCRewrite,
-    CCRefGen,
-    CCDocGen,
-    Csc,
-    Cvtres,
-    Resonexe,
-    Mt
-};

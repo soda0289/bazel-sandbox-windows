@@ -57,8 +57,6 @@
 // INLINE FUNCTION DEFINITIONS
 // ----------------------------------------------------------------------------
 
-inline SpecialProcessKind GetProcessKind() { return g_ProcessKind; }
-
 // ----------------------------------------------------------------------------
 // FUNCTION DECLARATIONS
 // ----------------------------------------------------------------------------
@@ -71,11 +69,6 @@ bool GetSpecialCaseRulesForCoverageAndSpecialDevices(
     __in  PCWSTR absolutePath,
     __in  size_t absolutePathLength,
     __in PathType pathType,
-    __out FileAccessPolicy& policy);
-
-bool GetSpecialCaseRulesForSpecialTools(
-    __in  PCWSTR absolutePath,
-    __in  size_t absolutePathLength,
     __out FileAccessPolicy& policy);
 
 bool GetSpecialCaseRulesForWindows(
@@ -105,10 +98,6 @@ bool ParseFileAccessManifest(
     DWORD payloadSize);
 
 bool LocateAndParseFileAccessManifest();
-
-void WriteToInternalErrorsFile(PCWSTR format, ...);
-
-void InitProcessKind();
 
 DWORD GetReportedError(BOOL result, DWORD error);
 

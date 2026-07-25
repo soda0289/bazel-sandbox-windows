@@ -29,7 +29,6 @@
 #include "HandleOverlay.h"
 #include "DetouredProcessInjector.h"
 #include "SendReport.h"
-#include <Psapi.h>
 #include "locale.h"
 
 // BazelSandbox network sandboxing (-N / -n). Winsock-free interface; the actual
@@ -38,7 +37,6 @@
 
 #define BUILDXL_DETOURS_CREATE_PROCESS_RETRY_COUNT 5
 #define BUILDXL_DETOURS_MS_TO_SLEEP 10
-#define BUILDXL_PRELOADED_DLLS_MAX_PATH 65536
 
 extern "C" {
     NTSTATUS NTAPI ZwSetInformationFile(
@@ -165,9 +163,6 @@ FileAccessManifestExtraFlag g_fileAccessManifestExtraFlags;
 
 PCManifestRecord g_manifestTreeRoot;
 
-PManifestInternalDetoursErrorNotificationFileString g_manifestInternalDetoursErrorNotificationFileString;
-LPCTSTR g_internalDetoursErrorNotificationFile = nullptr;
-
 HANDLE g_reportFileHandle;
 
 bool g_BreakOnAccessDenied;
@@ -291,92 +286,6 @@ DeviceIoControl_t Real_DeviceIoControl;
 // ----------------------------------------------------------------------------
 
 EXTERN_C IMAGE_DOS_HEADER __ImageBase;
-
-static void SetEventLogSource(const std::wstring& a_name)
-{
-    const std::wstring key_path(L"SYSTEM\\CurrentControlSet\\Services\\"
-        L"EventLog\\Application\\" + a_name);
-
-    HKEY key;
-
-    LSTATUS last_error = RegCreateKeyEx(HKEY_LOCAL_MACHINE,
-        key_path.c_str(),
-        0,
-        0,
-        REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE,
-        0,
-        &key,
-        nullptr);
-
-    if (ERROR_SUCCESS == last_error)
-    {
-        WCHAR   DllPath[MAX_PATH] = { 0 };
-        GetModuleFileNameW((HINSTANCE)&__ImageBase, DllPath, _countof(DllPath));
-        const DWORD types_supported = EVENTLOG_ERROR_TYPE |
-            EVENTLOG_WARNING_TYPE |
-            EVENTLOG_INFORMATION_TYPE;
-
-        const char* DominoDetoursServices = "DominoDetoursServices.dll";
-
-        last_error = RegSetValueEx(key,
-            L"EventMessageFile",
-            0,
-            REG_SZ,
-            (BYTE*)DominoDetoursServices,
-            sizeof(DominoDetoursServices));
-
-        if (ERROR_SUCCESS == last_error)
-        {
-            last_error = RegSetValueEx(key,
-                L"TypesSupported",
-                0,
-                REG_DWORD,
-                (LPBYTE)&types_supported,
-                sizeof(types_supported));
-        }
-
-        RegCloseKey(key);
-    }
-}
-
-static void UnsetEventLogSource(const std::wstring& a_name)
-{
-    const std::wstring key_path(L"SYSTEM\\CurrentControlSet\\Services\\"
-        L"EventLog\\Application\\" + a_name);
-
-    RegDeleteKey(HKEY_LOCAL_MACHINE,
-        key_path.c_str());
-}
-
-void LogEventLogMessage(const std::wstring& a_msg,
-    const WORD a_type,
-    const WORD eventId,
-    const std::wstring& a_name)
-{
-    SetEventLogSource(a_name);
-
-    HANDLE h_event_log = RegisterEventSource(0, a_name.c_str());
-
-    if (0 != h_event_log)
-    {
-        LPCTSTR message = a_msg.c_str();
-
-        ReportEvent(h_event_log,
-            a_type,
-            0,
-            eventId,
-            0,
-            1,
-            0,
-            &message,
-            0);
-
-        DeregisterEventSource(h_event_log);
-    }
-
-    UnsetEventLogSource(a_name);
-}
 
 //
 // Code to create a detoured process
@@ -656,7 +565,6 @@ static bool DllProcessAttach()
     }
 
     g_invariantLocale = _wcreate_locale(LC_CTYPE, L"");
-    InitProcessKind();
     InitializeHandleOverlay();
 
 #define ATTACH(Name) \
@@ -685,8 +593,7 @@ static bool DllProcessAttach()
         ATTACH(CreateProcessAsUserA);
         ATTACH(CreateProcessAsUserW);
 
-        if (GetProcessKind() != SpecialProcessKind::WinDbg) {
-            ATTACH(CreateFileW);
+        ATTACH(CreateFileW);
             ATTACH(CreateFileA);
 
             ATTACH(GetVolumePathNameW);
@@ -808,10 +715,6 @@ static bool DllProcessAttach()
 
             ATTACH(DeviceIoControl);
 #pragma warning( pop )
-        }
-        else {
-            Dbg(L"File detours are disabled while running inside of WinDbg. Child processes will still be detoured.");
-        }
     }
 
     if (failed) {
@@ -849,61 +752,6 @@ static bool DllProcessAttach()
     // the Winsock detours in their own transaction. Must run before the child's
     // entry point, which it does (all of DllProcessAttach completes first).
     bazelsandbox::InitializeAndAttachNetworkDetours();
-
-    {
-        HMODULE hMods[1024];
-        HANDLE hProcess;
-        DWORD cbNeeded;
-        unsigned int i;
-        bool failedInitPolicy = false;
-
-        hProcess = GetCurrentProcess();
-        // Get a list of all the modules in this process.
-        wchar_t* szModName = new wchar_t[BUILDXL_PRELOADED_DLLS_MAX_PATH];
-
-        if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded))
-        {
-            for (i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
-            {
-                // Get the full path to the module's file.
-
-                if (GetModuleFileName(hMods[i], szModName,
-                    sizeof(szModName) / sizeof(wchar_t)) != 0)
-                {
-                    // Print the module name and handle value.
-                    FileOperationContext fileOperationContext = FileOperationContext::CreateForRead(L"CreateFile", szModName);
-
-                    PolicyResult policyResult;
-                    if (!policyResult.Initialize(szModName)) {
-                        policyResult.ReportIndeterminatePolicyAndSetLastError(fileOperationContext);
-                        failedInitPolicy = true;
-                    }
-
-                    if (!failedInitPolicy)
-                    {
-                        DWORD attributes = GetFileAttributesW(szModName);
-
-                        if (attributes != INVALID_FILE_ATTRIBUTES)
-                        {
-                            FileReadContext fileReadContext;
-                            fileReadContext.InferExistenceFromError(ERROR_SUCCESS);
-                            fileReadContext.OpenedDirectory = ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
-                            if (!fileReadContext.OpenedDirectory) {
-                                AccessCheckResult accessCheck = policyResult.CheckReadAccess(RequestedReadAccess::Read, fileReadContext);
-                                ReportIfNeeded(accessCheck, fileOperationContext, policyResult, ERROR_SUCCESS);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        delete[] szModName;
-
-        // Release the handle to the process.
-
-        CloseHandle(hProcess);
-    }
 
     return true;
 }

@@ -8,8 +8,6 @@
 // ----------------------------------------------------------------------------
 // DEFINES
 // ----------------------------------------------------------------------------
-#define EVENTLOG_INFORMATION_TYPE_ID 1001
-#define EVENTLOG_ERROR_TYPE_ID 1002
 
 // ----------------------------------------------------------------------------
 // TYPE DEFINITIONS
@@ -70,8 +68,3 @@ InternalCreateDetouredProcess(
     CreateProcessAsUserW_t pfCreateProcessAsUserW,
     bool hardExitOnDetoursErrorIfEnabled
 );
-
-void LogEventLogMessage(const std::wstring& a_msg,
-    const WORD a_type,
-    const WORD eventId,
-    const std::wstring& a_name);
