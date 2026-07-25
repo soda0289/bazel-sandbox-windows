@@ -1390,6 +1390,14 @@ int DoExit(const wchar_t* code) {
     return static_cast<int>(wcstol(code, nullptr, 10));
 }
 
+// Exit with the number of operands supplied after the op (argv[2..]). Used to
+// verify argument boundaries survive the launcher's @response-file expansion and
+// BuildChildCommandLine round-trip: an argument that embeds a newline must arrive
+// as ONE operand, not be split on the newline into several.
+int DoArgCount(int argc, wchar_t** /*argv*/) {
+    return argc - 2;
+}
+
 // Write each argument after the op (argv[2..]) to stdout, one per line (LF).
 // Used by the launcher suite to verify BuildChildCommandLine round-trips the
 // child's arguments intact - a space-containing token must arrive as ONE argv
@@ -2035,6 +2043,7 @@ int wmain(int argc, wchar_t** argv) {
     if (op == L"spawn") return DoSpawn(argc, argv);
     if (op == L"echoargs") return DoEchoArgs(argc, argv);
     if (op == L"exit") return DoExit(argv[2]);
+    if (op == L"argcount") return DoArgCount(argc, argv);
     if (op == L"sleep") return DoSleep(argv[2]);
     if (op == L"cwdis") return DoCwdIs(argv[2]);
     if (op == L"cwdisa") return DoCwdIsA(argv[2]);

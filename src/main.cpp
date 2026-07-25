@@ -145,12 +145,18 @@ void PrintUsage(int exitCode) {
         L"  -D <file>  write launcher diagnostics to a file\n"
         L"  --trace <file>  write a per-access report (from the sandbox DLL) to a file\n"
         L"  -S <file>  write child resource-usage statistics (protobuf) to a file\n"
-        L"  @FILE      read newline-separated arguments from FILE\n"
+        L"  @FILE      read newline-separated arguments from FILE (one arg per line;\n"
+        L"             cannot carry an argument that itself contains a newline -- keep\n"
+        L"             the '--' command tail inline for multi-line 'bash -c' scripts)\n"
         L"  --         command to run in the sandbox, followed by arguments\n");
     exit(exitCode);
 }
 
 // Expand @response-files; expansion stops at the first "--".
+// NOTE: each line of a @FILE becomes exactly one argument (a trailing '\r' is
+// stripped). This encoding cannot represent an argument that itself contains a
+// newline, so callers must keep any such argument (e.g. a multi-line `bash -c`
+// script) INLINE after "--" rather than spilling it into a response file.
 std::vector<std::wstring> ExpandArguments(const std::vector<std::wstring>& args) {
     std::vector<std::wstring> out;
     for (size_t i = 0; i < args.size(); i++) {

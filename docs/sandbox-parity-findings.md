@@ -397,6 +397,49 @@ if behavior changes.
 
 ---
 
+## Runner / launcher integration (not a policy behavior)
+
+### R1. Response-file newline-splitting silently dropped multi-line `bash -c` commands — FIXED
+
+* **Symptom:** a full `//src:bazel` build under `windows-sandbox` failed at
+  `//third_party:fastutil_stripped_jar`: "declared output ... was not created by
+  genrule", with the launcher's debug log reporting **child exit code 0** even
+  though the genrule script ended in a non-zero `exit`. Only actions with a large
+  input set (enough `-r` grants to cross the inline-command-line threshold) **and**
+  a multi-line `bash -c` command were affected; ~6,600 other actions passed, which
+  is why the coarse target-level differential smoke masked it.
+* **Root cause:** an integration bug between the two halves the project owns:
+  * The Bazel patch (`WindowsSandboxedSpawnRunner.maybeUseArgumentFile`) spilled the
+    **entire** command line into a `@response-file` written **one argument per
+    line** once the estimated length exceeded `MAX_INLINE_COMMAND_LINE_LENGTH`.
+  * The launcher's `@FILE` parser (`ExpandArguments` in `src/main.cpp`) reads that
+    file with `std::getline`, treating **every** newline as an argument separator.
+  * A genrule's command is a single `bash -c "<multi-line script>"` argument whose
+    value embeds newlines. Written into the newline-delimited file it spanned many
+    lines and was shredded into many arguments; `bash` received only the first
+    physical line (`source .../genrule-setup.sh;`) as its `-c` value, ran that,
+    and exited 0. The real command (proguard/zip/`exit N`) never executed → the
+    declared output was never produced and the failure was masked as success.
+  `linux-sandbox` is unaffected (it passes `argv` directly, never through a
+  newline-delimited file).
+* **Fix:** keep the command **inline**. `maybeUseArgumentFile` now spills only the
+  launcher's own options — everything **before** the `--` separator, which are
+  Windows paths / short option tokens that can never contain a newline — into the
+  response file, and passes the `--` command tail (`bash.exe -c "<script>"`)
+  inline. The launcher already forwards its inline `--` tail verbatim, so the
+  child receives the exact command. `main.cpp`'s `@FILE` help text and
+  `ExpandArguments` now document that the encoding cannot carry an argument with an
+  embedded newline.
+* **Status:** Fixed. Verified end-to-end: `//third_party:fastutil_stripped_jar`
+  now builds under `windows-sandbox` (produces the jar).
+* **Test:** `enforce_launcher` — `InlineCommandTailPreservesEmbeddedNewlineArg`
+  (an inline `--`-tail argument with an embedded newline reaches the child as one
+  operand) and `ResponseFileSplitsEmbeddedNewlineArg` (characterizes the
+  newline-delimited `@FILE` limitation that mandates keeping the command inline),
+  using the probe's new `argcount` op.
+
+---
+
 ## Test-infrastructure fix (not a sandbox behavior)
 
 ### T1. `pwsh_test` targets were false-green — FIXED

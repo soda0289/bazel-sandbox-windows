@@ -230,5 +230,36 @@ TEST_F(EnforceTest, VerbatimRegimeCmdQuotesPreserved) {
     EXPECT_EQ("\"a b\"", out);
 }
 
+// Regression (response-file newline safety): a genrule's command is passed as a
+// single `bash -c "<multi-line script>"` argument. Bazel's windows-sandbox runner
+// spills only its own options into a @response-file and keeps that command tail
+// INLINE after "--". The launcher must forward the inline tail verbatim, so an
+// argument that embeds a newline arrives as exactly ONE operand (argcount -> 2).
+// If it were split on the newline the child would see 3 operands and, for a real
+// `bash -c`, run only the first physical line and exit 0 (declared output missing).
+TEST_F(EnforceTest, InlineCommandTailPreservesEmbeddedNewlineArg) {
+    auto ws = NewWorkspace();
+    auto rsp = Join(ws, L"flags.rsp");
+    WriteRsp(rsp, {L"-W", ws});  // only options spilled; command stays inline
+    int rc = RunSandbox({L"@" + rsp, L"--", ProbePath(), L"argcount",
+                         L"line-one\nline-two", L"tail"});
+    EXPECT_EQ(2, rc) << "embedded-newline arg must stay one operand";
+}
+
+// Characterization: a @response-file is newline-delimited (one arg per line), so
+// spilling a multi-line argument INTO the file shreds it. Here the two-line
+// operand becomes two operands (argcount -> 3). This is exactly why the runner
+// must keep the command tail inline (see InlineCommandTailPreservesEmbeddedNewlineArg).
+TEST_F(EnforceTest, ResponseFileSplitsEmbeddedNewlineArg) {
+    auto ws = NewWorkspace();
+    auto rsp = Join(ws, L"whole.rsp");
+    // The two physical lines "line-one" and "line-two" model one intended operand
+    // that contained an embedded newline once written to the response file.
+    WriteRsp(rsp, {L"-W", ws, L"--", ProbePath(), L"argcount",
+                   L"line-one", L"line-two", L"tail"});
+    int rc = RunSandbox({L"@" + rsp});
+    EXPECT_EQ(3, rc) << "spilled newlines split one arg into several";
+}
+
 }  // namespace
 }  // namespace bsx

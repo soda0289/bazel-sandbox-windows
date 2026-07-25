@@ -119,7 +119,12 @@ param(
     [bool]$WindowsSymlinks = $true,
     [bool]$EnableRunfiles = $true,
     [bool]$Submodules = $false,
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+    # Run the sandbox phase BEFORE the local phase. Default is local-first. Order
+    # does not affect the differential (both phases run against fresh output bases);
+    # sandbox-first just surfaces "does the sandbox complete?" without waiting on the
+    # local build, and lets the two wall-clock times be read independently.
+    [switch]$SandboxFirst
 )
 
 Set-StrictMode -Version Latest
@@ -305,45 +310,59 @@ $exitCode = 1
 $keepForDebug = $false
 try {
     Info ''
-    Info "-- [1/2] local build (--spawn_strategy=local)"
-    $local = Invoke-BazelBuild -OutputBase $localBase -StrategyArgs @('--spawn_strategy=local') -BepFile $localBep
-    Info "   local exit: $($local.Code)  (elapsed: $($local.ElapsedSec)s)"
-    $localStatus = Read-BepTargetStatus -BepFile $localBep
+    # Each phase runs against its own fresh --output_user_root, so they are fully
+    # independent and can run in either order. -SandboxFirst runs the sandbox phase
+    # first so its completion/timing is visible without waiting on the local build.
+    $runLocal = {
+        Info "-- local build (--spawn_strategy=local)"
+        $script:local = Invoke-BazelBuild -OutputBase $localBase -StrategyArgs @('--spawn_strategy=local') -BepFile $localBep
+        Info "   local exit: $($script:local.Code)  (elapsed: $($script:local.ElapsedSec)s)"
+        $script:localStatus = Read-BepTargetStatus -BepFile $localBep
+        [pscustomobject]@{ Result = $script:local; Status = $script:localStatus }
+    }
+    $runSandbox = {
+        Info "-- sandbox build (--spawn_strategy=windows-sandbox,local)"
+        # NOTE the ",local" fallback. Bazel advances to the next strategy in the list
+        # only when a strategy REFUSES a spawn (cannot execute that action type), never
+        # when it executes and the action FAILS. So every sandboxable action still runs
+        # genuinely under windows-sandbox (this is a fresh output base, so there are no
+        # action-cache hits from the local run to short-circuit it), while action types
+        # windows-sandbox cannot handle at all (CopyFile, worker/persistent, and targets
+        # that explicitly request local execution) fall back to local instead of
+        # producing spurious "cannot be executed with any of the available strategies"
+        # failures that would masquerade as sandbox regressions. This mirrors how a real
+        # user runs the strategy.
+        $sbxStrategy = @(
+            '--spawn_strategy=windows-sandbox,local',
+            '--experimental_use_windows_sandbox=yes',
+            "--experimental_windows_sandbox_path=$Sandbox"
+        )
+        $script:sbx = Invoke-BazelBuild -OutputBase $sbxBase -StrategyArgs $sbxStrategy -BepFile $sbxBep
+        Info "   sandbox exit: $($script:sbx.Code)  (elapsed: $($script:sbx.ElapsedSec)s)"
+        if ($script:sbx.Output -notmatch 'windows-sandbox') {
+            Warn "no 'windows-sandbox' text seen in sandbox build output - strategy may not have engaged."
+        }
+        $script:sbxStatus = Read-BepTargetStatus -BepFile $sbxBep
+        [pscustomobject]@{ Result = $script:sbx; Status = $script:sbxStatus }
+    }
+
+    $order = if ($SandboxFirst) { @($runSandbox, $runLocal) } else { @($runLocal, $runSandbox) }
+    $first = & $order[0]
 
     # A genuine environment failure (no network / cert distrust / can't fetch the
     # module graph) produces NO configured targets at all. A non-zero exit WITH
     # target-completion events just means some targets failed under --keep_going,
     # which is exactly what this differential test is designed to measure - do not
-    # abort on it. Only bail when nothing built AND the output looks like a
-    # module-graph/TLS failure.
-    if ($localStatus.Count -eq 0 -and
-        ($local.Output -match 'PKIX|TLS|certification path|SSLHandshake|trustAnchors|Error downloading|the registry|Failed to fetch|Unknown module')) {
+    # abort on it. Only bail when the FIRST phase built nothing AND the output looks
+    # like a module-graph/TLS failure (neither phase could then measure anything).
+    if ($first.Status.Count -eq 0 -and
+        ($first.Result.Output -match 'PKIX|TLS|certification path|SSLHandshake|trustAnchors|Error downloading|the registry|Failed to fetch|Unknown module')) {
         Warn "module graph could not be resolved (network/cert). See -HostJvmArgs."
-        Info $local.Output
+        Info $first.Result.Output
         exit 3
     }
 
-    Info "-- [2/2] sandbox build (--spawn_strategy=windows-sandbox,local)"
-    # NOTE the ",local" fallback. Bazel advances to the next strategy in the list
-    # only when a strategy REFUSES a spawn (cannot execute that action type), never
-    # when it executes and the action FAILS. So every sandboxable action still runs
-    # genuinely under windows-sandbox (this is a fresh output base, so there are no
-    # action-cache hits from the local run to short-circuit it), while action types
-    # windows-sandbox cannot handle at all (CopyFile, worker/persistent, and targets
-    # that explicitly request local execution) fall back to local instead of
-    # producing spurious "cannot be executed with any of the available strategies"
-    # failures that would masquerade as sandbox regressions. This mirrors how a real
-    # user runs the strategy.
-    $sbxStrategy = @(
-        '--spawn_strategy=windows-sandbox,local',
-        '--experimental_use_windows_sandbox=yes',
-        "--experimental_windows_sandbox_path=$Sandbox"
-    )
-    $sbx = Invoke-BazelBuild -OutputBase $sbxBase -StrategyArgs $sbxStrategy -BepFile $sbxBep
-    Info "   sandbox exit: $($sbx.Code)  (elapsed: $($sbx.ElapsedSec)s)"
-    if ($sbx.Output -notmatch 'windows-sandbox') {
-        Warn "no 'windows-sandbox' text seen in sandbox build output - strategy may not have engaged."
-    }
+    $null = & $order[1]
 
     # --- Diff -------------------------------------------------------------
     $sbxStatus   = Read-BepTargetStatus -BepFile $sbxBep
