@@ -186,47 +186,14 @@ bool LocateFileAccessManifest(
     }
 }
 
-/// VerifyManifestTree
-///
-/// Run through the tree and perform integrity checks on everything reachable in the tree,
-/// to detect the possibility of data corruption in the tree.
-///
-/// This check is O(m) where m is the number of entries in the manifest.
-/// Only use it for debugging when a corrupted binary structure is suspected.
-#pragma warning( push )
-#pragma warning( disable: 4100 ) // in release builds, record is unused
-inline void VerifyManifestTree(PCManifestRecord const record)
-{
-#ifdef _DEBUG
-    record->AssertValid();
-
-    // loop through every item on every level recursively and verify tags are correct
-    ManifestRecord::BucketCountType numBuckets = record->BucketCount;
-    for (ManifestRecord::BucketCountType i = 0; i < numBuckets; i++)
-    {
-        PCManifestRecord child = record->GetChildRecord(i);
-
-        if (child != nullptr)
-        {
-            VerifyManifestTree(child);
-        }
-    }
-#endif
-}
-#pragma warning( pop )
-
 /// VerifyManifestRoot
 ///
-/// Check that the root is a valid root record by checking the tag and that
+/// Check that the root is a valid root record by checking that
 /// the path of the root scope is an empty string.
 #pragma warning( push )
 #pragma warning( disable: 4100 ) // in release builds, root is unused
 inline void VerifyManifestRoot(PCManifestRecord const root)
 {
-#ifdef _DEBUG
-    root->AssertValid();
-#endif
-
     assert(root->GetPartialPath()[0] == 0); // the root path should be an empty string
 }
 #pragma warning( pop )
@@ -369,18 +336,15 @@ bool ParseFileAccessManifest(
     offset += debugFlag->GetSize();
 
     PCManifestFlags flags = reinterpret_cast<PCManifestFlags>(&payloadBytes[offset]);
-    flags->AssertValid();
     g_fileAccessManifestFlags = static_cast<FileAccessManifestFlag>(flags->Flags);
     offset += flags->GetSize();
 
     PCManifestExtraFlags extraFlags = reinterpret_cast<PCManifestExtraFlags>(&payloadBytes[offset]);
-    extraFlags->AssertValid();
     g_fileAccessManifestExtraFlags = static_cast<FileAccessManifestExtraFlag>(extraFlags->ExtraFlags);
     g_pDetouredProcessInjector->SetPayload(payloadBytes, payloadSize);
     offset += extraFlags->GetSize();
 
     PCManifestReport report = reinterpret_cast<PCManifestReport>(&payloadBytes[offset]);
-    report->AssertValid();
 
     if (report->IsReportPresent()) {
         {
@@ -415,7 +379,6 @@ bool ParseFileAccessManifest(
     offset += report->GetSize();
 
     PCManifestDllBlock dllBlock = reinterpret_cast<PCManifestDllBlock>(&payloadBytes[offset]);
-    dllBlock->AssertValid();
 
     g_lpDllNameX86 = dllBlock->GetDllString(0);
     g_lpDllNameX64 = dllBlock->GetDllString(1);

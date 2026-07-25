@@ -219,35 +219,6 @@ enum FileAccessBucketOffsetFlag
 // STRUCTS
 // ----------------------------------------------------------------------------
 
-// Generates a uint32_t tag, along with CheckValid() and AssertValid() methods.
-//
-// In debug builds (when _DEBUG is defined):
-//   - Tag value is a sanity check to make sure that we are always looking at a valid record;
-//   - CheckValid() checks if the value of the tag is as expected; if it is returns `nullptr`, otherwise returns an error message;
-//   - AssertValid() asserts (by calling `assert`) that the tag is valid (i.e., `CheckValid()` returns `nullptr`).
-//
-// In release builds:
-//   - no tag field is generated;
-//   - CheckValid() always returns `nullptr`;
-//   - AssertValid() is empty.
-#ifdef _DEBUG
-#define GENERATE_TAG(type_name, tag_value)                          \
-    typedef uint32_t TagType;                                       \
-    TagType Tag;                                                    \
-    inline const char* CheckValid() const noexcept {                \
-        return (this->Tag != (uint32_t)tag_value)                   \
-             ? "Wrong " #type_name " tag. Expected " #tag_value "." \
-             : nullptr;                                             \
-    }                                                               \
-    inline void AssertValid() const noexcept {                      \
-         assert(CheckValid() == nullptr);                           \
-    }
-#else
-#define GENERATE_TAG(type_name, tag_value) \
-    inline const char* CheckValid() const noexcept { return nullptr; } \
-    inline void AssertValid() const noexcept { }
-#endif
-
 // ==========================================================================
 // == ManifestDebugFlag
 // ==========================================================================
@@ -318,8 +289,6 @@ typedef const ManifestDebugFlag * PCManifestDebugFlag;
 // ==========================================================================
 typedef struct ManifestFlags_t
 {
-    GENERATE_TAG("ManifestFlags", 0xF1A6B10C);
-
     typedef uint32_t    FlagsType;
     FlagsType           Flags;
 
@@ -338,8 +307,6 @@ typedef const ManifestFlags * PCManifestFlags;
 // ==========================================================================
 typedef struct ManifestExtraFlags_t
 {
-    GENERATE_TAG("ManifestExtraFlags", 0xF1A6B10D)
-
     typedef uint32_t    ExtraFlagsType;
     ExtraFlagsType      ExtraFlags;
 
@@ -358,8 +325,6 @@ typedef const ManifestExtraFlags * PCManifestExtraFlags;
 // ==========================================================================
 typedef struct ManifestReport_t
 {
-    GENERATE_TAG("ManifestReport", 0xFEEDF00D)
-
     typedef uint32_t    SizeType;
     typedef PathChar    ReportPathType;
     typedef int         ReportHandleType32Bit;
@@ -398,10 +363,6 @@ typedef struct ManifestReport_t
     {
         size_t size = 0;
 
-#ifdef _DEBUG
-        size += sizeof(TagType);
-#endif
-
         size += sizeof(SizeType);
         size += static_cast<size_t>(Size & ~0x1); // mask out low-order bit to get the actual size of the next field
 
@@ -415,8 +376,6 @@ typedef const ManifestReport * PCManifestReport;
 // ==========================================================================
 typedef struct ManifestDllBlock_t
 {
-    GENERATE_TAG("ManifestDllBlock", 0xD11B10CC)
-
     typedef uint32_t    OffsetType;
     typedef CHAR        DllStringType; // $Note(bxl-team): cannot be WCHAR because IMAGE_EXPORT_DIRECTORY used by detours only supports ASCII
     typedef const DllStringType *PCDllStringType;
@@ -449,9 +408,6 @@ typedef struct ManifestDllBlock_t
     {
         size_t size = 0;
 
-#ifdef _DEBUG
-        size += sizeof(TagType);
-#endif
         // Two count values + variable number of offsets
         size += sizeof(OffsetType) * (2U + StringCount);
         size += StringBlockSize;
@@ -468,8 +424,6 @@ typedef const ManifestDllBlock * PCManifestDllBlock;
 typedef struct ManifestRecord_t
 {
     typedef const ManifestRecord_t * PCManifestRecord; // typedef in inner scope for expressive power
-
-    GENERATE_TAG("ManifestRecord", 0xF00DCAFE)
 
     typedef uint32_t    HashType;
     typedef uint32_t    PolicyType;
@@ -516,7 +470,6 @@ typedef struct ManifestRecord_t
 
         PCManifestRecord childRecord = reinterpret_cast<PCManifestRecord>(reinterpret_cast<const BYTE *>(this) + (childOffset & ~FileAccessBucketOffsetFlag::ChainMask));
         assert(childRecord != nullptr);
-        childRecord->AssertValid();
 
         return childRecord;
     }
