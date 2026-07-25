@@ -34,8 +34,6 @@ extern PCManifestRecord g_manifestTreeRoot;
 
 extern HANDLE g_reportFileHandle;
 
-extern bool g_BreakOnAccessDenied;
-
 extern LPCSTR g_lpDllNameX86;
 extern LPCSTR g_lpDllNameX64;
 

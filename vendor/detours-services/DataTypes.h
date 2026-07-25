@@ -31,17 +31,21 @@
 //
 #define FOR_ALL_FAM_FLAGS(m) \
     m(None,                               0x0)            \
-    m(BreakOnAccessDenied,                0x1)            \
-    m(FailUnexpectedFileAccesses,         0x2)            \
+    /* 0x2 (FailUnexpectedFileAccesses) hardcoded on: unexpected accesses  */ \
+    /* are always denied (never Warn), so the accessor was removed.        */ \
     /* 0x4 (DiagnosticMessagesEnabled) removed: never set.                 */ \
     m(ReportAllFileAccesses,              0x8)            \
     m(ReportAllFileUnexpectedAccesses,    0x10)           \
-    m(MonitorNtCreateFile,                0x20)           \
-    m(MonitorChildProcesses,              0x40)           \
+    /* 0x20 (MonitorNtCreateFile) hardcoded on: NtCreateFile is always     */ \
+    /* monitored, so the accessor + its off-branches were removed.         */ \
+    /* 0x40 (MonitorChildProcesses) hardcoded on: child processes are      */ \
+    /* always monitored, so the accessor + its off-branches were removed.  */ \
     /* 0x80 (IgnoreCodeCoverage) removed: never set.                       */ \
     /* 0x100 (ReportProcessArgs) removed: never set.                       */ \
     /* 0x200 (ForceReadOnlyForRequestedReadWrite) removed: never set.      */ \
-    m(IgnoreReparsePoints,                0x400)          \
+    /* 0x400 (IgnoreReparsePoints) hardcoded on: reparse-point policy is     */ \
+    /* always disabled (in-place config), so the accessor + its dead        */ \
+    /* reparse-resolution subsystem were removed.                           */ \
     /* 0x1000 (IgnoreZwRenameFileInformation) and 0x2000                   */ \
     /* (IgnoreSetFileInformationByHandle) removed: never set.              */ \
     /* 0x4000 (UseLargeNtClosePreallocatedList) and 0x8000                 */ \
@@ -55,13 +59,16 @@
     /* 0x100000 (HardExitOnErrorInDetours) removed: never set.             */ \
     /* 0x200000 (CheckDetoursMessageCount) removed: never set.             */ \
     /* 0x400000 (IgnoreZwOtherFileInformation) removed: never set.         */ \
-    m(MonitorZwCreateOpenQueryFile,       0x800000)       \
+    /* 0x800000 (MonitorZwCreateOpenQueryFile) hardcoded on: the Zw file    */ \
+    /* functions are always monitored, so the accessor was removed.        */ \
     /* 0x1000000 (IgnoreNonCreateFileReparsePoints), 0x2000000             */ \
     /* (IgnoreCreateProcessReport), 0x4000000 (UseLargeEnumerationBuffer), */ \
     /* 0x8000000 (IgnorePreloadedDlls), 0x10000000                         */ \
     /* (DirectoryCreationAccessEnforcement), 0x20000000                    */ \
     /* (ProbeDirectorySymlinkAsDirectory) removed: never set.              */ \
-    m(IgnoreFullReparsePointResolving,    0x40000000)
+    /* 0x40000000 (IgnoreFullReparsePointResolving) hardcoded on: full      */ \
+    /* reparse resolution is always disabled, so the accessor + subsystem   */ \
+    /* were removed.                                                        */
 
 //
 // FileAccessManifestFlag enum definition
@@ -220,71 +227,6 @@ enum FileAccessBucketOffsetFlag
 // ----------------------------------------------------------------------------
 
 // ==========================================================================
-// == ManifestDebugFlag
-// ==========================================================================
-typedef struct ManifestDebugFlag_t
-{
-    typedef uint32_t    FlagType;
-    FlagType            Flag;
-
-    inline const char* CheckValid() const noexcept
-    {
-#ifdef _DEBUG
-        if (this->Flag != 0xDB600001)
-        {
-            return "The manifest blob is not a Debug-type manifest.";
-        }
-#else
-        if (this->Flag != 0xDB600000)
-        {
-            return "The manifest blob is not a Release-type manifest.";
-        }
-#endif
-        return nullptr;
-    }
-
-    inline bool CheckValidityAndHandleInvalid() const
-    {
-#ifdef _DEBUG
-        // 0xDB600001 => "debug 1 (on)"
-        assert(this->Flag == 0xDB600001);
-        if (this->Flag != 0xDB600001)
-        {
-            Dbg(L"The manifest blob is not a Debug-type manifest. ManifestDebugFlag is %x", this->Flag);
-            wprintf(L"The manifest blob is not a Debug-type manifest. ManifestDebugFlag is %x", this->Flag);
-            // If the manifest debug flag doesn't match, just return false, so we continue without detouring processes.
-            // We already logged that there is a mismatch. Also the message is logged to the debug output console.
-            // And just in case it is also printed to the console.
-            return false;
-        }
-#else
-        // 0xDB600000 => "debug 0 (off)"
-        if (this->Flag != 0xDB600000)
-        {
-            Dbg(L"The manifest blob is not a Release-type manifest. ManifestDebugFlag is %x", this->Flag);
-            wprintf(L"The manifest blob is not a Release-type manifest. ManifestDebugFlag is %x", this->Flag);
-            // If the manifest debug flag doesn't match, just return false, so we continue without detouring processes.
-            // We already logged that there is a mismatch. Also the message is logged to the debug output console.
-            // And just in case it is also printed to the console.
-            // The old crashing code could lead to a undefined behaviour since it is called from the DLL's attach process handler
-            // a crash could lead to many (even infinite) attempts to load the DLL.
-            return false;
-        }
-#endif
-        return true;
-    }
-
-    /// GetSize
-    ///
-    /// There are no variable-length members, so the length of this struct can be determined using sizeof.
-    size_t GetSize() const noexcept
-    {
-        return sizeof(ManifestDebugFlag_t);
-    }
-} ManifestDebugFlag;
-typedef const ManifestDebugFlag * PCManifestDebugFlag;
-
-// ==========================================================================
 // == ManifestFlags
 // ==========================================================================
 typedef struct ManifestFlags_t
@@ -327,25 +269,9 @@ typedef struct ManifestReport_t
 {
     typedef uint32_t    SizeType;
     typedef PathChar    ReportPathType;
-    typedef int         ReportHandleType32Bit;
-    typedef union ReportType_t
-    {
-        ReportPathType          ReportPath[ANYSIZE_ARRAY];
-        ReportHandleType32Bit   ReportHandle32Bit;
-    } ReportType;
 
-    SizeType            Size;
-    ReportType          Report;
-
-    /// IsReportHandle
-    ///
-    /// If the bottom bit of the Size is 1, then the next field is an integer
-    /// representing the handle to the report file.
-    /// Otherwise, the next field is a path to a report file.
-    bool IsReportHandle() const noexcept
-    {
-        return (Size & 0x1) == 1;
-    }
+    SizeType            Size;                       // padded byte length of the path region (0 => no report)
+    ReportPathType      ReportPath[ANYSIZE_ARRAY];  // NUL-terminated report-file path
 
     /// IsReportPresent
     ///
@@ -357,16 +283,10 @@ typedef struct ManifestReport_t
 
     /// GetSize
     ///
-    /// Calculate the size of this structure by fields which exist for this struct (excluding the union),
-    /// and if the report is present, mask out the lowest bit of the size to find out how large the union was.
+    /// Byte size of this struct: the size word plus the padded path region.
     size_t GetSize() const noexcept
     {
-        size_t size = 0;
-
-        size += sizeof(SizeType);
-        size += static_cast<size_t>(Size & ~0x1); // mask out low-order bit to get the actual size of the next field
-
-        return size;
+        return sizeof(SizeType) + static_cast<size_t>(Size);
     }
 } ManifestReport;
 typedef const ManifestReport * PCManifestReport;
@@ -427,7 +347,6 @@ typedef struct ManifestRecord_t
 
     typedef uint32_t    HashType;
     typedef uint32_t    PolicyType;
-    typedef uint32_t    PathIdType;
     typedef uint32_t    BucketCountType;
     typedef uint32_t    ChildOffsetType;
     typedef PCPathChar  PartialPathType;
@@ -435,7 +354,6 @@ typedef struct ManifestRecord_t
     HashType            Hash;
     PolicyType          ConePolicy;
     PolicyType          NodePolicy;
-    PathIdType          PathId;
     BucketCountType     BucketCount;
     ChildOffsetType     Buckets[ANYSIZE_ARRAY];
     // PartialPathType PartialPath (after the end of the Buckets array)
@@ -443,10 +361,6 @@ typedef struct ManifestRecord_t
 #pragma warning( push )
 // warning C26472: Don't use a static_cast for arithmetic conversions. Use brace initialization, gsl::narrow_cast or gsl::narrow (type.1).
 #pragma warning( disable : 26472)
-    inline DWORD GetPathId() const noexcept {
-        return static_cast<DWORD>(this->PathId);
-    }
-
     inline FileAccessPolicy GetConePolicy() const noexcept {
         return static_cast<FileAccessPolicy>(this->ConePolicy);
     }

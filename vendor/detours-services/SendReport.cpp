@@ -162,7 +162,7 @@ void ReportFileAccess(
     // fileOperationContext.ShareMode - 8 chars
     // fileOperationContext.CreationDisposition - 8 chars,
     // fileOperationContext.FlagsAndAttributes - 8 chars
-    // policyResult.IsIndeterminate() ? 0 : policyResult.GetPathId() - 8 chars
+    // 0 (PathId, always 0) - 8 chars
     // filename separately added
     // filterStr separately added
     // fileOrDirectoryAttribute - 8 chars
@@ -191,7 +191,7 @@ void ReportFileAccess(
         fileOperationContext.CreationDisposition,
         fileOperationContext.FlagsAndAttributes,
         fileOperationContext.OpenedFileOrDirectoryAttributes,
-        policyResult.IsIndeterminate() ? 0 : policyResult.GetPathId(),
+        0,  // PathId (always 0; retained for report-line column stability)
         fileName,
         filterStr);
 

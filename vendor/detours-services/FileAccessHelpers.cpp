@@ -26,7 +26,7 @@ AccessCheckResult AccessCheckResult::DenyOrWarn(::RequestedAccess requestedAcces
 {
     return AccessCheckResult(
         requestedAccess,
-        FailUnexpectedFileAccesses() ? ResultAction::Deny : ResultAction::Warn, 
+        ResultAction::Deny,
         ReportAnyAccess(true) ? ReportLevel::Report : ReportLevel::Ignore);
 }
 

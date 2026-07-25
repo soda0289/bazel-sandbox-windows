@@ -280,20 +280,6 @@ static DWORD DetourGetFinalPathByHandle(_In_ HANDLE hFile, _Inout_ std::wstring&
     return ERROR_SUCCESS;
 }
 
-/// <summary>
-/// Checks if Detours should resolve all reparse points contained in a path.
-/// Only used when creating process to resolve the path to executable.
-/// </summary>
-static bool ShouldResolveReparsePointsInPath(
-    _In_     const PolicyResult& policyResult)
-{
-    bool ignoreReparsePointForPath =
-        IgnoreReparsePoints() ||
-        IgnoreFullReparsePointResolving() ||
-        policyResult.IndicateUntracked();
-    return !ignoreReparsePointForPath;
-}
-
 bool ParseFileAccessManifest(
     const void* payload,
     DWORD)
@@ -326,15 +312,6 @@ bool ParseFileAccessManifest(
 
     size_t offset = 0;
 
-    PCManifestDebugFlag debugFlag = reinterpret_cast<PCManifestDebugFlag>(&payloadBytes[offset]);
-    if (!debugFlag->CheckValidityAndHandleInvalid())
-    {
-        HandleDetoursInjectionAndCommunicationErrors(DETOURS_PAYLOAD_PARSE_FAILED_15, L"ParseFileAccessManifest: Error invalid debugFlag", DETOURS_WINDOWS_LOG_MESSAGE_15);
-        return false;
-    }
-
-    offset += debugFlag->GetSize();
-
     PCManifestFlags flags = reinterpret_cast<PCManifestFlags>(&payloadBytes[offset]);
     g_fileAccessManifestFlags = static_cast<FileAccessManifestFlag>(flags->Flags);
     offset += flags->GetSize();
@@ -353,7 +330,7 @@ bool ParseFileAccessManifest(
             // NOTE: This calls the real CreateFileW(), not our detoured version, because we have not yet installed
             // our detoured functions.
             g_reportFileHandle = CreateFileW(
-                report->Report.ReportPath,
+                report->ReportPath,
                 FILE_WRITE_ACCESS,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 NULL,
@@ -365,7 +342,7 @@ bool ParseFileAccessManifest(
                 DWORD error = GetLastError();
                 g_reportFileHandle = NULL;
                 // No need to call Dbg since calling Dbg with invalid or NULL report handle is noop.
-                std::wstring errorMsg = DebugStringFormat(L"ParseFileAccessManifest: Failed to open report file '%s' (error code: 0x%08X)", report->Report.ReportPath, (int)error);
+                std::wstring errorMsg = DebugStringFormat(L"ParseFileAccessManifest: Failed to open report file '%s' (error code: 0x%08X)", report->ReportPath, (int)error);
                 HandleDetoursInjectionAndCommunicationErrors(DETOURS_PAYLOAD_PARSE_FAILED_17, errorMsg.c_str(), DETOURS_WINDOWS_LOG_MESSAGE_17);
                 return false;
             }
@@ -454,69 +431,6 @@ bool ParseFileAccessManifest(
     FileReadContext fileReadContext;
     fileReadContext.Existence = FileExistence::Existent; // Clearly this process started somehow.
     fileReadContext.OpenedDirectory = false;
-
-    if (ShouldResolveReparsePointsInPath(policyResult))
-    {
-        HANDLE hFile = CreateFileW(
-            wszFileName,
-                GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_DELETE | FILE_SHARE_WRITE,
-                NULL,
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
-                NULL);
-
-        if (hFile == INVALID_HANDLE_VALUE)
-        {
-            return false;
-        }
-
-        std::wstring fullyResolvedPath;
-        DWORD getFinalNameResult = DetourGetFinalPathByHandle(hFile, fullyResolvedPath);
-        CloseHandle(hFile);
-        if (getFinalNameResult != ERROR_SUCCESS)
-        {
-            return false;
-        }
-
-        std::wstring translatedName(fullyResolvedPath);
-
-        std::wstring canonicalizedPathNoPrefix = std::wstring(CanonicalizedPath::Canonicalize(translatedName.c_str()).GetPathStringWithoutTypePrefix());
-        std::wstring canonicalizedPath = std::wstring(CanonicalizedPath::Canonicalize(translatedName.c_str()).GetPathString());
-
-        // Reset policy result because the fully resolved path is likely to be different.
-        PolicyResult newPolicyResult;
-        if (!newPolicyResult.Initialize(canonicalizedPathNoPrefix.c_str()))
-        {
-            fileOperationContext.AdjustPath(canonicalizedPath.c_str());
-            newPolicyResult.ReportIndeterminatePolicyAndSetLastError(fileOperationContext);
-            return true;
-        }
-
-        std::wstring newPolicyPath = std::wstring(newPolicyResult.GetCanonicalizedPath().GetPathString());
-        size_t newLen = newPolicyPath.length();
-        std::wstring oldPolicyPath = std::wstring(policyResult.GetCanonicalizedPath().GetPathString());
-        size_t oldLen = oldPolicyPath.length();
-
-        Dbg(L"Resolved reparse point from:\t'%ws' to '%ws'\ttranslated to:\t%ws\tcanonicalized to:\t%ws\twithout prefix: %ws\tnew policy path:\t%ws %zu [%wc]\told policy result path:\t%ws %zu [%wc] [%wc] [%wc] [%wc] [%wc]",
-            wszFileName,
-            fullyResolvedPath.c_str(),
-            translatedName.c_str(),
-            canonicalizedPath.c_str(),
-            canonicalizedPathNoPrefix.c_str(),
-            newPolicyPath.c_str(),
-            newLen,
-            newPolicyPath[newLen - 1],
-            oldPolicyPath.c_str(),
-            oldLen,
-            oldPolicyPath[0],
-            oldPolicyPath[1],
-            oldPolicyPath[10],
-            oldPolicyPath[50],
-            oldPolicyPath[oldLen - 1]);
-        fileOperationContext.AdjustPath(newPolicyPath.c_str());
-        policyResult = newPolicyResult;
-    }
 
     AccessCheckResult readCheck = policyResult.CheckReadAccess(RequestedReadAccess::Read, fileReadContext);
 

@@ -165,8 +165,6 @@ PCManifestRecord g_manifestTreeRoot;
 
 HANDLE g_reportFileHandle;
 
-bool g_BreakOnAccessDenied;
-
 LPCSTR g_lpDllNameX86;
 LPCSTR g_lpDllNameX64;
 
@@ -734,13 +732,6 @@ static bool DllProcessAttach()
     //
     // File APIs successfully detoured.
     //
-
-    g_BreakOnAccessDenied = (g_fileAccessManifestFlags & FileAccessManifestFlag::BreakOnAccessDenied) != FileAccessManifestFlag::None;
-    WCHAR envvar[0x20 + 1];
-    DWORD length = GetEnvironmentVariable(L"DetouredFileServices_BreakOnAccessDenied", envvar, 0x20);
-    if (length != 0 && length < 0x20 && _wcsicmp(envvar, L"true") == 0) {
-        g_BreakOnAccessDenied = true;
-    }
 
 #undef ATTACH
 

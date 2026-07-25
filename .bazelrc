@@ -29,7 +29,7 @@ build --enable_runfiles
 #   * Combined with never building `-c dbg` (see below), this yields the static
 #     *release* CRT (/MT, not /MTd) so `_DEBUG` is never defined -- required for
 #     the manifest blob format (builder and DLL parser must agree on the
-#     tag-less, DebugFlag==0xDB600000 release layout). See README / manifest_builder.cpp.
+#     tag-less release layout). See README / manifest_builder.cpp.
 build --features=static_link_msvcrt
 
 # C++17 to match the CMake build.

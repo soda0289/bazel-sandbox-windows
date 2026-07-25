@@ -50,22 +50,15 @@ enum FileAccessPolicy : uint32_t {
 };
 
 // FileAccessManifestFlag bits (CODESYNC: FileAccessManifest.cs).
+//
+// The always-on behaviors below are hardcoded in the DLL and no longer carried as
+// wire bits: FailUnexpectedFileAccesses (0x2), MonitorNtCreateFile (0x20),
+// MonitorChildProcesses (0x40), MonitorZwCreateOpenQueryFile (0x800000),
+// IgnoreReparsePoints (0x400), IgnoreFullReparsePointResolving (0x40000000).
 enum FileAccessManifestFlag : uint32_t {
     Flag_None = 0x0,
-    Flag_BreakOnAccessDenied = 0x1,
-    Flag_FailUnexpectedFileAccesses = 0x2,
     Flag_ReportFileAccesses = 0x8,
     Flag_ReportUnexpectedFileAccesses = 0x10,
-    Flag_MonitorNtCreateFile = 0x20,
-    Flag_MonitorChildProcesses = 0x40,
-    Flag_MonitorZwCreateOpenQueryFile = 0x800000,
-    // Enforce policy on paths exactly as requested by the process instead of
-    // resolving reparse points (junctions/symlinks) to their real targets.
-    // Bazel builds an execroot full of junctions (external/ -> repo cache) and
-    // declares the junction paths as inputs; resolving them would enforce on
-    // out-of-execroot targets that were never declared, denying valid reads.
-    Flag_IgnoreReparsePoints = 0x400,
-    Flag_IgnoreFullReparsePointResolving = 0x40000000,
 };
 
 // FileAccessManifestExtraFlag bits (the manifest's second flag word; parsed into

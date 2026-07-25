@@ -226,7 +226,6 @@ void ManifestBuilder::SerializeNode(const Node* node,
     PutU32(out, node->hash);
     PutU32(out, node->conePolicy);
     PutU32(out, node->nodePolicy);
-    PutU32(out, 0);           // PathId (unused)
 
     const uint32_t childCount = static_cast<uint32_t>(node->children.size());
     // bucketCount = childCount == 0 ? 0 : (uint)(childCount / 0.7)
@@ -288,20 +287,17 @@ std::vector<uint8_t> ManifestBuilder::Build() {
 
     std::vector<uint8_t> out;
 
-    // 1. DebugFlag: 0xDB600000 (DebugOff)
-    PutU32(out, 0xDB600000u);
-    // 2. Flags
+    // 1. Flags
     PutU32(out, flags_);
-    // 3. Extra flags
+    // 2. Extra flags
     PutU32(out, extraFlags_);
-    // 4. Report block. Empty path => size 0 (no report block, pure enforcement).
-    // Otherwise a report *path* block: Size = byte length of the field holding a
-    // NUL-terminated WCHAR path, padded up to a 4-byte multiple. Padding matters:
-    // every following block (and the whole manifest tree) must stay 4-aligned, or
-    // serialized child offsets pick up low bits that the DLL reuses as bucket
-    // chain flags (kChainStart/kChainContinuation) -> tree corruption. The padded
-    // size is always even, so the DLL's IsReportHandle() low-bit test reads 0 and
-    // it opens the path directly. CODESYNC: ManifestReport in DataTypes.h.
+    // 3. Report block. Empty path => size 0 (no report block, pure enforcement).
+    // Otherwise a report *path* block: Size = padded byte length of the field
+    // holding a NUL-terminated WCHAR path. The path region is padded up to a
+    // 4-byte multiple so every following block (and the whole manifest tree)
+    // stays 4-aligned; serialized child offsets otherwise pick up low bits that
+    // the DLL reuses as bucket chain flags (kChainStart/kChainContinuation) ->
+    // tree corruption. CODESYNC: ManifestReport in DataTypes.h.
     if (reportPath_.empty()) {
         PutU32(out, 0);
     } else {
@@ -313,7 +309,7 @@ std::vector<uint8_t> ManifestBuilder::Build() {
         out.insert(out.end(), pb, pb + rawBytes);
         out.insert(out.end(), paddedBytes - rawBytes, 0u);
     }
-    // 5. Dll block
+    // 4. Dll block
     {
         uint32_t l0 = PaddedAnsiLength(dllX86_);
         uint32_t l1 = PaddedAnsiLength(dllX64_);

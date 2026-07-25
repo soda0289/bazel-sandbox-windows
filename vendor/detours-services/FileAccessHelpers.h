@@ -215,9 +215,8 @@ public:
     }
 
     // Indicates if access to a file should be denied entirely (i.e., return an invalid handle and some error such as ERROR_ACCESS_DENIED).
-    // Note that this is dependent upon the global FailUnexpectedFileAccesses() flag.
     bool ShouldDenyAccess() const {
-        return Result == ResultAction::Deny; // Check*Access would have set Warn if !FailUnexpectedFileAccesses().
+        return Result == ResultAction::Deny;
     }
 
     // Returns an error code (suitable for SetLastError) that should be reported on denial (ResultAction::Deny).

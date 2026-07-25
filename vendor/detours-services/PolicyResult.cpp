@@ -95,7 +95,6 @@ void PolicyResult::ReportIndeterminatePolicyAndSetLastError(FileOperationContext
 
     WriteWarningOrErrorF(L"Could not determine policy for file path '%s'.",
         fileOperationContext.NoncanonicalPath);
-    MaybeBreakOnAccessDenied();
 
     // We certainly are not allowing an access, and are not reporting due to an explicit ask of the calling engine.
     // This is a bit odd but really only relevant to this case, and presently just informs the 'explicit report' flag.

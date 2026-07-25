@@ -132,7 +132,7 @@ void Dbg(PCWSTR format, ...)
 
 void WriteWarningOrErrorF(PCWSTR format, ...)
 {
-    std::wstring prefixedFormat = FailUnexpectedFileAccesses() ? std::wstring(L"error : ") : std::wstring(L"warning : ");
+    std::wstring prefixedFormat = std::wstring(L"error : ");
     prefixedFormat.append(format);
     
     va_list args;
@@ -145,22 +145,5 @@ void WriteWarningOrErrorF(PCWSTR format, ...)
 }
 
 #endif // DETOURS_SERVICES_NATIVES_LIBRARY
-
-// This flag allows to attach with debugger to debug problems without having to hit
-// always this DebugBreak. One can set a bpt here and set the var to true from within the debugger.
-// Then DebugBreak will break.
-static bool g_allowBreakOnAccessDenied = false;
-
-void MaybeBreakOnAccessDenied()
-{
-    if (g_allowBreakOnAccessDenied && IsDebuggerPresent()) {
-        DebugBreak();
-        return;
-    }
-
-    if (g_BreakOnAccessDenied) {
-        DebugBreak();
-    }
-}
 
 

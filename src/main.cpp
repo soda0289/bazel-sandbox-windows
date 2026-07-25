@@ -703,15 +703,17 @@ int wmain(int argc, wchar_t** argv) {
     // from the literal path and denies on it unconditionally), and resolution only ADDS enforcement
     // on the target - it never turns a denied literal path into an allowed one. It is a
     // hermeticity-tightening feature (deny symlink escapes), not an allow mechanism. Enabling full
-    // resolution (clearing Flag_IgnoreFullReparsePointResolving too) was also unstable in this
-    // standalone build (broke plain file copies with ERROR_INVALID_HANDLE). So instead the runner
+    // resolution was also unstable in this standalone build (broke plain file copies with
+    // ERROR_INVALID_HANDLE), so it is hardcoded off in the DLL. Instead the runner
     // (WindowsSandboxedSpawnRunner) grants the in-place LINK paths directly: each declared input's
     // execroot location is granted readable, which covers runfiles symlink forests name-agnostically.
     // The one residual is the aspect_rules_js pnpm node_modules store, whose package directory
     // junctions are not declared as inputs; the runner grants that store as a readable cone.
-    uint32_t flags = Flag_FailUnexpectedFileAccesses | Flag_MonitorNtCreateFile |
-                     Flag_MonitorChildProcesses | Flag_MonitorZwCreateOpenQueryFile |
-                     Flag_IgnoreReparsePoints | Flag_IgnoreFullReparsePointResolving;
+    // The always-on behaviors (fail-on-unexpected-access, monitor NtCreateFile,
+    // monitor child processes, monitor Zw file functions, ignore reparse points,
+    // ignore full reparse-point resolving) are all hardcoded in the DLL, so no
+    // policy flags need to be set in the wire format here.
+    uint32_t flags = Flag_None;
 
     // --filter-inputs turns on the subtractive behaviors in the DLL: denied reads
     // report NOT_FOUND (not ACCESS_DENIED) and directory enumerations hide

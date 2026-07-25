@@ -36,5 +36,3 @@ mangling it, so UTF-8 is a good "pass-through" encoding.
 
 */
 void WriteWarningOrErrorF(PCWSTR format, ...);
-
-void MaybeBreakOnAccessDenied();

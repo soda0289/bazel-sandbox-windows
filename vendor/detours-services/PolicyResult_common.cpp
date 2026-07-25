@@ -101,7 +101,7 @@ AccessCheckResult PolicyResult::CheckReadAccess(RequestedReadAccess readAccessRe
 
     ResultAction result = allowAccess 
         ? ResultAction::Allow 
-        : (FailUnexpectedFileAccesses() ? ResultAction::Deny : ResultAction::Warn);
+        : ResultAction::Deny;
 
     // Per-scope explicit read reporting (ReportAccessIfExistent / ReportAccessIfNonExistent)
     // is never enabled by this launcher, so reads are reported only when the FAM
@@ -110,7 +110,6 @@ AccessCheckResult PolicyResult::CheckReadAccess(RequestedReadAccess readAccessRe
 
     if (result != ResultAction::Allow) {
         WriteWarningOrErrorF(L"Read access to file path '%s' is denied. Policy allows: 0x%08x.", GetCanonicalizedPath().GetPathString(), GetPolicy());
-        MaybeBreakOnAccessDenied();
     }
 
     // TODO: In the deny case, we aren't ever returning PathValidity::PathComponentNotFound; so ERROR_PATH_NOT_FOUND is never returned in the Deny case.
@@ -131,7 +130,6 @@ AccessCheckResult PolicyResult::CreateAccessCheckResult(ResultAction result, Rep
             case PathValidity::PathComponentNotFound:
                 // The path was valid, so there's no path-validity excuse here (Deny or Warn as already determined).
                 WriteWarningOrErrorF(L"Write access to file path '%s' is denied. Policy allows: 0x%08x.", GetCanonicalizedPath().GetPathString(), GetPolicy());
-                MaybeBreakOnAccessDenied();
                 break;
             case PathValidity::Invalid:
                 // The path is at least possibly invalid, has an invalid syntax, and so don't report.
@@ -151,7 +149,7 @@ AccessCheckResult PolicyResult::CreateAccessCheckResult(bool isAllowed) const
 
     ResultAction result = isAllowed
         ? ResultAction::Allow
-        : (FailUnexpectedFileAccesses() ? ResultAction::Deny : ResultAction::Warn);
+        : ResultAction::Deny;
 
     // ReportAccess (per-scope explicit reporting) is never set by this launcher.
     ReportLevel reportLevel = ReportAnyAccess(result != ResultAction::Allow) ? ReportLevel::Report : ReportLevel::Ignore;
