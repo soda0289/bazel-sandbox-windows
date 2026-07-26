@@ -198,32 +198,11 @@ inline void VerifyManifestRoot(PCManifestRecord const root)
 }
 #pragma warning( pop )
 
-static inline byte ParseByte(const byte* payloadBytes, size_t& offset)
-{
-    byte b = payloadBytes[offset];
-    offset += sizeof(byte);
-    return b;
-}
-
 static inline uint32_t ParseUint32(const byte *payloadBytes, size_t &offset)
 {
     uint32_t i = *(uint32_t*)(&payloadBytes[offset]);
     offset += sizeof(uint32_t);
     return i;
-}
-
-/// Decodes a length plus UTF-16 non-null-terminated string written by FileAccessManifest.WriteChars()
-/// and appends it to the given result string.
-void AppendStringFromWriteChars(const byte* payloadBytes, size_t& offset, _Out_ std::wstring& result)
-{
-    uint32_t len = ParseUint32(payloadBytes, offset);
-    if (len == 0)
-    {
-        return;
-    }
-
-    result.append((wchar_t*)(&payloadBytes[offset]), len);
-    offset += sizeof(wchar_t) * len;
 }
 
 

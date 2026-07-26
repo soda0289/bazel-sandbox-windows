@@ -42,28 +42,11 @@ void PutU32(std::vector<uint8_t>& out, uint32_t v) {
     out.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
 }
 
-void PutU64(std::vector<uint8_t>& out, uint64_t v) {
-    PutU32(out, static_cast<uint32_t>(v & 0xFFFFFFFF));
-    PutU32(out, static_cast<uint32_t>((v >> 32) & 0xFFFFFFFF));
-}
-
 void PatchU32(std::vector<uint8_t>& out, size_t at, uint32_t v) {
     out[at + 0] = static_cast<uint8_t>(v & 0xFF);
     out[at + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
     out[at + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
     out[at + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
-}
-
-// WriteChars: uint32 char-count, then each UTF-16 code unit (2 bytes LE).
-// A null/empty string writes just the count 0.
-void PutChars(std::vector<uint8_t>& out, const std::wstring* s) {
-    uint32_t len = (s == nullptr) ? 0u : static_cast<uint32_t>(s->size());
-    PutU32(out, len);
-    for (uint32_t i = 0; i < len; i++) {
-        wchar_t c = (*s)[i];
-        out.push_back(static_cast<uint8_t>(c & 0xFF));
-        out.push_back(static_cast<uint8_t>((c >> 8) & 0xFF));
-    }
 }
 
 // PaddedByteString(ASCII): ((len+4) & ~3) bytes, NUL-filled + terminated,

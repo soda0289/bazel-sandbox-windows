@@ -31,9 +31,8 @@ uint32_t ReadU32LE(const std::vector<uint8_t>& b, size_t at) {
            (static_cast<uint32_t>(b[at + 3]) << 24);
 }
 
-ManifestBuilder MakeBuilder(uint32_t flags = Flag_FailUnexpectedFileAccesses |
-                                             Flag_MonitorNtCreateFile |
-                                             Flag_MonitorChildProcesses) {
+ManifestBuilder MakeBuilder(uint32_t flags = Flag_ReportFileAccesses |
+                                             Flag_ReportUnexpectedFileAccesses) {
     return ManifestBuilder(flags, /*extraFlags*/ 0, "x86.dll", "x64.dll");
 }
 
@@ -64,16 +63,16 @@ void TestHashGoldens() {
           testing::HashFragment(L"USERS", n2));
 }
 
-// The blob starts with the DebugOff flag, then the two flag words. These are
-// the fields ParseFileAccessManifest reads first.
+// The blob starts with the two flag words. These are the fields
+// ParseFileAccessManifest reads first.
 void TestHeaderLayout() {
-    ManifestBuilder mb = MakeBuilder(Flag_FailUnexpectedFileAccesses);
+    ManifestBuilder mb = MakeBuilder(Flag_ReportFileAccesses);
     mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
     std::vector<uint8_t> blob = mb.Build();
 
     CHECK(blob.size() > 16);
-    CHECK(ReadU32LE(blob, 0) == 0xDB600000u);  // DebugFlag = DebugOff
-    CHECK(ReadU32LE(blob, 4) == static_cast<uint32_t>(Flag_FailUnexpectedFileAccesses));  // flags word
+    CHECK(ReadU32LE(blob, 0) == static_cast<uint32_t>(Flag_ReportFileAccesses));  // flags word
+    CHECK(ReadU32LE(blob, 4) == 0u);  // extra flags word
 }
 
 // Building twice with identical inputs must be byte-for-byte deterministic.
@@ -116,13 +115,13 @@ void TestScopeGrowsTree() {
 void TestFlagsAffectBlob() {
     std::vector<uint8_t> a, b;
     {
-        ManifestBuilder mb = MakeBuilder(Flag_FailUnexpectedFileAccesses);
+        ManifestBuilder mb = MakeBuilder(Flag_ReportFileAccesses);
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         a = mb.Build();
     }
     {
         ManifestBuilder mb =
-            MakeBuilder(Flag_FailUnexpectedFileAccesses | Flag_MonitorChildProcesses);
+            MakeBuilder(Flag_ReportFileAccesses | Flag_ReportUnexpectedFileAccesses);
         mb.AddRootScope(Policy_MaskAll, Policy_AllowRead);
         b = mb.Build();
     }

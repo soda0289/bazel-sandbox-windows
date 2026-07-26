@@ -38,12 +38,8 @@ public:
     PolicyResult& operator=(const PolicyResult&) = default;
 
     CanonicalizedPathType Path() const        { return m_canonicalizedPath; }
-    size_t PathLength() const                 { return m_canonicalizedPath.Length(); }
 
 private:
-    // Result of path translation.
-    std::wstring m_translatedPath;
-
     /// Checks the file access manifest to determine a policy for the given already-canonicalized path.
     /// The policy search is resumed from the given cursor, applying searchSuffix. The path generating policySearchCursor combined with searchSuffix
     /// must be equivalent to canonicalizedPath (we are avoiding wasted work in re-traversing some prefix of canonicalizedPath in the policy tree).
@@ -60,13 +56,11 @@ public:
     PolicyResult(PolicyResult&& other)
         : m_canonicalizedPath(std::move(other.m_canonicalizedPath)),
         m_policy(other.m_policy), m_policySearchCursor(other.m_policySearchCursor),
-        m_isIndeterminate(other.m_isIndeterminate),
-        m_translatedPath(other.m_translatedPath)
+        m_isIndeterminate(other.m_isIndeterminate)
     {
         other.m_isIndeterminate = true;
         other.m_policy = (FileAccessPolicy)0;
         other.m_policySearchCursor = PolicySearchCursor();
-        other.m_translatedPath.clear();
 
         assert(other.m_canonicalizedPath.Type == PathType::Null);
         assert(other.m_policySearchCursor.Record == nullptr);
@@ -86,21 +80,8 @@ public:
     // TODO: This is a poorly exercised and very exceptional path; for simplicity consider throwing (failfast exception?)
     void ReportIndeterminatePolicyAndSetLastError(FileOperationContext const& fileOperationContext) const;
 
-    PCPathChar GetTranslatedPath() const { return m_translatedPath.c_str(); }
-
     PCPathChar GetTranslatedPathWithoutTypePrefix() const {
-        switch (m_canonicalizedPath.Type) {
-            case PathType::Null:
-                return nullptr;
-            case PathType::Win32:
-                return m_translatedPath.c_str();
-            case Win32Nt:
-            case LocalDevice:
-                return m_translatedPath.c_str() + 4;
-            default:
-                assert(false);
-                return nullptr;
-        }
+        return m_canonicalizedPath.GetPathStringWithoutTypePrefix();
     }
 
     // Performs an access check for a read-access, based on dynamically-observed read context (existence, etc.)

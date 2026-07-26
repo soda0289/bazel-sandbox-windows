@@ -63,7 +63,6 @@ public:
         }
         return true;
     }
-    bool isValid() const { return _handle != Invalid; }
 
     unique_handle(unique_handle const &) = delete;
     unique_handle & operator=(unique_handle const &) = delete;

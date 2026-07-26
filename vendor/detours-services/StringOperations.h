@@ -150,20 +150,6 @@ inline bool IsSpecialDeviceName(PCPathChar path) noexcept
     // To add more device names add more name checking functions and OR their result here.
 }
 
-// Indicates if this is a long UNC path.
-inline bool IsUncPathName(PCPathChar path) noexcept
-{
-    assert(path != nullptr);
-    return
-        (path[0] == L'\\') &&
-        (path[1] == L'\\') &&
-        (path[2] == L'?') &&
-        (path[3] == L'U') &&
-        (path[4] == L'N') &&
-        (path[5] == L'C') &&
-        (path[6] == L'\\');
-}
-
 // ----------------------------------------------------------------------------
 // FUNCTION DECLARATIONS
 // ----------------------------------------------------------------------------

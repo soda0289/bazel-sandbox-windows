@@ -171,17 +171,6 @@ void DetouredProcessInjector::SetPayload(LPCBYTE payload, uint32_t payloadSize)
 }
 
 
-void DetouredProcessInjector::SetHandles(uint32_t otherHandleCount, PHANDLE otherHandles)
-{
-    if (otherHandleCount == 0)
-    {
-        _otherHandles.clear();
-    }
-    else {
-        _otherHandles.assign(otherHandles, otherHandles + otherHandleCount);
-    }
-}
-
 DWORD DetouredProcessInjector::LocalInjectProcess(HANDLE processHandle, bool inheritedHandles)
 {
     LockGuard lock(_injectorLock);

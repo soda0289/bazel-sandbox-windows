@@ -122,9 +122,6 @@ public:
         _dllX64 = dllX64;
     }
 
-    // Set "other" handles. These are duplicated if needed.
-    void SetHandles(uint32_t otherHandleCount, PHANDLE otherHandles);
-
     inline bool IsValid() const
     {
 #ifdef _DEBUG
@@ -132,13 +129,6 @@ public:
 #endif
         return _tag == c_buildxlInjectorTag && _initialized;
     }
-
-    // Getters
-    LPCBYTE Payload() const { return _payload.get(); }
-    uint32_t PayloadSize() const { return _payloadSize; }
-    uint32_t OtherHandleCount() const { return static_cast<uint32_t>(_otherHandles.size()); }
-    const HANDLE *OtherHandles() const { return _otherHandles.data(); }
-    bool IsInitialized() { return _initialized; }
 
     // This method will inject the data stored in the object into the specified process.
     //   processHandle - the process to inject

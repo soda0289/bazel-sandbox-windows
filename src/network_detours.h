@@ -30,9 +30,6 @@ constexpr const wchar_t* kNetworkEnvVar = L"BAZEL_SANDBOX_NETWORK";
 // Returns the policy in effect for this process (set during DLL attach).
 NetworkPolicy GetNetworkPolicy();
 
-// True when any network restriction is in effect.
-inline bool IsNetworkRestricted() { return GetNetworkPolicy() != NetworkPolicy::Allow; }
-
 // True only for -n (block everything). Used by the NtCreateFile AFD hardening:
 // under -N we must let sockets be created so loopback keeps working, so AFD
 // creation is only denied outright when ALL network is blocked.

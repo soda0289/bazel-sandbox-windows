@@ -79,26 +79,9 @@ public:
             lpPath);
     }
 
-    static FileOperationContext CreateForWrite(StrType lpOperation, StrType lpPath)
-    {
-        return FileOperationContext(
-            lpOperation,
-            GENERIC_WRITE,
-            FILE_SHARE_READ,
-            OPEN_ALWAYS,
-            0x08100000,
-            lpPath);
-    }
-
     void Correlate(const FileOperationContext& other)
     {
         CorrelationId = other.Id;
-    }
-
-    void AdjustPath(StrType newPath)
-    {
-        _nonCanonicalPathBuffer.assign(newPath);
-        NoncanonicalPath = _nonCanonicalPathBuffer.c_str();
     }
 
     FileOperationContext(const FileOperationContext& other) = default;
@@ -108,8 +91,6 @@ private:
     // CODESYNC: Public\Src\Engine\Processes\SandboxedProcessReports.cs
     static const unsigned long NoId = 0UL;
     static unsigned long GetNextId();
-
-    StrBufferType _nonCanonicalPathBuffer;
 };
 
 enum class FileExistence {

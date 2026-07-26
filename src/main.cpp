@@ -310,17 +310,6 @@ void EscapeArg(const std::wstring& s, std::wstring& out) {
     out += L'"';
 }
 
-std::wstring BuildCommandLine(const std::vector<std::wstring>& args) {
-    std::wstring cmd;
-    for (size_t i = 0; i < args.size(); i++) {
-        if (i != 0) {
-            cmd += L' ';
-        }
-        EscapeArg(args[i], cmd);
-    }
-    return cmd;
-}
-
 // Case-insensitive test whether a tool path's final component is "cmd.exe".
 bool IsCmdExe(const std::wstring& toolPath) {
     size_t slash = toolPath.find_last_of(L"\\/");
